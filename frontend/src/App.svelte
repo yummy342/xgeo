@@ -13,13 +13,17 @@
   import Gaps from './views/Gaps.svelte'
   import Questions from './views/Questions.svelte'
   import Report from './views/Report.svelte'
+  import Workbench from './views/Workbench.svelte'
+  import SiteAudit from './views/SiteAudit.svelte'
+  import Competitors from './views/Competitors.svelte'
 
   // 已迁到 Svelte 的视图。没列在这里的走 LegacyView 的旧实现。
   // 每批迁移就往这里加一个，B6 加满 17 个、删掉 LegacyView。
   const MIGRATED = {
     facts: Facts, channels: Channels, plan: Plan, samples: Samples,
     verify: Verify, assets: Assets, gaps: Gaps, questions: Questions,
-    report: Report,
+    report: Report, workbench: Workbench, siteaudit: SiteAudit,
+    competitors: Competitors,
   }
   import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
   import { ui } from './lib/stores/ui.svelte.js'

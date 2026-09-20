@@ -41,6 +41,10 @@ const MIGRATED = {
   gaps: 'fix them in order',                       // Gaps.svelte
   questions: 'source of every number',             // Questions.svelte
   report: 'Three people need',                     // Report.svelte
+  workbench: 'write right here',                   // Workbench.svelte
+  siteaudit: 'SITE AUDIT',                         // SiteAudit.svelte — 用 kicker，
+                                                   // 有站点/无站点两个分支都有它
+  competitors: 'COMPETITORS',                      // Competitors.svelte — 同样用 kicker
 }
 
 let failed = 0
