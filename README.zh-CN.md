@@ -1,6 +1,6 @@
 <div align="center">
 
-# Geo**Look**
+# XGEO
 
 **开源的全流程 GEO 实施平台 · 自托管**
 
@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-9184d9) ![Python](https://img.shields.io/badge/python-3.9%2B-9184d9) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-9184d9) ![Deps](https://img.shields.io/badge/deps-requests%20·%20bs4%20·%20lxml-9184d9)
 
-<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="GeoLook - 开源自托管的全流程 GEO 实施平台 | Product Hunt" width="250" height="54" /></a>
+<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="XGEO - 开源自托管的全流程 GEO 实施平台 | Product Hunt" width="250" height="54" /></a>
 
 ![产品演示](docs/demo.gif)
 
@@ -26,7 +26,7 @@
 
 越来越多的用户直接问 AI「有哪些好用的 XX 工具」「XX 和 YY 哪个好」。如果你的品牌：
 
-| 问题 | GeoLook 给的答案 |
+| 问题 | XGEO 给的答案 |
 |---|---|
 | **AI 根本不提你**——搜品类问题时你不在候选集里 | 逐引擎采样真实回答，量化提及率/位次/引用份额，诊断出「完全缺席」还是「竞品主导」 |
 | **不知道为什么不提你**——AI 是黑盒 | 六维站点体检 + 差距诊断：抓不到正文？缺抽取块？没铺 AI 实际引用的阵地？口径不一致？逐项定位 |
@@ -88,9 +88,9 @@
 
 ## 三、和市面 GEO 工具的区别
 
-市面上的 GEO 产品绝大多数是**监测型 SaaS**：告诉你提及率和排名，按月收订阅费，数据在别人云上。GeoLook 的定位是**实施平台**，差别在这几处：
+市面上的 GEO 产品绝大多数是**监测型 SaaS**：告诉你提及率和排名，按月收订阅费，数据在别人云上。XGEO 的定位是**实施平台**，差别在这几处：
 
-| | 典型 GEO 监测 SaaS | GeoLook |
+| | 典型 GEO 监测 SaaS | XGEO |
 |---|---|---|
 | **闭环深度** | 监测 + 建议 | 监测 → 诊断 → **工单 → 资产 → 自动验收 → 交付**，落地全流程 |
 | **验收方式** | 无（或人工回填） | 程序判定：重抓站点 + 下期采样自动验收，回归自动打回 |
@@ -101,7 +101,7 @@
 | **成本** | 按月订阅 | 开源免费，只花你自己的引擎 API 采样费（可为零：纯人工采样也能跑） |
 | **交付能力** | 截图仪表盘 | 直接产出可发客户的诊断报告/优化方案/执行方案/工单表，适合代理商与顾问 |
 
-诚实说明边界：GeoLook 是单机工具，没有账号体系和团队协作；采样频率与样本量由你自己的 API 预算决定；「疑似负面」等判定是线索提示，定性仍需人工复核——这些是刻意的设计取舍，不是还没做完。
+诚实说明边界：XGEO 是单机工具，没有账号体系和团队协作；采样频率与样本量由你自己的 API 预算决定；「疑似负面」等判定是线索提示，定性仍需人工复核——这些是刻意的设计取舍，不是还没做完。
 
 ## 四、部署教程
 
@@ -141,11 +141,11 @@ ssh -N -L 8765:127.0.0.1:8765 user@your-server
 # 然后本地浏览器打开 http://127.0.0.1:8765
 
 # 方式 B：绑定公网 + 访问令牌（两个变量缺一不可，不设令牌会拒绝启动）
-export GEOLOOK_TOKEN=$(openssl rand -hex 16)
-export GEOLOOK_HOST=0.0.0.0
+export XGEO_TOKEN=$(openssl rand -hex 16)
+export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
 # 浏览器首次访问输入令牌（或打开 http://server:8765/?token=令牌），
-# 之后凭 HttpOnly cookie 访问；API 调用带 X-Geolook-Token 头
+# 之后凭 HttpOnly cookie 访问；API 调用带 X-Xgeo-Token 头
 ```
 
 公网部署建议再套一层 HTTPS 反向代理（nginx/caddy），令牌走明文 HTTP 会被中间人看到。`.env` 与 `work/` 含密钥和项目数据，注意文件权限。
@@ -226,7 +226,7 @@ python3 scripts/geo.py sample-import --slug <项目> --file <采样表>
 
 **Q：AI 回答每次都不一样，采样结果怎么保证稳定？**
 
-单条 AI 回答天然有随机性，所以 GeoLook 的指标**从不看单条回答**，稳定性靠四层机制：
+单条 AI 回答天然有随机性，所以 XGEO 的指标**从不看单条回答**，稳定性靠四层机制：
 
 1. **聚合口径**——提及率等指标是「几十道题 × 多个引擎」的比例，单题抖动会被摊平；
 2. **固定变量**——每个引擎的采样模型版本固定（设置里可查可改），问题库固定，同一套题跨期复用，变的只有时间；

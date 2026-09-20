@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 import unittest
 from pathlib import Path
@@ -43,6 +44,41 @@ class TestAuthOk(unittest.TestCase):
         不是只看管理员那一个。"""
         self.assertFalse(D.auth_ok(None, {"tok": {"a"}}, None))
         self.assertTrue(D.auth_ok(None, {"tok": {"a"}}, None, query_token="tok"))
+
+
+class TestRenameCompatibility(unittest.TestCase):
+    """改名不该让已经部署好的实例升级后起不来。
+
+    `.env` 里写的是旧名，service.sh 导出的也是旧名，浏览器里还留着旧 cookie。
+    这些都得继续认——过渡期结束后再删。"""
+
+    def test_legacy_env_name_still_read(self):
+        with mock.patch.dict(os.environ, {"GEOLOOK_TOKEN": "old"}, clear=True):
+            self.assertEqual(D._env("XGEO_TOKEN"), "old")
+
+    def test_new_env_name_wins(self):
+        with mock.patch.dict(os.environ, {"XGEO_TOKEN": "new", "GEOLOOK_TOKEN": "old"},
+                             clear=True):
+            self.assertEqual(D._env("XGEO_TOKEN"), "new")
+
+    def test_non_prefixed_name_has_no_fallback(self):
+        with mock.patch.dict(os.environ, {"GEOLOOK_PATH": "old"}, clear=True):
+            self.assertIsNone(D._env("SOMETHING_ELSE"))
+
+    def test_both_header_names_accepted(self):
+        self.assertEqual(D._header_token({"X-Xgeo-Token": "new"}), "new")
+        self.assertEqual(D._header_token({"X-Geolook-Token": "old"}), "old")
+        self.assertIsNone(D._header_token({}))
+
+    def test_legacy_cookie_name_still_authenticates(self):
+        new = f"{D.AUTH_COOKIE}={D._token_digest('tok')}"
+        old = f"{D.LEGACY_COOKIE}={D._token_digest('tok')}"
+        self.assertTrue(D.auth_ok("tok", {}, new))
+        self.assertTrue(D.auth_ok("tok", {}, old), "旧 cookie 名不再认了，用户会被登出")
+
+    def test_login_page_shows_the_new_brand(self):
+        self.assertIn("GEO", D._LOGIN_HTML)
+        self.assertNotIn("Look", D._LOGIN_HTML)
 
 
 class TestScopedTokens(unittest.TestCase):
@@ -127,7 +163,7 @@ class TestAuthorization(unittest.TestCase):
     def _req(self, method, path, token=None, body=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
-            headers = {"X-Geolook-Token": token} if token else {}
+            headers = {"X-Xgeo-Token": token} if token else {}
             payload = None
             if body is not None:
                 payload = json.dumps(body).encode("utf-8")
@@ -198,7 +234,7 @@ class TestAuthorization(unittest.TestCase):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         try:
             conn.request("POST", "/api/precheck", body=None, headers={
-                "X-Geolook-Token": self.ADMIN,
+                "X-Xgeo-Token": self.ADMIN,
                 "Content-Type": "application/json",
                 "Content-Length": str(D.Handler.MAX_BODY + 1),
             })

@@ -1,6 +1,6 @@
 <div align="center">
 
-# Geo**Look**
+# XGEO
 
 **Open-source, self-hosted platform for end-to-end GEO implementation**
 
@@ -10,7 +10,7 @@ English · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-MIT-9184d9) ![Python](https://img.shields.io/badge/python-3.9%2B-9184d9) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-9184d9) ![Deps](https://img.shields.io/badge/deps-requests%20·%20bs4%20·%20lxml-9184d9)
 
-<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="GeoLook - Open-source, self-hosted platform for end-to-end GEO | Product Hunt" width="250" height="54" /></a>
+<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="XGEO - Open-source, self-hosted platform for end-to-end GEO | Product Hunt" width="250" height="54" /></a>
 
 ![Product demo](docs/demo.en.gif)
 
@@ -26,7 +26,7 @@ English · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 More and more users ask AI directly — "best tools for X", "X vs Y, which one". If your brand:
 
-| Problem | What GeoLook gives you |
+| Problem | What XGEO gives you |
 |---|---|
 | **AI never mentions you** — you're not in the candidate set for category questions | Samples real answers engine by engine; quantifies mention rate / rank / citation share; diagnoses "absent" vs "competitor-dominated" |
 | **You don't know why** — AI is a black box | 6-dimension site audit + gap diagnosis: uncrawlable pages? missing extraction blocks? absent from the channels AI actually cites? inconsistent messaging? |
@@ -64,9 +64,9 @@ Four stages plus operations, all in one self-hosted dashboard:
 
 ## 3. How it differs from other GEO tools
 
-Most GEO products are **monitoring SaaS**: they show mention rates and rankings, charge monthly, and keep your data in their cloud. GeoLook is an **implementation platform**:
+Most GEO products are **monitoring SaaS**: they show mention rates and rankings, charge monthly, and keep your data in their cloud. XGEO is an **implementation platform**:
 
-| | Typical GEO monitoring SaaS | GeoLook |
+| | Typical GEO monitoring SaaS | XGEO |
 |---|---|---|
 | **Loop depth** | Monitor + advise | Monitor → diagnose → **tickets → assets → auto-verify → deliver** |
 | **Verification** | None (or manual check-off) | Programmatic: re-crawl + next sampling round decide; regressions reopen automatically |
@@ -116,11 +116,11 @@ The server binds to `127.0.0.1` by default. Two ways to access it remotely:
 ssh -N -L 8765:127.0.0.1:8765 user@your-server   # then open http://127.0.0.1:8765 locally
 
 # Option B: public bind + access token (both required — refuses to start without a token)
-export GEOLOOK_TOKEN=$(openssl rand -hex 16)
-export GEOLOOK_HOST=0.0.0.0
+export XGEO_TOKEN=$(openssl rand -hex 16)
+export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
 # Enter the token on first visit (or open http://server:8765/?token=TOKEN);
-# afterwards access is via HttpOnly cookie. API calls: X-Geolook-Token header.
+# afterwards access is via HttpOnly cookie. API calls: X-Xgeo-Token header.
 ```
 
 For public deployments put an HTTPS reverse proxy (nginx/caddy) in front — a token over plain HTTP can be intercepted. `.env` and `work/` contain secrets and project data — mind file permissions.
@@ -193,7 +193,7 @@ Every command has `--help`.
 
 **Q: AI answers differ every time — how can sampling results be stable?**
 
-A single AI answer is inherently stochastic, so GeoLook **never reads a single answer** as a metric. Stability comes from four layers:
+A single AI answer is inherently stochastic, so XGEO **never reads a single answer** as a metric. Stability comes from four layers:
 
 1. **Aggregation** — mention rate and friends are ratios over dozens of questions × multiple engines; per-question jitter averages out.
 2. **Fixed variables** — each engine's sampling model is pinned (visible and changeable in Settings), the question bank is fixed, and the same set is reused across rounds; the only thing that changes is time.

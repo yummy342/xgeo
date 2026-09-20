@@ -1,6 +1,6 @@
 <div align="center">
 
-# Geo**Look**
+# XGEO
 
 **オープンソース・セルフホスト型の GEO 実装プラットフォーム（エンドツーエンド）**
 
@@ -10,7 +10,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-9184d9) ![Python](https://img.shields.io/badge/python-3.9%2B-9184d9) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-9184d9) ![Deps](https://img.shields.io/badge/deps-requests%20·%20bs4%20·%20lxml-9184d9)
 
-<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="GeoLook - オープンソースのセルフホスト型 GEO 実装プラットフォーム | Product Hunt" width="250" height="54" /></a>
+<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="XGEO - オープンソースのセルフホスト型 GEO 実装プラットフォーム | Product Hunt" width="250" height="54" /></a>
 
 ![Product demo](docs/demo.ja.gif)
 
@@ -24,7 +24,7 @@
 
 「X におすすめのツールは？」「X と Y はどちらが良い？」——ユーザーはますます AI に直接質問するようになっています。あなたのブランドが：
 
-| 課題 | GeoLook が提供するもの |
+| 課題 | XGEO が提供するもの |
 |---|---|
 | **AI に一切言及されない**——カテゴリ質問の候補に入っていない | エンジンごとに実回答をサンプリングし、言及率・順位・引用シェアを定量化。「完全不在」か「競合支配」かを診断 |
 | **理由がわからない**——AI はブラックボックス | 6 次元サイト監査 + ギャップ診断：クロール不能ページ？抽出ブロック欠如？AI が実際に引用するチャネルへの不在？メッセージの不一致？ |
@@ -62,9 +62,9 @@
 
 ## 3. 他の GEO ツールとの違い
 
-GEO 製品の大半は**モニタリング SaaS**です：言及率とランキングを表示し、月額課金し、データはベンダーのクラウドに置かれます。GeoLook は**実装プラットフォーム**です：
+GEO 製品の大半は**モニタリング SaaS**です：言及率とランキングを表示し、月額課金し、データはベンダーのクラウドに置かれます。XGEO は**実装プラットフォーム**です：
 
-| | 一般的な GEO モニタリング SaaS | GeoLook |
+| | 一般的な GEO モニタリング SaaS | XGEO |
 |---|---|---|
 | **ループの深さ** | 監視 + 提案 | 監視 → 診断 → **チケット → 資産 → 自動検証 → 納品** |
 | **検証** | なし（または手動チェック） | プログラムが判定：再クロール + 次期サンプリングで自動検証。リグレッションは自動再オープン |
@@ -112,11 +112,11 @@ python3 scripts/geo.py ui        # → http://127.0.0.1:8765
 ssh -N -L 8765:127.0.0.1:8765 user@your-server   # その後ローカルで http://127.0.0.1:8765 を開く
 
 # 方法 B：公開バインド + アクセストークン（両方必須。トークン未設定では起動を拒否）
-export GEOLOOK_TOKEN=$(openssl rand -hex 16)
-export GEOLOOK_HOST=0.0.0.0
+export XGEO_TOKEN=$(openssl rand -hex 16)
+export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
 # 初回アクセス時にトークンを入力（または http://server:8765/?token=トークン を開く）。
-# 以降は HttpOnly cookie で認証。API 呼び出しは X-Geolook-Token ヘッダー。
+# 以降は HttpOnly cookie で認証。API 呼び出しは X-Xgeo-Token ヘッダー。
 ```
 
 公開デプロイでは HTTPS リバースプロキシ（nginx/caddy）を前段に——平文 HTTP のトークンは傍受されえます。`.env` と `work/` には秘密情報とプロジェクトデータが含まれます——ファイル権限に注意。
@@ -186,7 +186,7 @@ python3 scripts/geo.py sample-import --slug <project> --file <sheet>
 
 **Q：AI の回答は毎回違うのに、サンプリング結果の安定性はどう担保するのか？**
 
-単一の AI 回答は本質的に確率的です。そのため GeoLook は**単一の回答を指標として読むことはありません**。安定性は 4 層の仕組みで担保します：
+単一の AI 回答は本質的に確率的です。そのため XGEO は**単一の回答を指標として読むことはありません**。安定性は 4 層の仕組みで担保します：
 
 1. **集計ベース**——言及率などの指標は「数十問 × 複数エンジン」の比率であり、質問単位のブレは平均化されます。
 2. **変数の固定**——各エンジンのサンプリングモデルは固定（設定で確認・変更可能）、質問バンクも固定で、同じセットを期をまたいで再利用。変わるのは時間だけです。

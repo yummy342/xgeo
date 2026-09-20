@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GeoLook 看板常驻服务（macOS LaunchAgent）
+# XGEO 看板常驻服务（macOS LaunchAgent）
 #
 #   ./service.sh install     注册并启动：登录自启、崩溃自动拉起、不随终端/Claude 退出
 #   ./service.sh uninstall   停止并移除
@@ -12,12 +12,21 @@
 
 set -euo pipefail
 
-LABEL="cc.geolook.dashboard"
+LABEL="cc.xgeo.dashboard"
+# 改名前的 label。老实例还在跑的话必须先卸掉——不然它会继续占着 8765，
+# 新服务起不来（或者两个实例互相抢端口）。
+LEGACY_LABEL="cc.geolook.dashboard"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG="$HOME/Library/Logs/geolook-dashboard.log"
+LOG="$HOME/Library/Logs/xgeo-dashboard.log"
 PY="$(command -v python3)"
 UID_N="$(id -u)"
+
+# 卸掉旧 label 注册的服务（改名后的一次性清理，对新装的用户是空操作）
+drop_legacy() {
+  launchctl bootout "gui/$UID_N/$LEGACY_LABEL" 2>/dev/null || true
+  rm -f "$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+}
 
 case "${1:-}" in
   install)
@@ -42,6 +51,7 @@ case "${1:-}" in
 </dict></plist>
 EOF
     # 先清掉可能占着端口的临时实例，让常驻服务接管
+    drop_legacy
     launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
     OLD=$(lsof -ti :8765 2>/dev/null || true)
     [ -n "$OLD" ] && kill $OLD 2>/dev/null && sleep 1
@@ -56,6 +66,7 @@ EOF
     fi ;;
 
   uninstall)
+    drop_legacy
     launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null && echo "✓ 已停止并移除" || echo "服务本就不在运行"
     rm -f "$PLIST" ;;
 

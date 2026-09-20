@@ -239,16 +239,33 @@ def create_project(url: str, name: str, slug: str, market: str, max_pages: int) 
 
 
 # ---------------------------------------------------------------- 访问令牌
-# 看板默认只绑 127.0.0.1；要暴露到公网（GEOLOOK_HOST=0.0.0.0）必须设令牌。
+# 看板默认只绑 127.0.0.1；要暴露到公网（XGEO_HOST=0.0.0.0）必须设令牌。
 # 浏览器首次带 ?token= 访问后种 HttpOnly cookie（存摘要不存原文），之后正常访问；
-# API 调用也可带 X-Geolook-Token 头。
+# API 调用也可带 X-Xgeo-Token 头。
 #
 # 两种令牌：
-#   GEOLOOK_TOKEN          全局管理员，不受项目限制
-#   GEOLOOK_PROJECT_TOKENS 分项目租户，格式 'tok1:proj-a,proj-b;tok2:proj-c'
+#   XGEO_TOKEN          全局管理员，不受项目限制
+#   XGEO_PROJECT_TOKENS 分项目租户，格式 'tok1:proj-a,proj-b;tok2:proj-c'
 # 只设后者时，每个令牌只能碰自己名下的项目——这是多租户下的隔离边界。
 
-AUTH_COOKIE = "glk_auth"
+AUTH_COOKIE = "xgeo_auth"
+LEGACY_COOKIE = "glk_auth"   # 改名前的名字。过渡期一并接受，下个大版本删
+
+
+def _env(name: str) -> str | None:
+    """读环境变量；过渡期同时认旧名（XGEO_X ← GEOLOOK_X）。
+
+    改名不该让已经部署好的实例升级后起不来——.env 里写的是旧名，
+    service.sh 导出的也是旧名。下个大版本去掉这条回退。"""
+    val = os.environ.get(name)
+    if val or not name.startswith("XGEO_"):
+        return val
+    return os.environ.get("GEOLOOK_" + name[len("XGEO_"):])
+
+
+def _header_token(headers) -> str | None:
+    """请求头里的令牌。同样认旧名 X-Geolook-Token，理由见 _env。"""
+    return headers.get("X-Xgeo-Token") or headers.get("X-Geolook-Token")
 
 
 def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
@@ -270,7 +287,7 @@ def _token_digest(token: str) -> str:
 def _cookie_value(cookie_header: str | None) -> str | None:
     for part in (cookie_header or "").split(";"):
         k, _, v = part.strip().partition("=")
-        if k == AUTH_COOKIE and v:
+        if k in (AUTH_COOKIE, LEGACY_COOKIE) and v:
             return v
     return None
 
@@ -340,12 +357,12 @@ def path_slug(path: str) -> str | None:
     return None
 
 
-_LOGIN_HTML = """<!doctype html><meta charset="utf-8"><title>GeoLook</title>
+_LOGIN_HTML = """<!doctype html><meta charset="utf-8"><title>XGEO</title>
 <body style="background:#131622;color:#e8eaf2;font-family:system-ui;display:flex;
 align-items:center;justify-content:center;height:100vh;margin:0">
 <form style="text-align:center" onsubmit="location='/?token='+encodeURIComponent(
 document.getElementById('t').value);return false">
-<div style="font-size:20px;margin-bottom:14px">Geo<span style="color:#9184d9">Look</span></div>
+<div style="font-size:20px;margin-bottom:14px">X<span style="color:#9184d9">GEO</span></div>
 <input id="t" type="password" placeholder="访问令牌 / Access token" autofocus
 style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
 padding:10px 14px;font-size:14px;width:240px">
@@ -381,14 +398,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return False
         if auth_ok(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
-                   header_token=self.headers.get("X-Geolook-Token")):
+                   header_token=_header_token(self.headers)):
             self._scope = scope_of(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
-                                   header_token=self.headers.get("X-Geolook-Token"))
+                                   header_token=_header_token(self.headers))
             return True
         if self.command == "GET":
             self._send(401, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
         else:
-            self._json({"error": "未授权：需要 X-Geolook-Token 头或先在浏览器登录"}, 401)
+            self._json({"error": "未授权：需要 X-Xgeo-Token 头或先在浏览器登录"}, 401)
         return False
 
     def _deny(self, slug: str | None) -> bool:
@@ -945,19 +962,19 @@ def _monitor_loop():
 
 def run(port: int = 8765, open_browser: bool = True,
         host: str | None = None, token: str | None = None):
-    host = host or os.environ.get("GEOLOOK_HOST") or "127.0.0.1"
-    token = token or os.environ.get("GEOLOOK_TOKEN") or None
-    scoped = parse_scoped_tokens(os.environ.get("GEOLOOK_PROJECT_TOKENS"))
+    host = host or _env("XGEO_HOST") or "127.0.0.1"
+    token = token or _env("XGEO_TOKEN") or None
+    scoped = parse_scoped_tokens(_env("XGEO_PROJECT_TOKENS"))
     if host not in ("127.0.0.1", "localhost") and not token and not scoped:
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
-              "先设置访问令牌再启动：export GEOLOOK_TOKEN=$(openssl rand -hex 16)")
+              "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
     Handler.SCOPES = scoped
     J.reap_orphans()  # 回收上次服务留下的 running 僵尸记录，恢复并发保护
     threading.Thread(target=_monitor_loop, daemon=True).start()
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
-    auth_note = ("，访问需令牌（GEOLOOK_TOKEN）" if token
+    auth_note = ("，访问需令牌（XGEO_TOKEN）" if token
                  else f"，访问需项目令牌（{len(scoped)} 个）" if scoped else "")
     G.info(f"看板已启动：{url}（Ctrl+C 退出）{auth_note}")
     if not (UI_DIST / "index.html").is_file():

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GeoLook 采样沙箱：与日常浏览完全隔离的 Chrome 环境，扩展常驻。
+# XGEO 采样沙箱：与日常浏览完全隔离的 Chrome 环境，扩展常驻。
 #
 #   ./sandbox.sh --init      首次：创建沙箱并手动装一次扩展（只做这一次）
 #   ./sandbox.sh             一次性沙箱：从模板复制并清空站点数据，用完即弃
@@ -21,7 +21,16 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE="${GEOLOOK_SANDBOX_DIR:-$HOME/.geolook-sandbox}"
+# 改名迁移：旧环境变量名与旧目录名都还认。沙箱里存的是各平台的登录态，
+# 改了名就把人登出一次，代价比多写三行大。
+TEMPLATE="${XGEO_SANDBOX_DIR:-${GEOLOOK_SANDBOX_DIR:-}}"
+if [ -z "$TEMPLATE" ]; then
+  if [ -d "$HOME/.geolook-sandbox" ] && [ ! -d "$HOME/.xgeo-sandbox" ]; then
+    echo "把沙箱目录 $HOME/.geolook-sandbox 改名为 $HOME/.xgeo-sandbox（登录态一并搬过去）"
+    mv "$HOME/.geolook-sandbox" "$HOME/.xgeo-sandbox"
+  fi
+  TEMPLATE="$HOME/.xgeo-sandbox"
+fi
 MODE=once; URL=""
 
 for arg in "$@"; do
@@ -75,7 +84,7 @@ case "$MODE" in
     if [ -n "$CFT" ]; then
       echo "✓ Chrome for Testing 可用，扩展随启动自动装载（无需 --init）"
       echo "  $CFT"
-    elif grep -rqs "GeoLook" "$TEMPLATE/Default/Preferences" 2>/dev/null; then
+    elif grep -rqs "XGEO" "$TEMPLATE/Default/Preferences" 2>/dev/null; then
       echo "✓ 沙箱模板已含扩展：$TEMPLATE"
     else
       echo "✗ 日常 Chrome 不支持自动装载扩展——跑 ./sandbox.sh --init 手动装一次"; RC=1
@@ -109,7 +118,7 @@ case "$MODE" in
 EOF
     read -r -p "回车继续…" _
     launch "$TEMPLATE" "chrome://extensions"
-    if grep -rqs "GeoLook" "$TEMPLATE/Default/Preferences" 2>/dev/null; then
+    if grep -rqs "XGEO" "$TEMPLATE/Default/Preferences" 2>/dev/null; then
       echo "✓ 扩展已装进模板：$TEMPLATE"
     else
       echo "⚠ 没检测到扩展，可能没装成功——重跑 ./sandbox.sh --init 再试一次"
@@ -132,7 +141,7 @@ if [ "$MODE" = keep ]; then
 fi
 
 # 一次性沙箱
-PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/geolook-sandbox.XXXXXX")"
+PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/xgeo-sandbox.XXXXXX")"
 trap 'rm -rf "$PROFILE"' EXIT
 if [ -z "$CFT" ]; then
   # 日常 Chrome：从模板复制（保留已装扩展），再清掉站点数据，等于全新浏览器

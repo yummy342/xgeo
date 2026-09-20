@@ -1,4 +1,4 @@
-# GeoLook 前端
+# XGEO 前端
 
 看板的 Svelte 实现。取代原来 `scripts/ui.html` 那个 3023 行单文件——那份连同迁移期的桥已经删掉了。
 
