@@ -25,10 +25,21 @@ RE_DEFINITION = re.compile(
     r"|とは|を指す|と呼ばれ|の略"
     r"|\bis an? \w+|\brefers to\b|\bis defined as\b|\bstands for\b)", re.I
 )
+# 数字事实块要求正文出现 ≥3 个「带单位」的数字。
+# 单位表原先只有消费/商业量纲（元/人/家/天），对**软件与技术产品**是偏的——
+# 它们的自然量纲是体积、版本、并发、延迟。实测一个软件落地页写了
+# 「110 MB」「0.7.10」「4 个」「231 个」，只命中 2 个（都是「个」），
+# 因为 MB 不在表里，于是被判「缺数字事实块」。
+# 补上技术量纲与常见中文单位。
 RE_NUMBER = re.compile(
     r"\d[\d,\.]*\s*(%|％|万|亿|千|倍|元|美元|人|家|个|天|小时|分钟|秒|次|条|款|年|月|"
     r"件|社|名|回|億|円|時間|"
-    r"percent|x\b|hours?|days?|users?|customers?)"
+    r"台|套|项|页|篇|字|词|篇|步|轮|层|档|核|节点|路|并发|请求|调用|"
+    r"percent|x\b|hours?|days?|users?|customers?|"
+    # 技术量纲：体积 / 频率 / 延迟 / 社区指标
+    # 版本号（0.7.10）刻意不算 —— 它后面没有单位，硬塞进单位组会误匹配。
+    r"[KMGT]i?B\b|bytes?\b|[kKmM]\b|GHz?|MHz?|fps|rpm|ms\b|µs|ns\b|"
+    r"stars?|commits?|downloads?|installs?)"
 )
 RE_COMPARE = re.compile(r"(对比|相比|区别|差异|优于|不如|竞品|替代|选型|哪个好|比較|違い|\bvs\.?\b|\bversus\b|\balternatives?\b)", re.I)
 RE_HOWTO = re.compile(r"(第[一二三四五六七八九十\d]+步|步骤\s*[一二三四五六七八九十\d]|操作流程|手順|ステップ\s*\d|使い方|\bstep\s*\d|\bhow to\b)", re.I)

@@ -114,6 +114,19 @@ python3 scripts/geo.py init --url <产品官网> --name <品牌名> --market bot
   从 AI 答案里反推真实竞争集，比主观拍脑袋准得多。双市场时国内外竞品通常不是同一批，都要列全
   （排名指标是相对这个清单算的，漏掉真实对手会**高估**名次）
 
+  **结构是对象数组，不是字符串数组**——填错会在采样时报一句语焉不详的中断（已在
+  `sample.py:entities_of` 加了校验，但仍要按这个格式写）：
+
+  ```json
+  "competitors": [
+    {"name": "Dify", "aliases": ["dify", "滴答"]},
+    {"name": "扣子 Coze", "aliases": ["Coze", "coze"]}
+  ]
+  ```
+
+  `aliases` 可以是空数组，但 `name` 必需。别名填常见错写、简称、英文名、旧名——
+  它是品牌消歧的依据，也是「AI 提到你但写法不同」能被正确统计的前提。
+
 同时写 `work/<slug>/content/facts.md` 品牌事实卡，模板见 `content-patterns.md` 第 1 节。
 **每条事实标证据等级 A–E，没来源的标"待确认"，不许编。**
 这份文件是后面所有资产生成的输入——`llms.txt`、JSON-LD、定义块都从它来。

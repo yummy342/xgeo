@@ -327,6 +327,20 @@ def cmd_generate(a):
                  with_draft=a.draft, draft_limit=a.draft_limit)
 
 
+def cmd_variants(a):
+    """同一篇出几个角度，供人挑一个。"""
+    import generate
+
+    generate.variants(a.slug, qid=a.qid, n=a.n, provider=a.provider)
+
+
+def cmd_pick(a):
+    """人工选定版本 —— 选定之后才进发布流程。"""
+    import generate
+
+    generate.pick(a.slug, a.qid, a.variant)
+
+
 def cmd_lint(a):
     import generate
 
@@ -579,6 +593,19 @@ def main():
     s.add_argument("--draft-limit", type=int, default=3, dest="draft_limit")
     s.set_defaults(func=cmd_generate)
 
+    s = sub.add_parser("variants", help="同一篇出多个叙事角度，供人挑一个（发布前的人工环节）")
+    s.add_argument("--slug", required=True)
+    s.add_argument("--qid", help="目标问题 ID；省略则取第一个问题")
+    s.add_argument("--n", type=int, default=3, help="出几个角度（最多 3：权威型/实用型/对比型）")
+    s.add_argument("--provider", help="指定用哪个引擎起草；省略则自动挑")
+    s.set_defaults(func=cmd_variants)
+
+    s = sub.add_parser("pick", help="人工选定哪个版本 —— 选定后才进发布流程")
+    s.add_argument("--slug", required=True)
+    s.add_argument("--qid", required=True)
+    s.add_argument("--variant", required=True, help="版本 ID：a=权威型 / b=实用型 / c=对比型")
+    s.set_defaults(func=cmd_pick)
+
     s = sub.add_parser("lint", help="检查 AI 初稿的编造风险（发布/交付前必跑）")
     s.add_argument("--slug", required=True)
     s.set_defaults(func=cmd_lint)
@@ -596,7 +623,8 @@ def main():
     s = sub.add_parser("publish", help="把成稿/资产发布到已配置的渠道（永远手动触发）")
     s.add_argument("--slug", required=True)
     s.add_argument("--path", required=True, help="content/ 或 assets/ 下的相对路径")
-    s.add_argument("--platform", required=True, choices=["github", "wordpress", "wechat_draft", "webhook"])
+    import publish as _pub  # 渠道清单以 publish.PUBLISHERS 为单一来源，不在 CLI 再抄一份
+    s.add_argument("--platform", required=True, choices=sorted(_pub.PUBLISHERS))
     s.add_argument("--title")
     s.set_defaults(func=cmd_publish)
 

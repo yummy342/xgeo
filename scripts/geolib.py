@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl          # POSIX：上游原本只有这条
+except ImportError:       # Windows：改用 msvcrt 做等价的文件锁
+    fcntl = None
+    import msvcrt
 import json
 import os
 import re
@@ -66,6 +70,17 @@ def slugify(text: str) -> str:
     return text[:48] or "project"
 
 
+# 中文 Windows 的控制台默认 GBK，打印中文会变乱码、
+# 打印 emoji 会直接 UnicodeEncodeError。显式切到 UTF-8，
+# 省得用户每次都要设 PYTHONIOENCODING=utf-8。
+# 失败不致命（有些环境不支持 reconfigure），静默跳过。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 def die(msg: str, code: int = 1):
     print(f"[geo] 错误：{msg}", file=sys.stderr)
     sys.exit(code)
@@ -88,15 +103,31 @@ def project_dir(slug: str) -> Path:
 
 @contextmanager
 def project_lock(slug: str):
-    """项目级跨进程锁：load-modify-write 操作必须走它。"""
+    """项目级跨进程锁：load-modify-write 操作必须走它。
+
+    POSIX 用 fcntl.flock；Windows 没有 fcntl，改用 msvcrt.locking 锁同一文件的首字节。
+    语义等价（都是跨进程排它锁），只是 Windows 的锁记在字节范围上而不是整个 fd 上。
+    """
     d = project_dir(slug)
     d.mkdir(parents=True, exist_ok=True)
     with (d / ".lock").open("w") as fd:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                fd.write("x")
+                fd.flush()
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                try:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
 
 
 def load_config(slug: str) -> dict:

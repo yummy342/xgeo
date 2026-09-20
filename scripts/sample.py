@@ -129,6 +129,47 @@ PROVIDERS = {
         "search": True,
         "note": "原生联网并返回 citations，海外采样里证据质量最好的一个",
     },
+    # ---------------- api2d 中转（国内直连，不需要 VPN）----------------
+    # 全部走 OpenAI 兼容端点。三个分开注册而不是共用一个，是为了让同一轮里
+    # 三家厂商的答案各自留档，而不是被合并成一个「api2d」平台。
+    # 注意 api2d 的 claude 也是打 /v1/chat/completions，但回的是 Anthropic 原生
+    # 结构（content 块列表，没有 choices）——解析兜底见 ask()。
+    "api2d-gpt": {
+        "name": "GPT(api2d)", "market": "global",
+        "base": "https://oa.api2d.net/v1",
+        "model": "gpt-5.4-mini",
+        "model_env": "API2D_GPT_MODEL",
+        "key_env": "API2D_API_KEY",
+        "search": False,
+        "note": "中转直连。不联网，测的是模型参数化知识里有没有这个品牌",
+    },
+    "api2d-gemini": {
+        "name": "Gemini(api2d)", "market": "global",
+        "base": "https://oa.api2d.net/v1",
+        "model": "gemini-2.5-flash-lite",
+        "model_env": "API2D_GEMINI_MODEL",
+        "key_env": "API2D_API_KEY",
+        "search": False,
+        "note": "同上。选 flash-lite 是为了口径一致——测认知不测推理质量",
+    },
+    "api2d-claude": {
+        "name": "Claude(api2d)", "market": "global",
+        "base": "https://oa.api2d.net/v1",
+        "model": "claude-sonnet-4-6",
+        "model_env": "API2D_CLAUDE_MODEL",
+        "key_env": "API2D_API_KEY",
+        "search": False,
+        "note": "同上。响应是 Anthropic 原生格式，靠 ask() 的兜底分支解析",
+    },
+    "openrouter-sonar": {
+        "name": "Perplexity(OpenRouter)", "market": "global",
+        "base": "https://openrouter.ai/api/v1",
+        "model": "perplexity/sonar",
+        "model_env": "OPENROUTER_SONAR_MODEL",
+        "key_env": "OPENROUTER_API_KEY",
+        "search": True,
+        "note": "OpenRouter 转发的 sonar，国内直连可达不用挂代理。引用落点见 _refs_from()",
+    },
 }
 
 # 没有公开联网问答 API 的平台，只能浏览器/人工采
@@ -285,6 +326,44 @@ def ask_anthropic(p: dict, key: str, question: str, timeout: int) -> dict:
             return {"ok": False, "answer": "", "error": f"{type(e).__name__}: {e}"}
 
 
+def _refs_from(data: dict) -> list[dict]:
+    """从 OpenAI 兼容响应里抽联网引用，去重后按出现顺序返回。
+
+    同一个 sonar，经不同链路转发时引用落点不一样：官方直连给顶层 citations
+    （新版挪到 message.citations），OpenRouter 转发可能给 message.citations
+    或 OpenAI 风格的 annotations。只认其中一个位置会**静默丢引用**——
+    看着跑成功，引用数是 0，而引用数正是海外 GEO 的主指标。
+    """
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    refs = []
+    # 千问 search_info / Perplexity search_results
+    for item in (data.get("search_info") or {}).get("search_results", []) or []:
+        if isinstance(item, dict) and item.get("url"):
+            refs.append({"url": item["url"], "title": item.get("title", "")})
+    for item in data.get("search_results") or []:
+        if isinstance(item, dict) and item.get("url"):
+            refs.append({"url": item["url"], "title": item.get("title", "")})
+    # citations：顶层与 message 级都收，元素可能是纯 URL 也可能是对象
+    for src in (data.get("citations"), msg.get("citations")):
+        if not isinstance(src, list):
+            continue
+        for u in src:
+            if isinstance(u, str):
+                refs.append({"url": u, "title": ""})
+            elif isinstance(u, dict) and u.get("url"):
+                refs.append({"url": u["url"], "title": u.get("title", "")})
+    # OpenAI 风格注解：url_citation 包一层，也有实现直接平铺
+    for ann in msg.get("annotations") or []:
+        if not isinstance(ann, dict):
+            continue
+        c = ann.get("url_citation")
+        c = c if isinstance(c, dict) else ann
+        if c.get("url"):
+            refs.append({"url": c["url"], "title": c.get("title", "")})
+    seen = set()
+    return [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
+
+
 def ask(platform: str, question: str, timeout: int = 120) -> dict:
     p = PROVIDERS[platform]
     key = os.environ.get(p["key_env"])
@@ -316,22 +395,20 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
                     continue
                 return err
             data = r.json()
-            msg = data["choices"][0]["message"]
-            answer = msg.get("content") or ""
-            # 各家把联网来源放在不同字段：千问 search_info、Perplexity citations/search_results
-            refs = []
-            for item in (data.get("search_info") or {}).get("search_results", []) or []:
-                if item.get("url"):
-                    refs.append({"url": item["url"], "title": item.get("title", "")})
-            for item in data.get("search_results") or []:
-                if isinstance(item, dict) and item.get("url"):
-                    refs.append({"url": item["url"], "title": item.get("title", "")})
-            for u in data.get("citations") or []:
-                if isinstance(u, str):
-                    refs.append({"url": u, "title": ""})
-            seen = set()
-            refs = [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
-            return {"ok": True, "answer": answer, "citations": refs, "raw_model": data.get("model", _p_model(p))}
+            if data.get("choices"):
+                answer = data["choices"][0]["message"].get("content") or ""
+            else:
+                # 兜底：api2d 的 claude 端点打的是 /v1/chat/completions，回的却是
+                # Anthropic 原生结构（content 是块列表，没有 choices）。
+                # 硬取 choices[0] 会炸在 TypeError 上，且被 per-platform except 吞掉，
+                # 只报「某平台采样中断」——这条在 voyage-geo 上踩过一次，别再踩。
+                answer = "".join(
+                    b.get("text", "") for b in data.get("content", []) if isinstance(b, dict)
+                )
+            refs = _refs_from(data)
+            return {"ok": True, "answer": answer, "citations": refs,
+                    "raw_model": data.get("model", _p_model(p)),
+                    "searched": bool(refs) or p.get("search", False)}
         except requests.exceptions.Timeout as e:
             if attempt < len(delays):
                 time.sleep(delays[attempt])
@@ -347,11 +424,30 @@ URL_RE = re.compile(r"https?://[^\s\)\]\"'，。；]+")
 
 
 def entities_of(cfg: dict) -> tuple[list[str], dict[str, list[str]]]:
-    """返回 (全部候选实体名, {规范名: 别名列表})"""
+    """返回 (全部候选实体名, {规范名: 别名列表})
+
+    竞品结构必须是 [{"name": str, "aliases": [str]}]。填成字符串数组
+    （["Dify", "Coze"]）会在下面取 c["name"] 时抛
+    `TypeError: string indices must be integers`，而这个错误会被采样的
+    per-platform except 吞掉，只报一句「某平台采样中断」，完全指不到病因。
+    所以这里提前拦住，把字段路径和正确结构一起说清楚。
+    """
     alias = {}
-    b = cfg["brand"]
-    alias[b["name"]] = [b["name"]] + list(b.get("aliases", []) or [])
-    for c in cfg.get("competitors", []) or []:
+    b = cfg.get("brand") or {}
+    b_name = b.get("name")
+    if not b_name or not isinstance(b_name, str):
+        G.die("geo.json 的 brand.name 缺失或不是字符串（品牌消歧的地基，必须有）")
+    alias[b_name] = [b_name] + list(b.get("aliases", []) or [])
+
+    for i, c in enumerate(cfg.get("competitors", []) or []):
+        if isinstance(c, str):
+            G.die(
+                f"geo.json 的 competitors[{i}] 是字符串 {c!r}，应为对象。\n"
+                f'        正确结构：[{{"name": "Dify", "aliases": ["dify", "滴答"]}}]\n'
+                f"        别名可留空数组，但 name 必需。别名用于品牌消歧，建议填常见错写与简称。"
+            )
+        if not isinstance(c, dict) or not c.get("name"):
+            G.die(f"geo.json 的 competitors[{i}] 缺少 name 字段：{c!r}")
         alias[c["name"]] = [c["name"]] + list(c.get("aliases", []) or [])
     return list(alias.keys()), alias
 

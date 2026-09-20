@@ -244,6 +244,41 @@ OUTLINE_TMPL = {
 GROUP2TYPE = {"推荐": "榜单型", "比较": "对比型", "替代": "对比型", "价格": "定义型",
               "风险": "定义型", "品牌验证": "定义型", "场景": "教程型"}
 
+# 英文骨架按英文用户的问法组织，不做中文版直译——机翻进不了候选池，标题和小节同理
+# （见 references/global-platforms.md 第 2 节：海外 AI 引用的可识别语言里英文占 82.9%–95.1%）。
+OUTLINE_TMPL_EN = {
+    "定义型": ["What {topic} is (one-sentence definition, then the detail)",
+               "The parts of {topic} that matter",
+               "Key numbers on {topic} (each row carries its source)",
+               "How {topic} differs from {alt}",
+               "Who {topic} fits, and who it does not",
+               "How to start with {topic} (numbered steps)",
+               "Common questions",
+               "Sources"],
+    "对比型": ["The short answer: which one fits which case",
+               "What was compared, and how it was measured",
+               "Side by side (6-10 dimensions, one scale for all)",
+               "Where each one falls short (our own included)",
+               "Choosing by scenario",
+               "Price and total cost of ownership",
+               "Common questions",
+               "Sources and verification dates"],
+    "榜单型": ["How this list was built (and what we disclose)",
+               "The list at a glance",
+               "Each option in turn (positioning, strengths, limits, who it fits)",
+               "Choosing for your own situation",
+               "Common questions",
+               "Sources"],
+    "教程型": ["What this solves",
+               "What you need before you start",
+               "Step by step (numbered, with screenshot slots)",
+               "Common errors and how to check them",
+               "Going further",
+               "Background concepts",
+               "Common questions",
+               "Sources"],
+}
+
 
 def gen_outlines(slug: str) -> list[dict]:
     cfg = G.load_config(slug)
@@ -255,20 +290,31 @@ def gen_outlines(slug: str) -> list[dict]:
     for q in cfg.get("questions", []):
         typ = GROUP2TYPE.get(q.get("group", ""), "定义型")
         mk = q.get("market", cfg.get("market", "cn"))
+        en = mk == "global"
         topic = q["text"].rstrip("？?")
-        alt = comps[0] if comps else ("竞品" if mk == "cn" else "alternatives")
-        secs = [s.format(topic=b["name"], alt=alt) for s in OUTLINE_TMPL[typ]]
+        alt = comps[0] if comps else ("alternatives" if en else "竞品")
+        secs = [s.format(topic=b["name"], alt=alt)
+                for s in (OUTLINE_TMPL_EN if en else OUTLINE_TMPL)[typ]]
+        # 英文要求里刻意不给 list_density / must_have_blocks：
+        # 那两条会把「列表和 FAQ 块」变成硬指标，跟 RULES_GEO 的「不要为被引用而加结构块」
+        # 直接冲突。规则打架时模型选更具体的那条（见「写作提示词改造记录」第三节）。
+        req = ({
+            "min_words": 1400 if typ in ("对比型", "榜单型") else 1200,
+            "min_h2": 8, "list_density": None, "must_have_blocks": [],
+            "evidence": "Every number carries a source and a verification date; "
+                        "anything unverifiable is marked “unconfirmed”",
+        } if en else {
+            "min_words": 1200 if typ in ("对比型", "榜单型") else 1000,
+            "min_h2": 8, "list_density": ">=0.35",
+            "must_have_blocks": ["定义", "数字事实", "对比", "操作步骤", "FAQ"],
+            "evidence": "每个数字带来源和核验日期；无法核实的标『待确认』",
+        })
         out.append({
             "question_id": q.get("id"), "market": mk, "type": typ,
             "target_question": q["text"],
             "title_candidates": _titles(q["text"], b["name"], mk),
             "sections": secs,
-            "requirements": {
-                "min_words": 1200 if typ in ("对比型", "榜单型") else 1000,
-                "min_h2": 8, "list_density": ">=0.35",
-                "must_have_blocks": ["定义", "数字事实", "对比", "操作步骤", "FAQ"],
-                "evidence": "每个数字带来源和核验日期；无法核实的标『待确认』",
-            },
+            "requirements": req,
             "facts_to_use": [n["fact"] + "：" + n["value"] for n in f.get("numbers", [])[:5]],
         })
     return out
@@ -286,8 +332,188 @@ def _titles(question: str, brand: str, market: str) -> list[str]:
 
 # ---------------------------------------------------------------- LLM 初稿
 
-def draft(slug: str, outline: dict, provider: str | None = None) -> str:
-    """用已配置的 LLM API 按大纲出初稿。没有可用 Key 就返回空。"""
+# ---------------------------------------------------------------- 写作规则块
+#
+# 拆成独立常量而不是塞进一个大 prompt 字符串：调一条规则不用动其他部分，
+# 也便于对照产物逐条归因「是这条规则起作用了吗」。
+#
+# 证据基础（2026-09-16 调研）：
+#   · SIGIR 2026（252,000 次试验，单因素隔离）—— 纯排版对引用**无因果效果**，
+#     堆统计数据在 24 个设置里 19 个让引用排名变差。所以下面排版规则的目的是
+#     **人读得下去**，不是「为了被引用」。不要以 GEO 为名义往文章里塞结构块。
+#   · 开篇模式与排版参数来自公众号/知乎运营实践，属行业经验不是实证。
+#     模式名可用，附带的比例数字（「分享率+37%」一类）不要当依据。
+#   · 去 AI 味词表与句法节奏来自中文写作实践项目（cn-humanizer / human-writing）。
+
+RULES_OPENING = """开篇（这几条最影响人读不读下去）：
+- 只选一种模式，别混：断言+场景+反转 / 反常识数据 / 信息缺口 / 身份反差 / 场景代入
+- 第一句 ≤20 字，是一个判断，不是背景铺垫
+- 第二句出现具体的人 + 时间 + 一个动作
+- **禁用开篇词**：随着…的发展 / 在当今…的时代 / 在…的背景下 / 众所周知 / 毋庸置疑
+- 开篇总长 ≤150 字，且**不出现品牌名**（第一段就报品牌名，读者会立刻判定是软文）"""
+
+RULES_FORMAT = """排版（目的是人读得下去，不是为了 SEO/GEO）：
+- **每个小标题都必须是完整的句子，不能是名词短语。**
+  写「为什么小店主不爱用预约工具」，不写「预约工具的局限性」
+  写「三个人分工，比一个人快在哪」，不写「多 Agent 协作的效率」
+  （小节数量按上面的骨架来，不要增删；这一条只管**每个标题怎么写**）
+- **禁止用加粗代替标题**。加粗只允许两种用途：定义句、必须被整句引用的结论。全文 ≤5 处
+- 列表只在两种情况用：并列项 ≥3 且每项 ≤15 字；操作步骤。**其余一律写成自然段**
+  段落是默认形态，列表是例外——不是反过来
+- 每段 2–4 句。连续三段长度相近时，必须拆一段或合一段
+- 每段首句不许用连接词开头
+- 中文全角标点；数字与英文两侧不留空格
+- 不用 emoji 做列表符号或小标题
+- 一句话里「的」超过两个，重写
+
+判据：说明书的读者看完是「哦，原来如此」，好文章的读者看完是「后来怎么样了」。
+写的是后者。"""
+
+RULES_LANG = """语言（去 AI 味）：
+**只给禁止词没用，要按右边的写法替换：**
+- 赋能→帮 / 深耕→做了很久 / 聚焦→主要做 / 打造→做 / 助力→帮 / 引领→做得比别人早
+- 底层逻辑→根本原因 / 颗粒度→细节程度 / 闭环→跑通一整轮 / 抓手→可以下手的地方
+- 全方位/多维度/高质量/沉浸式/一站式/降本增效/数智化 → 直接删，换成具体的事
+
+**连接词整类删掉，不要替换**：此外 / 与此同时 / 值得一提的是 / 值得注意的是 /
+不可否认 / 综上所述 / 由此可见 / 不难发现 / 总的来说
+
+**收尾禁语**：让我们拭目以待 / 未来可期 / 前景广阔 / 大有可为 / 希望对您有帮助
+
+**结构禁令**：
+- 禁止「首先…其次…最后…」三点式排比（除非三项确实并列且信息量不同）
+- **禁止「不是 X，而是 Y」句式**——这是最隐蔽的中文 AI 标记
+- 禁止每段结尾用一句短判断升华
+- 禁止「专家指出」「业内人士认为」「有研究表明」——必须写出具体是谁、在哪说的
+- 禁止意义拔高：里程碑 / 新篇章 / 划时代 / 注入新活力
+
+**句法节奏**：
+- 主干早点来：先出做事的人，再补原因、时间、条件。
+  反例：「在经历了长达数年且始终缺乏稳定收入来源的反复尝试以后，最终促使他改变方向的，
+        是一次来自老同事的邀请。」
+  正例：「他折腾了几年，一直没挣到稳定的钱。后来老同事找过来问他要不要一起做项目，他才换了方向。」
+- 前一句把东西交给后一句：后句接前句刚出现的人/物/动作
+- 长短句跟着信息密度走。连续五句长度差异 <20% 就要打断节拍
+- 动作或原话后面不要加情绪解释，读者能看见就别解释"""
+
+RULES_SPECIFIC = """具体性（**这块是这类文章最容易失败的地方**）：
+- **换名测试**：每写完一段，把品牌名换成同行业任意另一个品牌名。
+  如果句子仍然成立，这段就是通用套话——删掉，或补进至少一个只有这个产品才成立的事实
+- 每段问自己：这一段用的是资料表里的哪一条？只能答「这是进一步解释」或
+  「这是可能的影响」的段落，说明它没有新东西，删掉
+- 初稿写完删掉 1/3。如果事实、判断、阅读体验几乎没变，就保留删短版
+- 文章长度必须与材料量相称。材料少就写短，**不要为凑字数注水**"""
+
+RULES_GEO = """被 AI 引用友好的写法（有证据支持的部分，别过度发挥）：
+- **段落自包含**：每段能脱离上下文独立回答一个小问题。段首给结论，后面补论据
+- 出现关键概念时给一句定义句（「X 是指……」），**定义句独立成段**，方便被整句摘走
+- 写明发布/更新日期。**没有日期比陈旧日期更糟**（有观测支持的结论）
+- 每个数字必须带单位和来源；无来源的数字不许出现（见下条硬性要求）
+- 把最强的事实放在文章前 30%
+
+**不要为了被引用而加列表、表格或 FAQ 块。** 那些形式没有因果证据支撑，
+加了只会让文章更像文档。用它们的唯一理由是**可读性**。"""
+
+
+# ---------------------------------------------------------------- 英文写作规则块
+#
+# 与中文版一一对应。证据基础：
+#   · Wikipedia:Signs of AI writing（WikiProject AI Cleanup，数千份 AI 投稿归纳）
+#     —— 词表、结构禁令、格式特征（em dash/Title Case/分词结尾从句）出自这里
+#   · 海外引用数据（geo-citation-lab 01 号实验）—— 长度、数字、定义块的相关系数
+#   · SIGIR 2026 —— 与中文版同一条：纯排版对引用无因果效果
+#
+# **中英文的 AI 味标记是同构的**，不是各自的写作习惯：
+#   「不是 X，而是 Y」↔ "It's not X, it's Y"    「首先其次最后」↔ rule of threes
+#   「综上所述」↔ In conclusion               「值得注意的是」↔ It's worth noting
+# 两个语言版要一起改，改一个不改另一个就会出现规则漂移。
+
+RULES_OPENING_EN = """Opening (this decides whether anyone reads past line one):
+- Pick ONE mode, do not mix: assertion + scene / counter-intuitive data / information gap / insider contrast / scene immersion
+- First sentence <=20 words, and it must be a claim, not setup
+- Second sentence: a specific person or company + a date + an action
+- **Banned openers**: "In today's fast-paced world" / "In the ever-evolving landscape of" / "As technology continues to advance" / "It's no secret that" / "When it comes to"
+- Whole opening <=120 words, and **the brand name must not appear** — naming yourself in paragraph one reads as an ad"""
+
+RULES_FORMAT_EN = """Formatting (the goal is that a human keeps reading, not SEO/GEO):
+- **Every H2 must be a complete sentence, not a noun phrase.**
+  Write "Why small shops stopped using booking tools", not "Limitations of booking tools"
+  Write "Three people beat one here, and the numbers show it", not "Multi-agent efficiency"
+  (Section count follows the outline above; this rule only governs how each heading is written)
+- **Headings in sentence case, not Title Case.** Title Case headings are a documented LLM tell; publications and Wikipedia use sentence case
+- **Never use bold as a heading.** Bold is allowed for exactly two things: a definition sentence, a conclusion that must be quoted whole. <=5 per article
+- **Avoid em dashes.** Overuse is the most-cited formatting tell. Use a comma, a colon, or two sentences
+- Lists only in two cases: >=3 parallel items each <=12 words, or a procedure. **Everything else is prose**
+- Paragraphs 2-4 sentences. Three similar-length paragraphs in a row means split or merge one
+- No paragraph opens with a transition word
+- No emoji as bullets or headings"""
+
+RULES_LANG_EN = """Language (kill the AI accent):
+**A banned-word list alone does nothing. Give the replacement on the right:**
+- delve into -> look at / dig into          leverage -> use
+- seamless -> works without setup           robust -> holds up under load
+- cutting-edge / state-of-the-art -> newest (or name the actual spec)
+- game-changer -> say what changed, by how much
+- landscape / realm / space -> name the actual market
+- foster / facilitate / enable -> help / let
+- showcase -> show                          underscore / highlight -> show
+- pivotal / crucial -> say why, with a number
+- multifaceted / nuanced / intricate -> describe the actual complexity
+- embark on -> start                        spearhead -> lead
+- testament to -> proof that (or cut it)
+- tapestry / symphony / labyrinth -> cut, always
+- empower / unlock / harness / supercharge -> cut
+
+**Delete transition words entirely, do not replace them**: Furthermore / Moreover / Additionally / Consequently / Notably / Importantly
+
+**Banned closers**: In conclusion / In summary / Overall / Ultimately / At the end of the day
+
+**Structural bans**:
+- **"It's not X, it's Y"** — the most common English LLM tell. Same for "not just X, but Y"
+- Rule of threes — three stacked adjectives or benefits. Two is fine
+- Present-participle tails that inflate meaning: "...reflecting the continued relevance of X", "...highlighting the importance of Y", "...underscoring Z"
+- Hedges: "It's important to note that" / "It's worth noting that" / "It's crucial to remember"
+- Fake ranges: "from startups to enterprises" when you mean "everyone"
+- Every paragraph ending on a short punchy judgement
+- "Experts say" / "Studies show" / "Industry observers believe" — name who, where, when
+
+**Syntax rhythm**:
+- Subject and verb early. Put the actor first, then the reason, time, condition
+- Each sentence hands something to the next: the following sentence picks up the noun the previous one just introduced
+- Vary sentence length with information density. Five sentences within 20% of each other means break the rhythm
+- Do not explain emotion after an action or a quote. If the reader can see it, leave it"""
+
+RULES_SPECIFIC_EN = """Specificity (**this is where this kind of article usually fails**):
+- **Name-swap test**: after each paragraph, swap the brand name for any other brand in the same category. If the sentence still holds, the paragraph is generic filler — cut it, or add a fact that is only true of this product
+- Ask of every paragraph: which line from the fact sheet does this use? If the only answer is "this explains further" or "this is the likely impact", the paragraph adds nothing — cut it
+- Cut one third after the first draft. If facts, judgements and readability barely change, keep the shorter version
+- Length must match the amount of material. Little material means a short article. **Never pad to hit a word count**"""
+
+RULES_GEO_EN = """AI-citation-friendly writing (only what has evidence behind it, do not over-extend):
+- **Self-contained paragraphs**: each paragraph answers one small question on its own. Conclusion first, evidence after
+- When a key concept appears, give a one-sentence definition ("X is ...") and **put the definition in its own paragraph** so it can be quoted whole
+- State the publication or update date. **No date is worse than an old date** (observed, not theorised)
+- Every number carries a unit and a source; no unsourced numbers (see the hard requirements below)
+- Put the strongest facts in the first 30% of the article
+- Target length **1000+ words**: the overseas citation data shows top-quartile cited pages average 1,943 words against 170 for the bottom quartile. Correlation, not causation — length only helps when there is material to fill it
+
+**Do not add lists, tables or FAQ blocks for citation's sake.** There is no causal evidence those forms earn citations, and they only make the article read like documentation. Use them for readability, nothing else."""
+
+# 按市场取规则块。draft() 用它，不要在各处散写 if market == "global"。
+RULES_BY_LANG = {
+    "zh": (RULES_OPENING, RULES_FORMAT, RULES_LANG, RULES_SPECIFIC, RULES_GEO),
+    "en": (RULES_OPENING_EN, RULES_FORMAT_EN, RULES_LANG_EN, RULES_SPECIFIC_EN, RULES_GEO_EN),
+}
+
+
+def draft(slug: str, outline: dict, provider: str | None = None,
+          angle_hint: str = "") -> str:
+    """用已配置的 LLM API 按大纲出初稿。没有可用 Key 就返回空。
+
+    angle_hint 用于多版本起草：同一篇大纲换不同的叙事切入。
+    **变的只是「从哪讲起」** —— 事实纪律、竞品纪律、硬性要求、禁止编造
+    全部原样保留。多版本不是「有的版本可以松一点」。
+    """
     import sample as S
 
     plat = S.pick_llm(provider)
@@ -304,42 +530,301 @@ def draft(slug: str, outline: dict, provider: str | None = None) -> str:
     comps = [c["name"] for c in cfg.get("competitors", [])
              if (c.get("market") in (mk, "both", None) or mk == "both")
              and c.get("confirmed") is not False]
-    comp_rule = (
-        "只能提到下面这些真实竞品，**严禁发明任何其它产品名**（不要写「工具A」「某某Pro」这类占位）：\n"
-        + "\n".join(f"- {c}" for c in comps)
-        if comps else
-        "**本项目还没有确认的竞品清单，因此绝对不要在文中点名任何竞品**，"
-        "对比部分改成与「通用大模型」「人工手写」等品类做对比。"
-    )
-    prompt = (
-        f"""你是 GEO（生成式引擎优化）内容工程师。按下面的骨架写一篇可直接发布的{'中文' if zh else '英文'}文章。
+    R_OPEN, R_FMT, R_LANG, R_SPEC, R_GEO = RULES_BY_LANG["zh" if zh else "en"]
 
-当前年份是 {G.today()[:4]} 年，涉及年份时一律用 {G.today()[:4]}，不要写更早的年份。
+    if comps:
+        listed = "\n".join(f"- {c}" for c in comps)
+        comp_rule = (
+            "只能提到下面这些真实竞品，**严禁发明任何其它产品名**（不要写「工具A」「某某Pro」这类占位）：\n"
+            + listed if zh else
+            "You may name only these real competitors. **Never invent any other product name**\n"
+            "(no “Tool A”, no “Acme Pro” placeholders):\n" + listed
+        )
+    elif zh:
+        comp_rule = (
+            "**本项目还没有确认的竞品清单，因此绝对不要在文中点名任何竞品**，"
+            "对比部分改成与「通用大模型」「人工手写」等品类做对比。"
+        )
+    else:
+        comp_rule = (
+            "**This project has no confirmed competitor list, so do not name any competitor at all.** "
+            "Rewrite the comparison section as a category comparison against general-purpose LLMs "
+            "or hand-writing."
+        )
 
+    if zh:
+        prompt = f"""你是中文长文写作者。按下面的骨架写一篇读者愿意读完、且事实经得起核对的
+中文文章。
+
+## 你的写作位置（先选一个，写完在文末注明）
+亲历者 / 做过调查 / 熟悉这个行业 / 查完资料形成判断 —— 四种都可以。
+**但不能把「查资料」写成「亲历」。** 没发生过的事不要用第一人称叙述。
+
+## 基本盘
+当前年份是 {G.today()[:4]} 年，涉及年份时一律用 {G.today()[:4]}。
 目标问题（读者会这样问 AI）：{outline['target_question']}
 文章类型：{outline['type']}
 品牌：{b['name']}（{b.get('industry','')}）
 
-必须使用的已核实事实（不得改动数值，不得编造新数据）：
+## 必须使用的已核实事实（不得改动数值，不得编造新数据）
 {facts}
 
-竞品纪律：
+## 竞品纪律
 {comp_rule}
 
-章节骨架：
+## 章节骨架
 {secs}
 
-硬性要求：
+## {R_OPEN}
+
+## {R_FMT}
+
+## {R_LANG}
+
+## {R_SPEC}
+
+## {R_GEO}
+
+## 硬性要求（按此优先级，冲突时上面的赢）
+**真实性 > 结构完整性 > 篇幅。**
+
 - 正文不少于 {req['min_words']} 词，H2 小节 ≥ {req['min_h2']} 个
-- 必须包含：一句可直接摘走的定义、带单位的数字、一个对比表、一个编号步骤块、FAQ
-- 列表密度高一些，要点用无序/有序列表而不是长段落
+- 具备条件就写：一句可整句摘走的定义句、一个对比、一个编号步骤。
+  这些是**可用的手段**不是必交的作业——材料支撑不了就别硬凑
+- **数字规则（最重要的一条）**：
+  1. 文中出现的每一个数字，都必须能在上面「已核实事实」里逐字找到
+  2. 某处需要数字而事实里没有 → 写「（待补：xx 的具体数值）」，
+     **不许估算，不许用「约/大约/业内普遍认为」蒙混**
+  3. 不许为满足「要有数字」而填充。数据不足就这节写短点
 - 写清楚适用与**不适用**边界，不要只说好话
-- **严禁编造**：客户名、价格、资质、市场数据、竞品参数。宁可不写，也不要写占位数据。
-  确实需要但手上没有的信息，写成「（待补：xxx）」，不要用假数字凑表格
-- 直接输出 Markdown 正文，不要解释、不要前后缀"""
-    )
+- **严禁编造**：客户名、价格、资质、市场数据、竞品参数
+- 任何一条要求因材料不足无法满足 → **放弃那一条**，不要用编造内容去满足它
+
+## 输出格式
+正文（Markdown）+ 文末一段「未满足项」，逐条列出哪些要求因材料不足未能满足。
+直接输出，不要解释、不要前后缀。
+"""
+    else:
+        prompt = f"""You are a long-form English writer. Follow the outline below and write an article
+a reader will finish, with facts that survive checking.
+
+## Your stance (pick one, state it at the end)
+First-hand / Did the research / Know this industry / Read the material and formed a judgement.
+**Never present "did the research" as "first-hand".** Do not narrate in the first person
+anything you did not witness.
+
+## Ground rules
+The current year is {G.today()[:4]}. Use {G.today()[:4]} for any year reference.
+Target question (this is how a reader would ask an AI): {outline['target_question']}
+Article type: {outline['type']}
+Brand: {b['name']} ({b.get('industry','')})
+
+## Verified facts you must use (do not alter figures, do not invent new ones)
+{facts}
+
+## Competitor discipline
+{comp_rule}
+
+## Section outline
+{secs}
+
+## {R_OPEN}
+
+## {R_FMT}
+
+## {R_LANG}
+
+## {R_SPEC}
+
+## {R_GEO}
+
+## Hard requirements (in priority order; when they conflict, everything above wins)
+**Truth > structural completeness > length.**
+
+- Body at least {req['min_words']} words, at least {req['min_h2']} H2 sections
+- Use these when the material supports it: one definition sentence that can be lifted whole,
+  one comparison, one numbered procedure. These are **available tools, not mandatory
+  deliverables** — if the material cannot support one, leave it out
+- **The number rule (the most important one)**:
+  1. Every number in the article must be findable word-for-word in the verified facts above
+  2. If a spot needs a number and the facts have none, write “(TBD: the actual figure for X)”
+     and **do not estimate, do not paper over it with "around" or "industry estimates"**
+  3. Do not fill in numbers to satisfy "must have numbers". Thin data means that section
+     gets shorter
+- State what the product is for and **what it is not for**. Do not only say good things
+- **Never fabricate**: client names, prices, certifications, market data, competitor specs
+- If any requirement cannot be met for lack of material, **drop that requirement** —
+  never fabricate to satisfy it
+
+## Output format
+Markdown body, then a closing "Unmet requirements" section listing which requirements
+could not be met for lack of material.
+Output directly. No explanation, no preamble.
+"""
+    if angle_hint:
+        prompt += (f"\n## 叙事角度（只影响怎么讲，不影响上面任何一条纪律）\n{angle_hint}\n" if zh
+                   else f"\n## Narrative angle (changes only how it is told; none of the discipline above)\n{angle_hint}\n")
     res = S.ask(plat, prompt, timeout=300)
     return res.get("answer", "") if res.get("ok") else ""
+
+
+# ---------------------------------------------------------------- 多版本起草
+
+# 同一篇的多个叙事角度。
+#
+# 为什么是「换角度」而不是「同一 prompt 跑三遍」：
+# 随机改写不产生有意义的选择 —— 三个版本只是措辞不同，人选起来没有依据，
+# 最后会退化成「看哪个顺眼」，等于没审。换切入角度才会让人真的比较。
+#
+# 为什么角度只写「怎么讲」：
+# 事实纪律、竞品纪律、硬性要求、禁止编造，在 draft() 里对所有版本一视同仁。
+# 多版本不是「有的版本可以松一点」，这个边界不能破。
+VARIANTS = [
+    ("a", "权威型",
+     "以数据和标准切入：开头先给可核查的数字、行业标准或权威定义，建立可信度后再展开。"
+     "适合百科词条、知乎长文、白皮书。"),
+    ("b", "实用型",
+     "以操作步骤切入：开头直给「怎么做」，结论和步骤前置，读者照着能动手。"
+     "适合公众号、技术博客、教程类阵地。"),
+    ("c", "对比型",
+     "以选型对比切入：开头点明「同类方案怎么选」，用对比表建立参照系，再落到具体推荐。"
+     "适合榜单类问题、选型指南。"),
+]
+
+
+def _variant_dir(slug: str, qid: str) -> Path:
+    return G.project_dir(slug) / "assets" / "variants" / qid
+
+
+def variants(slug: str, qid: str | None = None, n: int = 3,
+             provider: str | None = None) -> dict:
+    """同一篇出 n 个不同角度的版本，供人挑选后再发布。
+
+    与 draft() 的分工：
+      draft()    一个问题出一篇（横向铺量）
+      variants() 一篇出几个角度（纵向给选择）
+
+    qid 省略时取第一个还没有选定版本的问题。
+    产物：assets/variants/<qid>/<角度id>.md，每个都跑 lint_draft 并把
+    风险摘要写进文件头，让人在选之前先看到编造风险。
+    """
+    import sample as S
+
+    plat = S.pick_llm(provider)
+    if not plat:
+        G.info("没有可用的 LLM API Key，无法起草")
+        return {"ok": False, "error": "no_llm"}
+
+    outlines = gen_outlines(slug)
+    if not outlines:
+        G.info("没有大纲。先跑 generate --asset outlines")
+        return {"ok": False, "error": "no_outlines"}
+
+    if qid:
+        picked = [o for o in outlines if o["question_id"] == qid]
+        if not picked:
+            G.info(f"找不到问题 {qid}。可用的：{[o['question_id'] for o in outlines][:10]}")
+            return {"ok": False, "error": "unknown_qid"}
+        o = picked[0]
+    else:
+        o = outlines[0]
+        qid = o["question_id"]
+
+    n = max(1, min(int(n), len(VARIANTS)))
+    d = _variant_dir(slug, qid)
+    d.mkdir(parents=True, exist_ok=True)
+
+    made = []
+    for vid, vname, hint in VARIANTS[:n]:
+        G.info(f"起草 {qid} · {vname}…")
+        text = draft(slug, o, provider=provider, angle_hint=hint)
+        if not text:
+            G.info(f"  {vname} 生成失败（LLM 无返回），后续版本跳过")
+            break
+        f = d / f"{vid}.md"
+        f.write_text(text, "utf-8")
+        made.append({"id": vid, "name": vname, "path": str(f.relative_to(G.project_dir(slug)))})
+
+    if not made:
+        return {"ok": False, "error": "all_failed"}
+
+    # 风险检查对每个版本都跑 —— 人选之前先看到风险，而不是选完才发现
+    risks = {}
+    for m in made:
+        try:
+            risks[m["id"]] = lint_draft(slug, G.project_dir(slug) / m["path"])
+        except Exception as e:  # noqa: BLE001
+            risks[m["id"]] = [{"level": "warn", "msg": f"lint 失败：{e}"}]
+
+    _write_variant_index(slug, qid, o, made, risks)
+
+    G.info("")
+    G.info(f"已起草 {len(made)} 个版本 → assets/variants/{qid}/")
+    for m in made:
+        r = risks.get(m["id"]) or []
+        tag = "⚠ 有风险" if r else "未发现编造风险"
+        G.info(f"  {m['id']}  {m['name']}   {tag}")
+    G.info("")
+    G.info(f"读完后选定：geo.py pick --slug {slug} --qid {qid} --variant <a|b|c>")
+    return {"ok": True, "qid": qid, "variants": made, "risks": risks}
+
+
+def _write_variant_index(slug: str, qid: str, outline: dict,
+                         made: list, risks: dict) -> None:
+    """写版本索引。留痕：出过哪几版、各有什么风险、最终选了哪个。"""
+    p = _variant_dir(slug, qid) / "_index.json"
+    prev = {}
+    if p.exists():
+        try:
+            prev = json.loads(p.read_text("utf-8"))
+        except Exception:  # noqa: BLE001
+            prev = {}
+    doc = {
+        "question_id": qid,
+        "target_question": outline["target_question"],
+        "generated_at": G.now_iso(),
+        "variants": [{**m, "risks": risks.get(m["id"], [])} for m in made],
+        # 重跑 variants 不清空已选结果 —— 选定是人工决定，不能被重生成覆盖
+        "picked": prev.get("picked"),
+    }
+    p.write_text(json.dumps(doc, ensure_ascii=False, indent=1), "utf-8")
+
+
+def pick(slug: str, qid: str, variant_id: str) -> dict:
+    """人工选定哪个版本。选中的复制成正式初稿并留痕。
+
+    这是「人在回路里」的落点：variants 产选择，pick 做决定。
+    pick 之后才进发布流程 —— 发布链条上只认 assets/drafts/<qid>.md，
+    而它只能由 pick 写出来。
+    """
+    d = _variant_dir(slug, qid)
+    src = d / f"{variant_id}.md"
+    if not src.exists():
+        avail = sorted(x.stem for x in d.glob("*.md")) if d.exists() else []
+        G.info(f"没有版本 {variant_id}。该问题下可用：{avail or '（无，先跑 variants）'}")
+        return {"ok": False, "error": "no_such_variant"}
+
+    drafts = G.project_dir(slug) / "assets" / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    dst = drafts / f"{qid}.md"
+    body = src.read_text("utf-8")
+    dst.write_text(
+        f"<!-- 选定版本 {variant_id} · 由 pick 于 {G.today()} 写入 · 需人工核实所有事实后再发布 -->\n\n"
+        + body, "utf-8")
+
+    idx = d / "_index.json"
+    if idx.exists():
+        try:
+            doc = json.loads(idx.read_text("utf-8"))
+            name = next((v["name"] for v in doc.get("variants", []) if v["id"] == variant_id), "")
+            doc["picked"] = {"id": variant_id, "name": name, "picked_at": G.now_iso()}
+            idx.write_text(json.dumps(doc, ensure_ascii=False, indent=1), "utf-8")
+        except Exception as e:  # noqa: BLE001
+            G.info(f"  索引更新失败（不影响选定）：{e}")
+
+    G.info(f"已选定 {qid} 的版本 {variant_id} → assets/drafts/{qid}.md")
+    G.info("下一步：人工核实事实，然后走发布流程")
+    return {"ok": True, "qid": qid, "variant": variant_id, "draft": str(dst)}
 
 
 # ---------------------------------------------------------------- 初稿风险检查
@@ -504,19 +989,34 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
         d.mkdir(parents=True, exist_ok=True)
         outlines = gen_outlines(slug)
         for o in outlines:
-            body = [f"# 内容大纲 · {o['target_question']}", "",
-                    f"- 目标问题 ID：`{o['question_id']}` ｜ 市场：{o['market']} ｜ 类型：{o['type']}",
-                    "", "## 标题候选（对题性 r=0.432，标题必须含问题原词）", ""]
-            body += [f"{i+1}. {t}" for i, t in enumerate(o["title_candidates"])]
-            body += ["", "## 章节骨架", ""]
-            body += [f"{i+1}. {s}" for i, s in enumerate(o["sections"])]
-            body += ["", "## 硬性要求", "",
-                     f"- 正文 ≥ {o['requirements']['min_words']} 词，H2 ≥ {o['requirements']['min_h2']} 个",
-                     f"- 必备抽取块：{'、'.join(o['requirements']['must_have_blocks'])}",
-                     f"- 列表密度 {o['requirements']['list_density']}",
-                     f"- 证据：{o['requirements']['evidence']}", ""]
+            en = o["market"] == "global"
+            req = o["requirements"]
+            if en:
+                body = [f"# Content outline · {o['target_question']}", "",
+                        f"- Question ID: `{o['question_id']}` | Market: global | Type: {o['type']}",
+                        "", "## Title candidates (relevance r=0.432 — the title must carry the question's own words)", ""]
+                body += [f"{i+1}. {t}" for i, t in enumerate(o["title_candidates"])]
+                body += ["", "## Section outline", ""]
+                body += [f"{i+1}. {s}" for i, s in enumerate(o["sections"])]
+                body += ["", "## Hard requirements", "",
+                         f"- Body at least {req['min_words']} words, at least {req['min_h2']} H2 sections",
+                         f"- Evidence: {req['evidence']}", ""]
+                facts_head = "## Verified facts available"
+            else:
+                body = [f"# 内容大纲 · {o['target_question']}", "",
+                        f"- 目标问题 ID：`{o['question_id']}` ｜ 市场：{o['market']} ｜ 类型：{o['type']}",
+                        "", "## 标题候选（对题性 r=0.432，标题必须含问题原词）", ""]
+                body += [f"{i+1}. {t}" for i, t in enumerate(o["title_candidates"])]
+                body += ["", "## 章节骨架", ""]
+                body += [f"{i+1}. {s}" for i, s in enumerate(o["sections"])]
+                body += ["", "## 硬性要求", "",
+                         f"- 正文 ≥ {req['min_words']} 词，H2 ≥ {req['min_h2']} 个",
+                         f"- 必备抽取块：{'、'.join(req['must_have_blocks'])}",
+                         f"- 列表密度 {req['list_density']}",
+                         f"- 证据：{req['evidence']}", ""]
+                facts_head = "## 可用的已核实事实"
             if o["facts_to_use"]:
-                body += ["## 可用的已核实事实", ""] + [f"- {x}" for x in o["facts_to_use"]] + [""]
+                body += [facts_head, ""] + [f"- {x}" for x in o["facts_to_use"]] + [""]
             (d / f"{o['question_id']}.md").write_text("\n".join(body), "utf-8")
         made.append(f"assets/outlines/（{len(outlines)} 份）")
         G.write_json(adir / "outlines" / "_index.json", outlines)

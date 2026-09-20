@@ -54,6 +54,18 @@ PUBLISHERS = {
         "note": "新建草稿，需在公众号后台预览并群发；服务器 IP 要在白名单",
         "guide": {"url": 'https://mp.weixin.qq.com', "steps": ['公众号后台 → 设置与开发 → 基本配置：拿 AppID / AppSecret', '同页「IP 白名单」加上本机出口 IP（不加会报 40164）', '素材库上传一张封面图，拿永久素材 media_id 填 thumb_media_id（草稿必需）', '发布后到后台「草稿箱」预览、群发']},
     },
+    "devto": {
+        "name": "dev.to", "market": "global", "env": ["DEVTO_API_KEY"],
+        "cfg": [("tags", "最多 4 个标签，逗号分隔，只能字母数字"),
+                ("canonical_url", "官网原文地址（可选）：避免重复内容，并把权重指回自有站点")],
+        "note": "Forem API 新建草稿文章，登录 dev.to 后台确认后再发布",
+        "guide": {"url": 'https://dev.to/settings/extensions', "steps": [
+            'dev.to → Settings → Extensions → DEV Community API Keys → Generate API Key',
+            'DEVTO_API_KEY 填生成的 key（生成后只显示一次）',
+            'tags 最多 4 个，只能字母数字（不能有连字符或空格）；留空则不自动带标签',
+            'canonical_url 填官网原文地址——文章同时发在官网和 dev.to 时，这行告诉搜索引擎谁是原文',
+            '发布后是草稿，到 dev.to 后台（Posts → Drafts）确认再对外']},
+    },
     "x": {
         "name": "X（推文引流）", "market": "global",
         "env": ["X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET"],
@@ -179,6 +191,23 @@ def _pub_wechat(cfg, text, title, fname):
     return {"ok": False, "error": f"draft/add 失败：{r.get('errmsg', r)}"}
 
 
+def _pub_devto(cfg, text, title, fname):
+    """dev.to（Forem）建草稿。发布前到 dev.to 后台确认。
+    canonical_url 不是可选项的细节：同一篇同时发在官网和 dev.to 时，它决定搜索引擎认谁是原文。"""
+    tags = [t.strip() for t in (cfg.get("tags") or "").split(",") if t.strip()][:4]
+    art = {"title": title, "body_markdown": text, "published": False, "tags": tags}
+    if cfg.get("canonical_url"):
+        art["canonical_url"] = cfg["canonical_url"]
+    r = requests.post("https://dev.to/api/articles",
+                      headers={"api-key": os.environ["DEVTO_API_KEY"],
+                               "Content-Type": "application/json"},
+                      json={"article": art}, timeout=30)
+    if r.status_code == 201:
+        return {"ok": True, "url": r.json().get("url", ""),
+                "note": "已建为草稿，到 dev.to 后台确认发布"}
+    return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+
+
 def _pub_webhook(cfg, text, title, fname):
     r = requests.post(os.environ["PUBLISH_WEBHOOK_URL"],
                       json={"title": title, "markdown": text, "html": md2html(text),
@@ -301,7 +330,7 @@ def _pub_reddit(cfg, text, title, fname):
 
 _IMPL = {"github": _pub_github, "wordpress": _pub_wordpress,
          "wechat_draft": _pub_wechat, "webhook": _pub_webhook,
-         "x": _pub_x, "reddit": _pub_reddit}
+         "devto": _pub_devto, "x": _pub_x, "reddit": _pub_reddit}
 
 
 # ---------------------------------------------------------------- 入口与记录
