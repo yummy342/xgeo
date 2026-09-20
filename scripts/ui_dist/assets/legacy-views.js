@@ -25,32 +25,6 @@ const api=async(u,o)=>{try{const r=await fetch(u,o);const j=await r.json().catch
 
 const mktLabel=m=>m==='cn'?'国内':m==='global'?'海外':'通用';
 
-const diagTag=d=>{if(!d)return'<span style="font-size:12px;color:var(--t600)">—</span>';
-  const cls=d.sev==='P0'?'tag-accent':d.sev==='P1'?'pill-warn':d.sev==='P2'?'tag-dim':'pill-good';
-  return `<span class="tag ${cls}" title="${esc(d.detail)}" style="cursor:help">${esc(d.type)}</span>`};
-
-function distRows(list,me){ // 品牌提及分布条：me=自己品牌名高亮
-  const max=((list||[])[0]||{}).rate||1;
-  return (list||[]).map(x=>{const mine=x.name===me;
-    return `<div class="row" style="gap:8px;padding:4px 0">
-      <span style="width:132px;flex:none;font-size:12.5px;${mine?'color:var(--a300)':''};overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.name)}">${esc(x.name)}${mine?' ⭑':''}</span>
-      <div class="bar" style="flex:1;height:6px"><div style="height:100%;width:${Math.max(3,Math.round(x.rate/max*100))}%;background:${mine?'var(--a400)':'#595d6c'};border-radius:4px"></div></div>
-      <span style="width:86px;flex:none;text-align:right;font-size:11.5px;color:var(--t400)">${pct(x.rate)} · ${x.hits} 次</span></div>`}).join('')
-    ||'<div class="muted" style="font-size:12px">本期没有实体被提及</div>';
-}
-
-function progBar(p,f,w){ // 任务级 before/after：首测(f) → 当前(p) → 目标
-  if(!p)return'';
-  const fmt=v=>v==null?'—':(p.pct?pct(v):v),op=p.op==='lte'?'≤':'≥';
-  let ratio; // 完成度：lte 型看从基线降到目标走了多远；gte 型看距目标比例
-  if(p.op==='lte'){const b=(f&&f.cur!=null?f.cur:null)??p.base??Math.max(p.cur,p.target,1);
-    ratio=b>p.target?(b-p.cur)/(b-p.target):(p.cur<=p.target?1:0)}
-  else ratio=p.target?p.cur/p.target:0;
-  ratio=Math.max(0,Math.min(1,ratio));
-  return `<div style="margin-top:5px;max-width:280px">
-    <div style="font-size:11px;color:var(--t500)">${esc(p.label)}：首测 ${fmt(f&&f.cur)} → 当前 <b style="color:var(--t300)">${fmt(p.cur)}</b> · 目标 ${op}${fmt(p.target)}</div>
-    <div class="bar" style="margin-top:3px;height:5px"><div style="height:100%;width:${Math.round(ratio*100)}%;background:${ratio>=1?'var(--a400)':'var(--accent)'};border-radius:4px"></div></div></div>`}
-
 const post=(u,b)=>api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 
 function head(kicker,title,sub){return `<div class="kicker">${esc(kicker)}</div>
@@ -118,37 +92,6 @@ async function pollJob(){
 }
 
 /* ===================== 总览 ===================== */
-
-function headline(){
-  const a=D.analytics,h=a.health,tr=a.trend||[];
-  if(h.score==null)return['还没有采样数据','到「设置 → 运行任务」跑一期，才能开始诊断。'];
-  const prev=tr.length>1?tr[tr.length-2]:null;
-  const dm=prev&&prev.mention!=null&&tr[tr.length-1].mention!=null?((tr[tr.length-1].mention-prev.mention)*100).toFixed(1):null;
-  const cite=h.subs.cite,m=h.subs.mention;
-  if((m||0)===0)return['AI 还没有主动提到过你',
-    `最近一期 ${tr.length?tr[tr.length-1].samples:0} 条采样中无提示提及率为 0——不是排名靠后，是还没进入候选集。先补内容缺口和 P0 阵地，不是继续铺渠道。`];
-  if((cite||0)<0.05)return['AI 开始提到你了，但几乎不引用你',
-    `提及率 ${pct(m)}${dm?`（较上期 ${dm>0?'+':''}${dm}pp）`:''}，但引用份额只有 ${pct(cite)}——「有人在说你」而「你没有可引用的落点」。优先补可被抽取的内容。`];
-  return['提及与引用同步在涨',`提及率 ${pct(m)}、引用份额 ${pct(cite)}。保持内容节奏，开始扩阵地。`];
-}
-
-function demandTag(qid){
-  const d=EXPD&&EXPD.q_demand&&EXPD.q_demand[qid];
-  if(!d)return'';
-  const tip=`匹配 ${d.n} 条下拉词：${(d.terms||[]).join(' / ')}`;
-  return ` <span class="tag ${d.new?'tag-accent':'tag-dim'}" style="font-size:10px" title="${esc(tip)}">🔥 ${d.new?'需求上升':'有搜索需求'}</span>`;
-}
-
-function demandRank(qid){const d=EXPD&&EXPD.q_demand&&EXPD.q_demand[qid];return d?(d.new?2:1):0}
-
-function demandSort(qs){
-  if(!EXPD)return qs;
-  const idx=new Map(qs.map((q,i)=>[q.id,i]));
-  return qs.slice().sort((a,b)=>{
-    if((a.brand_probe?1:0)!==(b.brand_probe?1:0))return a.brand_probe?1:-1;
-    const d=demandRank(b.id)-demandRank(a.id);
-    return d||idx.get(a.id)-idx.get(b.id)});
-}
 
 function expandModal(){
   if(!EXPD){
@@ -269,104 +212,10 @@ async function saveQuestions(){
 
 /* ===================== 差距诊断 ===================== */
 
-function chanFitQs(c){
-  return (D.analytics.questions||[]).filter(q=>!q.brand_probe
-    &&(c.fits||[]).includes(q.group)&&(q.market==='both'||q.market===c.market));
-}
-
-function distOf(qid,chid){return !!(((D.distribution||{})[qid]||{})[chid])}
-
 async function distToggle(qid,ch,on){
   const r=await post('/api/distribution/'+SLUG,{qid,channel:ch,on});
   if(r.ok){D.distribution=r.distribution;toast(on?'已标记铺设 ✓':'已取消标记');render()}
   else toast('失败：'+(r.error||''),'err');
-}
-
-function chanOpen(name){
-  const c=((D.blueprint||{}).channels||[]).find(x=>x.name===name);
-  if(!c){toast('蓝图里没有这个阵地','err');return}
-  const rel=(D.tasks||[]).filter(t=>(t.title||'').indexOf(name.split('（')[0].split(' / ')[0])>=0);
-  modal(`<h4 style="font-size:17px">${esc(c.name)}</h4>
-    <div class="row" style="gap:6px;margin-top:6px">
-      <span class="tag ${c.priority==='P0'?'tag-accent':c.priority==='P1'?'tag-neutral':'tag-dim'}">${c.priority}</span>
-      <span class="tag tag-outline">${esc(c.kind||'')}</span>
-      <span class="tag ${c.covered?'pill-good':'tag-accent'}">${c.covered?'✓ 本期已被引用':'未建'}</span>
-      <span style="font-size:11.5px;color:var(--t600)">${c.national?('全库引用量 '+c.national.toLocaleString()):''}${c.position?(' · 平均引用位置 '+c.position):''}${c.platforms?(' · 覆盖 '+c.platforms+' 个平台端'):''}</span></div>
-    <p style="font-size:13px;color:var(--t400);line-height:1.6;margin:10px 0 4px">${esc(c.why||'').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')}</p>
-    <div style="font-size:12px;color:var(--t600);margin:10px 0 4px">建什么（逐项做完为止）</div>
-    <ul style="margin:0;padding-left:18px;font-size:13px;line-height:1.8">
-      ${(c.forms||[]).map(f=>`<li>${esc(f)}</li>`).join('')||'<li class="muted">蓝图未给出具体形式</li>'}</ul>
-    <div class="spec" style="margin-top:12px">
-      <div><div class="k">建多少</div><div class="v">${esc(c.volume||'—')}</div></div>
-      <div><div class="k">节奏</div><div class="v">${esc(c.cadence||'—')}</div></div>
-      <div><div class="k">谁来做</div><div class="v">${esc(c.owner||'—')}</div></div>
-      <div><div class="k">相关工单</div><div class="v">${rel.length?rel.map(t=>esc(t.id)).join('、'):'—'}</div></div>
-    </div>
-    ${(c.fits||[]).length?(()=>{const qs=chanFitQs(c);
-      const done=qs.filter(q=>distOf(q.id,c.id)).length;
-      const sorted=qs.slice().sort((a,b)=>{
-        const w=q=>distOf(q.id,c.id)?3:q.content==='已成稿'?0:q.content==='缺口'?2:1;
-        return w(a)-w(b)});
-      return `<div style="font-size:12px;color:var(--t600);margin:12px 0 4px">适合放这里的内容
-        <span class="muted">（承接 ${c.fits.join('/')} 类 · 共 ${qs.length} 题 · 已铺 ${done}）</span></div>
-      ${sorted.slice(0,6).map(q=>`<div class="row" style="gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer;box-shadow:inset 0 -1px 0 var(--line)"
-          title="点击到内容工作台写/改这篇" onclick="closeModal();go('workbench',{wq:${esc(JSON.stringify(q.id))}})">
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${distOf(q.id,c.id)?'color:var(--t600)':''}">${esc(q.text)}</span>
-        <span class="tag ${q.content==='已成稿'?'pill-good':'tag-dim'}" style="font-size:10px;flex:none">${esc(q.content)}</span>
-        ${distOf(q.id,c.id)?'<span class="tag tag-outline" style="font-size:10px;flex:none">已铺 ✓</span>':''}</div>`).join('')}
-      ${qs.length>6?`<div class="muted" style="font-size:11px;padding-top:4px">…共 ${qs.length} 题，其余在问题库按类别筛</div>`:''}`})():
-      '<p class="muted" style="font-size:11.5px;margin-top:10px">该阵地是收录/基础设施型，不承接具体内容篇目。</p>'}
-    <p class="muted" style="font-size:11.5px;margin-top:10px">内容素材从「内容工作台」按目标问题产出；官网类阵地的部署片段在「部署资产」（含 DEPLOY.md 步骤与验收标准）。</p>
-    <div class="row" style="justify-content:flex-end;margin-top:12px">
-      ${rel.length?`<button class="btn btn-ghost" style="margin-right:auto" onclick="closeModal();go('plan')">看相关工单 →</button>`:''}
-      <button class="btn btn-secondary" onclick="closeModal();go('workbench')">去内容工作台</button>
-      <button class="btn btn-primary" onclick="closeModal()">关闭</button></div>`);
-}
-
-/* ===================== 品牌事实库 ===================== */
-
-function taskWbTarget(t){
-  // 行动计划 → 工作台的落点解析：尽量落到「这条任务最该写的那道题」，而不是列表页
-  for(const a of (t.assets||[])){const m=String(a).match(/\bq\d{3}\b/);if(m)return m[0]}   // 资产已带 qid
-  const qs=demandSort((D.analytics.questions||[]).filter(q=>!q.brand_probe));
-  const undone=qs.filter(q=>q.content!=='已成稿');
-  const bm=(t.title||'').match(/「(定义|数字事实|对比|操作步骤|FAQ)」/);
-  if(bm){
-    // 块 → 最需要该块的问题分组（对应 blueprint GROUP_PLAN 的内容形态）
-    const bg={'对比':['比较','替代'],'操作步骤':['场景'],'定义':['价格','风险','品牌验证'],
-              '数字事实':['推荐','比较','场景'],'FAQ':['价格','风险']};
-    const hit=undone.find(q=>(bg[bm[1]]||[]).includes(q.group));
-    if(hit)return hit.id;
-  }
-  if(/英文|中英/.test(t.title||'')){const hit=undone.find(q=>q.market==='global');if(hit)return hit.id}
-  return (undone[0]||qs[0]||{}).id||null;   // 兜底：选题池顶部
-}
-
-function wbFromTask(id){
-  const t=(D.tasks||[]).find(x=>x.id===id);
-  const wq=t?taskWbTarget(t):null;
-  closeModal&&closeModal();
-  go('workbench',wq?{wq}:undefined);
-}
-
-function onePager(){
-  const a=D.analytics,h=a.health,w=window.open('','_blank');
-  if(!w){toast('浏览器拦截了弹窗，请允许后重试','err');return}
-  const subs=[['提及率',h.subs.mention],['引用份额',h.subs.cite],['阵地覆盖',h.subs.channel],['内容承接',h.subs.content],['事实一致性',h.subs.fact]];
-  const open=(D.tasks||[]).filter(t=>t.status!=='done'&&t.priority==='P0');
-  w.document.write(`<!doctype html><meta charset="utf-8"><title>${esc(D.brand.name)} · GEO 一页结论</title>
-  <style>body{font:15px/1.7 Inter,system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 24px;color:#111}
-  h1{font-size:24px}h2{font-size:16px;margin-top:28px}table{border-collapse:collapse;width:100%}
-  td,th{border-bottom:1px solid #ddd;padding:8px;text-align:left;font-size:14px}
-  .big{font-size:44px;font-weight:600}.muted{color:#777;font-size:12.5px}</style>
-  <h1>${esc(D.brand.name)} · GEO 一页结论</h1>
-  <div class="muted">数据截至 ${esc(a.latest_date||'—')} · 所有数字来自同一份问题库采样</div>
-  <div class="big">${h.score==null?'—':h.score}<span style="font-size:16px;color:#777"> / 100 GEO 健康分</span></div>
-  <h2>五项分项</h2><table>${subs.map(([n,v])=>`<tr><td>${n}</td><td>${v==null?'未测':(v*100).toFixed(1)+'%'}</td></tr>`).join('')}</table></div>
-  <h2>本期结论</h2><p>${esc(headline()[1])}</p>
-  <h2>下一步（P0）</h2><ul>${open.map(t=>`<li>${esc(t.title)} — ${esc(t.owner)}，${esc(t.effort)}</li>`).join('')||'<li>无 P0 阻塞</li>'}</ul>
-  <p class="muted">GEO 提升的是被引用的概率，不承诺任何引擎一定引用某个页面。</p>`);
-  w.document.close();
 }
 
 async function editSheet(name){
@@ -479,8 +328,3 @@ async function obRetry(){
 window.GL_NAV = NAV;
 window.GL_BADGE = badge;
 window.GL_ULANG = ULANG;
-
-// const 箭头函数不会自动成为 window 属性，按名调用就得显式挂上
-// （progBar/chanOpen 那些是 function 声明，本来就在 window 上）
-window.diagTag = diagTag;
-window.distRows = distRows;

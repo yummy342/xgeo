@@ -8,6 +8,7 @@
   import { api } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { distRows } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
   import PageHead from '../components/PageHead.svelte'
 
@@ -149,7 +150,7 @@
       <div class="card elev panel">
         <div class="panel-t">{t('Who this engine mentions')}</div>
         <div class="panel-s">{t('Share of unprompted samples mentioning each brand (⭑ = you).')}</div>
-        {@html window.distRows(e.brand_dist, D.brand?.name)}
+        {@html distRows(e.brand_dist, D.brand?.name)}
         <button class="btn btn-ghost self-start" onclick={() => go('competitors')}>{t('Full market in Competitors →')}</button>
       </div>
 
@@ -181,7 +182,7 @@
           {@const ns = ((a.competitors || {}).sample_ns || {})[m] || 0}
           <div class="card elev panel">
             <div class="dist-t">{l}<span class="muted dist-ns"> · {t('denominator {n} unprompted samples').replace('{n}', String(ns))}</span></div>
-            {@html window.distRows(list, D.brand?.name)}
+            {@html distRows(list, D.brand?.name)}
           </div>
         {/if}
       {/each}

@@ -3,6 +3,8 @@
   // progBar 仍在 legacy 里（返回一段 HTML 字符串），所以这里用 {@html}。
   import { project, loadProject } from '../lib/stores/project.svelte.js'
   import { post } from '../lib/api.js'
+  import { progBar, taskWbTarget } from '../lib/domain.js'
+  import { go } from '../lib/router.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import PageHead from '../components/PageHead.svelte'
@@ -111,7 +113,7 @@
               <div class="task-sub">
                 {t('Acceptance')} ({(task.acceptance || {}).type === 'auto' ? t('automatic') : t('manual')}): {(task.acceptance || {}).desc || ''}{#if task.risk} · <span style="color:{task.risk === 'high' ? 'var(--a300)' : 'var(--t600)'}" title={t(RISK_TIP[task.risk] || '')}>{t(RISK[task.risk] || '')}</span>{/if}
               </div>
-              {@html window.progBar(task.progress, task.progress_first)}
+              {@html progBar(task.progress, task.progress_first)}
             </td>
             <td class="cell-dim">{task.package}</td>
             <td class="cell-soft">{task.effort}</td>
@@ -129,7 +131,8 @@
             <td>
               <div class="row" style="gap:4px">
                 {#if task.package === '内容矩阵'}
-                  <button class="btn btn-ghost row-btn" title={t('Jump straight to the question this task most needs written')} onclick={() => window.wbFromTask(task.id)}>{t('Open')}</button>
+                  <button class="btn btn-ghost row-btn" title={t('Jump straight to the question this task most needs written')}
+                          onclick={() => { const wq = taskWbTarget(task); go('workbench', wq ? { wq } : undefined) }}>{t('Open')}</button>
                   <button class="btn btn-ghost row-btn pub-open" title={t('Draft publish status and per-article publishing')} onclick={() => (pendingOpen = true)}>{t('Publish')}</button>
                 {/if}
               </div>

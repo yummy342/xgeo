@@ -5,6 +5,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { onePager } from '../lib/onepager.js'
   import PageHead from '../components/PageHead.svelte'
 
   const a = $derived(project.data?.analytics || {})
@@ -74,7 +75,7 @@
         <div class="rpt-desc">{r.desc}</div>
         <div class="row rpt-act">
           {#if r.kind === 'onepager'}
-            <button class="btn btn-primary sm" onclick={() => window.onePager()}>{t('Generate')}</button>
+            <button class="btn btn-primary sm" onclick={onePager}>{t('Generate')}</button>
           {:else if r.kind === 'plan'}
             {#if r.exists}
               <a class="btn btn-primary sm" target="_blank" href="/files/{slug}/deliverables/{encodeURIComponent('3-GEO执行方案.html')}">{t('Open')}</a>

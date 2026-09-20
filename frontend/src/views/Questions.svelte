@@ -6,6 +6,7 @@
   import { t } from '../lib/i18n/index.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
+  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
   import PageHead from '../components/PageHead.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
 
@@ -32,7 +33,7 @@
     return { pubQ, qFile }
   })
 
-  const all = $derived(window.demandSort ? window.demandSort(a.questions || []) : (a.questions || []))
+  const all = $derived(demandSort(a.questions || []))
   const groups = $derived(a.question_groups || [])
   const qs = $derived(group ? all.filter((q) => q.group === group) : all)
   const hasExpand = $derived(!!project.data?.expand)
@@ -112,12 +113,12 @@
           {/if}
           <tr>
             <td class="q-text">
-              {q.text}{#if q.brand_probe} <span class="tag tag-dim probe-tag">{t('name-check')}</span>{:else}{@html window.demandTag(q.id)}{/if}
+              {q.text}{#if q.brand_probe} <span class="tag tag-dim probe-tag">{t('name-check')}</span>{:else}{@html demandTag(q.id)}{/if}
             </td>
             <td><span class="tag tag-neutral">{q.group}</span></td>
             <td class="mkt-cell">{mktName(q.market)}</td>
             <td><span class="tag {(q.mention || 0) > 0 ? 'pill-good' : 'pill-warn'}">{q.mention == null ? t('Not sampled') : pct(q.mention)}</span></td>
-            <td>{#if q.brand_probe}<span class="dash">—</span>{:else}{@html window.diagTag(q.diagnosis)}{/if}</td>
+            <td>{#if q.brand_probe}<span class="dash">—</span>{:else}{@html diagTag(q.diagnosis)}{/if}</td>
             <td class="content-cell" class:done={q.content === '已成稿'}>
               {q.content}{#if pubMaps.pubQ[q.id]} <span class="tag tag-accent pub-tag" title={pubMaps.pubQ[q.id]}>{t('Published')}</span>{/if}
             </td>

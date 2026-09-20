@@ -29,14 +29,10 @@ SCRIPT_FROM, SCRIPT_TO = 144, 2958
 KEEP = {
     # 纯工具（新组件里也有同名实现，但 legacy 内部互相调用，得留着）
     "$", "esc", "pct", "api", "mktLabel", "post", "head",
-    # HTML 片段生成器
-    "diagTag", "distRows", "progBar", "demandTag", "demandRank", "demandSort",
-    # 领域逻辑（等后端提供接口后可以搬到后端）
-    "headline", "chanFitQs", "distOf", "taskWbTarget",
-    # 弹窗与动作
-    # wbFromTask 留着：它是领域逻辑（从任务推断该写哪道题，见 taskWbTarget），
-    # 不是纯渲染，搬进组件反而更乱。taskModal / setTask 已迁到 TaskDialog。
-    "chanOpen", "wbFromTask", "taskWbTarget",
+    # 判据 / 排序 / 片段生成已搬到 lib/domain.js（读 store、文案走 t()）：
+    # diagTag distRows progBar demandTag demandRank demandSort headline
+    # chanFitQs distOf taskWbTarget —— 连同一个被它们替代的调用方
+    # chanOpen（ChannelDialog 取代）和 wbFromTask（导航那半截归组件）。
     "editQuestions", "saveQuestions",
     # 事实卡三件套已搬进 components/：FactCardDialog / FactsSourceDialog /
     # AddFactDialog，factModal / editFactsSrc / saveFactsSrc / addFact /
@@ -46,7 +42,8 @@ KEEP = {
     "showMethod", "expandModal", "expAddIdx", "expAdd",
     # pendPubModal / pubModal / doPublishSel 已迁到 components/PendingDialog.svelte
     # 与 PublishDialog.svelte。
-    "onePager", "editSheet", "importSheet",
+    # onePager 已搬到 lib/onepager.js（往新窗口写独立 HTML，不是弹窗）
+    "editSheet", "importSheet",
     "editPub", "savePub",
     # editKey / saveKey / editConfig / saveCfg / switchProject / switchModal
     # 已迁到 components/KeyDialog.svelte、BrandConfigDialog.svelte、
@@ -80,11 +77,6 @@ TAIL = """
 window.GL_NAV = NAV;
 window.GL_BADGE = badge;
 window.GL_ULANG = ULANG;
-
-// const 箭头函数不会自动成为 window 属性，按名调用就得显式挂上
-// （progBar/chanOpen 那些是 function 声明，本来就在 window 上）
-window.diagTag = diagTag;
-window.distRows = distRows;
 """
 
 # 顶层的声明起始行：function / const / let / async function

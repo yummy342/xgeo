@@ -4,6 +4,7 @@
   // 「去内容工作台」那步仍是 legacy 的 wbFromTask —— 它是领域逻辑
   // （从任务标题/资产推断该写哪道题，见 taskWbTarget），不属于渲染层。
   import { t } from '../lib/i18n/index.svelte.js'
+  import { progBar, taskWbTarget } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
 
   let { task, onclose } = $props()
@@ -21,7 +22,8 @@
 
   function toWorkbench() {
     onclose?.()
-    window.wbFromTask?.(task.id)
+    const wq = taskWbTarget(task)
+    go('workbench', wq ? { wq } : undefined)
   }
 </script>
 
@@ -58,7 +60,7 @@
       {/if}
     </div>
 
-    {@html window.progBar(task.progress, task.progress_first)}
+    {@html progBar(task.progress, task.progress_first)}
 
     {#if affected.length}
       <div class="lbl">{t('Affected pages ({n})').replace('{n}', String(affected.length))}</div>

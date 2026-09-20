@@ -13,6 +13,7 @@
   import { api, post, request } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import ChannelDialog from '../components/ChannelDialog.svelte'
@@ -49,7 +50,7 @@
   const pickList = $derived.by(() => {
     const f = filter.toLowerCase()
     const list = (a.questions || []).filter((x) => !x.brand_probe && (!f || x.text.toLowerCase().includes(f)))
-    return window.demandSort ? window.demandSort(list) : list
+    return demandSort(list)
   })
 
   // 旧 pubModal 读的是全局 WB.cur，这里同步一份过去
@@ -281,8 +282,8 @@
       <div id="wbpick" class="pick-list">
         {#each pickList as item (item.id)}
           <div class="row pick-row" onclick={() => go('workbench', { wq: item.id })}>
-            <span class="pick-q">{@html item.text + (window.demandTag ? window.demandTag(item.id) : '')}</span>
-            {@html window.diagTag(item.diagnosis)}
+            <span class="pick-q">{@html item.text + demandTag(item.id)}</span>
+            {@html diagTag(item.diagnosis)}
             <span class="pick-state" class:done={item.content === '已成稿'}>{item.content}</span>
             <span class="muted pick-mkt">{item.market === 'cn' ? t('CN market') : item.market === 'global' ? t('Global market') : t('Both markets')}</span>
           </div>

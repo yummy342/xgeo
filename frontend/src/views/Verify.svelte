@@ -6,6 +6,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { progBar } from '../lib/domain.js'
   import PageHead from '../components/PageHead.svelte'
 
   const a = $derived(project.data?.analytics || {})
@@ -111,7 +112,7 @@
             <tr>
               <td><span class="tag {task.priority === 'P0' ? 'tag-accent' : 'tag-dim'}">{task.priority}</span></td>
               <td class="task-cell">{task.id} · {task.title}</td>
-              <td>{@html window.progBar(task.progress, task.progress_first)}</td>
+              <td>{@html progBar(task.progress, task.progress_first)}</td>
               <td><span class="tag {done ? 'pill-good' : 'tag-dim'}">{done ? t('Verified') : t('Not met')}</span></td>
             </tr>
           {/each}

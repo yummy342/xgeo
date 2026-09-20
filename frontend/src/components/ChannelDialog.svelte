@@ -4,6 +4,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { esc } from '../lib/format.js'
+  import { chanFitQs, distOf } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
 
   let { channel, onclose } = $props()
@@ -21,10 +22,10 @@
 
   const fitQuestions = $derived.by(() => {
     if (!fits.length) return { list: [], done: 0, total: 0 }
-    const qs = window.chanFitQs ? window.chanFitQs(channel) : []
-    const done = qs.filter((q) => window.distOf(q.id, channel.id)).length
+    const qs = chanFitQs(channel)
+    const done = qs.filter((q) => distOf(q.id, channel.id)).length
     // 排序：已铺的排最后，缺口排前面
-    const weight = (q) => window.distOf(q.id, channel.id) ? 3 : q.content === '已成稿' ? 0 : q.content === '缺口' ? 2 : 1
+    const weight = (q) => distOf(q.id, channel.id) ? 3 : q.content === '已成稿' ? 0 : q.content === '缺口' ? 2 : 1
     const list = qs.slice().sort((a, b) => weight(a) - weight(b))
     return { list, done, total: qs.length }
   })
@@ -74,7 +75,7 @@
         <span class="muted">（{t('serves')} {fits.join('/')} · {fitQuestions.total} {t('questions')} · {fitQuestions.done} {t('planted')}）</span>
       </div>
       {#each fitQuestions.list.slice(0, 6) as q (q.id)}
-        {@const planted = window.distOf(q.id, channel.id)}
+        {@const planted = distOf(q.id, channel.id)}
         <div class="row q-row" title={t('Open in the Workbench to write or edit this one')} onclick={() => openQuestion(q.id)}>
           <span class="q-text" class:planted>{q.text}</span>
           <span class="tag {q.content === '已成稿' ? 'pill-good' : 'tag-dim'} q-state">{q.content}</span>

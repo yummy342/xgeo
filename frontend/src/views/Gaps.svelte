@@ -9,6 +9,7 @@
   import { t } from '../lib/i18n/index.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
+  import { diagTag } from '../lib/domain.js'
   import PageHead from '../components/PageHead.svelte'
   import AddFactDialog from '../components/AddFactDialog.svelte'
 
@@ -116,7 +117,7 @@
                 <td class="q-cell">{q.text}</td>
                 <td class="mkt-cell">{mktName(q.market)}</td>
                 <td class="mention">{q.mention == null ? t('Not sampled') : pct(q.mention)}</td>
-                <td>{@html window.diagTag(q.diagnosis)}</td>
+                <td>{@html diagTag(q.diagnosis)}</td>
                 <td class="state-cell">{q.content}</td>
                 <td><button class="btn btn-ghost sm" onclick={() => go('workbench', { wq: q.id })}>{t('Generate draft')}</button></td>
               </tr>

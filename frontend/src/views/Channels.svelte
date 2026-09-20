@@ -5,6 +5,7 @@
   import { ui } from '../lib/stores/ui.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { esc, pct } from '../lib/format.js'
+  import { chanFitQs, distOf } from '../lib/domain.js'
   import PageHead from '../components/PageHead.svelte'
   import ChannelDialog from '../components/ChannelDialog.svelte'
 
@@ -85,8 +86,8 @@
                   {c.national ? t('Citations') + ' ' + c.national.toLocaleString() : ''}{c.position ? ` · ${t('avg. position')} ${c.position}` : ''}{c.platforms ? ` · ${c.platforms} ${t('surfaces')}` : ''}
                 </span>
                 {#if (c.fits || []).length}
-                  {@const qs = window.chanFitQs(c)}
-                  {@const dn = qs.filter((q) => window.distOf(q.id, c.id)).length}
+                  {@const qs = chanFitQs(c)}
+                  {@const dn = qs.filter((q) => distOf(q.id, c.id)).length}
                   <span class="tag {dn ? 'tag-outline' : 'tag-dim'} fits" title={t('Fits {groups} questions').replace('{groups}', (c.fits || []).join('/'))}>
                     {t('fits')} {qs.length} · {t('planted')} {dn}
                   </span>

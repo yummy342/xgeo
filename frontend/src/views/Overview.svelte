@@ -5,6 +5,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { headline } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
   import PageHead from '../components/PageHead.svelte'
 
@@ -16,12 +17,9 @@
   const comp = $derived(a.competitors || {})
   const S = $derived(h.subs || {})
 
-  // headline() 是 legacy 函数，内部读全局 D.analytics。数据到位前调用会炸，
-  // 所以必须先确认 project.data 存在——其余视图的 $derived 都带 `|| {}` 兜底，
-  // 只有这个跨进 legacy 的调用点要显式挡一道。
-  const headlinePair = $derived(
-    (project.data && window.headline) ? window.headline() : ['', ''],
-  )
+  // headline() 现在读 store（lib/domain.js）。数据未到时先给空串，
+  // 免得首屏闪一下「还没有采样数据」再跳到真实结论。
+  const headlinePair = $derived(project.data ? headline() : ['', ''])
   const topRival = $derived((comp.table || [])[0])
 
   const kpis = $derived([
