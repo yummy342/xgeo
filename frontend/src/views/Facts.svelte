@@ -3,7 +3,7 @@
   import FactCardDialog from '../components/FactCardDialog.svelte'
   import FactsSourceDialog from '../components/FactsSourceDialog.svelte'
   import PageHead from '../components/PageHead.svelte'
-  import { project } from '../lib/stores/project.svelte.js'
+  import {loadProject, project} from '../lib/stores/project.svelte.js'
 import { runAction } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
 
@@ -106,7 +106,7 @@ import { runAction } from '../lib/jobs.svelte.js'
 {#if showSource}
   <FactsSourceDialog
     onclose={() => (showSource = false)}
-    onchanged={() => window.load(slug, true)}
+    onchanged={() => loadProject(slug, true)}
   />
 {/if}
 

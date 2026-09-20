@@ -5,7 +5,7 @@
   import { demandSort, demandTag, diagTag } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
-  import { project } from '../lib/stores/project.svelte.js'
+  import {loadProject, project} from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
@@ -130,7 +130,7 @@
     const r = await post(`/api/content/${slug}`, { path: `${q.id}-成稿.md`, text: body })
     if (!r.ok) { toast(t('Publish failed: {e}').replace('{e}', r.error || ''), 'err'); return }
     toast(t('Published as final draft'))
-    await window.load(slug, true)
+    await loadProject(slug, true)
   }
 
   async function toggleDist(chId, on) {

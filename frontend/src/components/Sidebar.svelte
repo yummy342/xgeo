@@ -1,19 +1,16 @@
 <script>
   import SwitchBrandDialog from './SwitchBrandDialog.svelte'
+  import { NAV, badgeFor, LANGS } from '../lib/nav.js'
+  import { i18n, setLocale, t } from '../lib/i18n/index.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
+  import { runAction } from '../lib/jobs.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { route, go } from '../lib/router.svelte.js'
-import { runAction } from '../lib/jobs.svelte.js'
 
-  // 复刻 ui.html:1048-1081 的 renderSide。导航结构与语言列表直接取 legacy 的
-  // GL_NAV / GL_ULANG，不重新定义——两套前端同时在线，漂移了就没法对照。
+  // 复刻 ui.html:1048-1081 的 renderSide。导航结构与角标逻辑已搬到 lib/nav.js，
+  // 语言状态改读 i18n store——切换不再整页 reload。
 
   let switching = $state(false)
-
-  const NAV = window.GL_NAV || []
-  const badgeOf = window.GL_BADGE || (() => '')
-  const ULANG = window.GL_ULANG || 'en'
-  const LANGS = [['zh', '中'], ['en', 'EN'], ['ja', '日']]
 
   const brandName = $derived(project.data?.brand?.name || '—')
   const latest = $derived(project.data?.analytics?.latest_date || '—')
@@ -24,12 +21,12 @@ import { runAction } from '../lib/jobs.svelte.js'
     <div class="brand-row">
       <div class="brand">Geo<span>Look</span></div>
       <span class="langs">
-        {#each LANGS as [l, t]}
-          <button class="lang" class:on={ULANG === l} onclick={() => window.setLang(l)}>{t}</button>
+        {#each LANGS as [l, label] (l)}
+          <button class="lang" class:on={i18n.locale === l} onclick={() => setLocale(l)}>{label}</button>
         {/each}
       </span>
     </div>
-    <div class="tagline">生成式引擎优化平台</div>
+    <div class="tagline">{t('Generative Engine Optimization')}</div>
   </div>
 
   <button class="btn btn-secondary pick" onclick={() => (switching = true)}>
@@ -41,12 +38,12 @@ import { runAction } from '../lib/jobs.svelte.js'
   </button>
 
   <nav>
-    {#each NAV as g}
+    {#each NAV as g (g.key)}
       <div class="grp">
-        <div class="navgrp">{g.t}</div>
-        {#each g.items as [k, t]}
-          <button class="navit" class:on={route.name === k} onclick={() => go(k)}>
-            <span class="mark"></span><span>{t}</span><span class="bdg">{badgeOf(k)}</span>
+        <div class="navgrp">{t(g.label)}</div>
+        {#each g.items as [k, label] (k)}
+          <button class="navit" data-route={k} class:on={route.name === k} onclick={() => go(k)}>
+            <span class="mark"></span><span>{t(label)}</span><span class="bdg">{badgeFor(project.data, k)}</span>
           </button>
         {/each}
       </div>
@@ -54,13 +51,13 @@ import { runAction } from '../lib/jobs.svelte.js'
   </nav>
 
   <div class="foot">
-    数据更新于 {latest}<br>
-    采样为手动触发或由 schedule 驱动
+    {t('Data updated')} {latest}<br>
+    {t('Sampling is manual or schedule-driven')}
     <div class="run">
       {#if jobs.running}
-        <span class="spin"></span>任务运行中
+        <span class="spin"></span>{t('A task is running')}
       {:else}
-        <button class="btn btn-ghost run-btn" onclick={() => runAction('serve')}>▶ 跑完整一期</button>
+        <button class="btn btn-ghost run-btn" onclick={() => runAction('serve')}>▶ {t('Run full cycle')}</button>
       {/if}
     </div>
   </div>

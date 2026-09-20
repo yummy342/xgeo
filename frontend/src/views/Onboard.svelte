@@ -1,24 +1,71 @@
 <script>
-  import { api } from '../lib/api.js'
-  import { go } from '../lib/router.svelte.js'
-  import { project } from '../lib/stores/project.svelte.js'
+  import { api, post } from '../lib/api.js'
+  import { go, route } from '../lib/router.svelte.js'
+  import { loadProject, project } from '../lib/stores/project.svelte.js'
+  import { runAction } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
 
-  // 迁自 ui.html:2585 vOnboard。
-  //
-  // 这个视图的逻辑基本都在 legacy 里（obCreate / obRetry），它们读写 ST.ob*
-  // 和 KEYS。ob* 是接入引导的跨步骤状态，本来就该留在 ui store，所以这里
-  // 只负责渲染 + 按 id 暴露表单元素（obCreate 用 $('#ob-url') 取值）。
+  // 迁自 ui.html:2585 vOnboard，含它的 obCreate / obRetry。
+  // 表单状态原本也是全局的（ST.obUrl 等），改成本地 $state；
+  // obStep / obFail 留 ui store —— 它们是跨步骤的流程状态。
 
   let keys = $state([])
+
+  let url = $state('')
+  let name = $state('')
+  let market = $state('both')
+  let noSample = $state(false)
+  let busy = $state(false)
 
   $effect(() => {
     api('/api/keys').then((r) => {
       keys = Array.isArray(r) ? r : []
-      window.KEYS = keys
     })
   })
+
+  /** 搬自 ui.html:2639 obCreate。 */
+  async function create() {
+    const site = url.trim()
+    if (!site) { toast(t('Enter the site domain'), 'err'); return }
+
+    const okKeys = (keys || []).filter((k) => k.ok === true)
+    if (!okKeys.length && !confirm(t('No engine API key is configured yet.\n\nContinuing skips answer sampling and AI-derivation of the question bank and brand facts — it will only crawl and audit the site, and those two will need to be filled in by hand.\n\nConfigure at least one key first (DeepSeek or Zhipu GLM).\n\nContinue anyway?'))) {
+      go('settings'); return
+    }
+
+    const needed = market === 'both' ? ['cn', 'global'] : [market]
+    const missing = needed.filter((m) => !okKeys.some((k) => k.market === m))
+    if (okKeys.length && missing.length
+        && !confirm(t('No configured engine key for {markets}. Automatic sampling will be skipped for that market (you can add a key later, or use a manual sampling sheet).\n\nContinue anyway?')
+          .replace('{markets}', missing.map((m) => m === 'cn' ? t('CN market') : t('Global market')).join(', ')))) {
+      go('settings'); return
+    }
+
+    busy = true
+    const r = await post('/api/init', { url: site, name: name.trim(), market, max_pages: 25 })
+    if (!r.ok) { busy = false; toast(r.error || t('Could not create'), 'err'); return }
+
+    ui.obSlug = r.slug
+    ui.obNoSample = noSample
+    await loadProject(r.slug, true)
+
+    ui.obStep = 2
+    ui.obFail = false
+    route.name = 'onboard'
+    busy = false
+
+    const job = await runAction('autopilot', noSample ? { '--no-sample': true } : {})
+    if (!job) ui.obStep = 1
+  }
+
+  /** 搬自 ui.html:2663 obRetry。 */
+  async function retry() {
+    ui.obFail = false
+    const job = await runAction('autopilot', noSample ? { '--no-sample': true } : {})
+    if (!job) ui.obFail = true
+  }
 
   const step = $derived(ui.obStep || 1)
   const okCn = $derived(keys.filter((k) => k.ok === true && k.market === 'cn').length)
@@ -62,32 +109,32 @@
         {:else}
           <div class="muted keys-note">
             {t('Engines configured: {c} CN · {g} global (change them under Settings)').replace('{c}', String(okCn)).replace('{g}', String(okGl))}
-            {#if ui.obMkt !== 'global' && !okCn}{t('— note: no usable key for the CN market')}{/if}
-            {#if ui.obMkt !== 'cn' && !okGl}{t('— note: no usable key for the global market')}{/if}
+            {#if market !== 'global' && !okCn}{t('— note: no usable key for the CN market')}{/if}
+            {#if market !== 'cn' && !okGl}{t('— note: no usable key for the global market')}{/if}
           </div>
         {/if}
 
         <div class="field">
           <label>{t('Site domain *')}</label>
-          <input id="ob-url" class="input" placeholder="https://example.com" value={ui.obUrl || ''}>
+          <input class="input" placeholder="https://example.com" bind:value={url}>
         </div>
         <div class="field">
           <label>{t('Brand name (leave blank to detect from the page)')}</label>
-          <input id="ob-name" class="input" value={ui.obName || ''}>
+          <input class="input" bind:value={name}>
         </div>
         <div class="field">
           <label>{t('Target market')}</label>
           <div class="seg">
             {#each [['cn', t('CN engines')], ['global', t('Global engines')], ['both', t('Both')]] as [m, l] (m)}
-              <label class="seg-opt"><input type="radio" name="obm" value={m} checked={(ui.obMkt || 'both') === m}>{l}</label>
+              <label class="seg-opt"><input type="radio" bind:group={market} value={m}>{l}</label>
             {/each}
           </div>
         </div>
         <label class="row nosample">
-          <input type="checkbox" id="ob-nosample" checked={ui.obNoSample}>{t('Skip sampling for the first round (saves time, can be added later)')}
+          <input type="checkbox" bind:checked={noSample}>{t('Skip sampling for the first round (saves time, can be added later)')}
         </label>
         <div class="row ob-actions">
-          <button class="btn btn-primary" onclick={() => window.obCreate()}>{t('Create and start the automatic run')}</button>
+          <button class="btn btn-primary" disabled={busy} onclick={create}>{t('Create and start the automatic run')}</button>
           <button class="btn btn-ghost" onclick={() => go('settings')}>{t('Back to Settings')}</button>
         </div>
       </div>
@@ -104,7 +151,7 @@
         <pre class="log" id="joblog"></pre>
         {#if ui.obFail}
           <div class="row">
-            <button class="btn btn-primary" onclick={() => window.obRetry()}>{t('Retry')}</button>
+            <button class="btn btn-primary" onclick={retry}>{t('Retry')}</button>
             <button class="btn btn-ghost" onclick={() => go('settings')}>{t('Run it manually under Settings')}</button>
           </div>
         {:else}

@@ -36,8 +36,6 @@ import { runAction } from '../lib/jobs.svelte.js'
         if ((f.published || []).length) pubQ[q] = (f.published || []).map((p) => p.platform_name).join('、')
       }
     }
-    window.__pubQ = pubQ
-    window.__qFile = qFile
     return { pubQ, qFile }
   })
 

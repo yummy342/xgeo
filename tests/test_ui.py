@@ -39,8 +39,9 @@ class TestBuildOutput(unittest.TestCase):
                          "构建产物没有引用 Vite 打出来的 js")
         self.assertRegex(html, r'href="/assets/index-[\w-]+\.css"',
                          "构建产物没有引用 Vite 打出来的 css")
-        # 迁移期保留的旧辅助函数（弹窗、领域逻辑）仍以普通脚本加载
-        self.assertIn("/assets/legacy-views.js", html)
+        # 迁移已收尾：legacy-views.js 与 installBridge 都删了，
+        # 入口只应加载 Vite 打出来的那个 module。
+        self.assertNotIn("legacy-views.js", html)
 
     def test_assets_are_present_and_nonempty(self):
         assets = DIST / "assets"
@@ -48,7 +49,6 @@ class TestBuildOutput(unittest.TestCase):
         names = [p.name for p in assets.iterdir()]
         self.assertTrue(any(n.endswith(".js") for n in names), "没有 js 产物")
         self.assertTrue(any(n.endswith(".css") for n in names), "没有 css 产物")
-        self.assertIn("legacy-views.js", names)
 
     def test_lang_attr_is_english_source(self):
         """英文是源语言（中文走字典），所以入口应当声明 lang="en"。"""

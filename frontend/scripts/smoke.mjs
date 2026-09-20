@@ -6,12 +6,14 @@
 //   node frontend/scripts/smoke.mjs
 const BASE = process.env.GL_URL || 'http://127.0.0.1:8799'
 
+// 侧栏能点到的 16 条。onboard 不在里面——它是接入引导页，没有导航入口，
+// 只在「一个项目都没有」时自动出现，所以下面单独验证它的渲染。
 const ROUTES = [
   'overview', 'engines', 'competitors', 'questions', 'samples',
   'siteaudit', 'gaps', 'channels', 'facts',
   'plan', 'workbench', 'assets',
   'verify', 'report',
-  'settings', 'publishing', 'onboard',
+  'settings', 'publishing',
 ]
 
 const { chromium } = await import('playwright')
@@ -48,7 +50,6 @@ const MIGRATED = {
   publishing: 'PUBLISHING',                        // Publishing.svelte
   engines: 'ENGINES',                              // Engines.svelte
   overview: 'OVERVIEW',                            // Overview.svelte
-  onboard: 'ONBOARDING',                           // Onboard.svelte
   settings: 'grouped by what changing it affects', // Settings.svelte
 }
 
@@ -60,7 +61,7 @@ console.log(`侧栏导航项: ${navCount}（应为 16）`)
 if (navCount !== 16) failed++
 
 for (const r of ROUTES) {
-  await page.evaluate((name) => window.go(name), r)
+  await page.click(`#side .navit[data-route="${r}"]`)
   await page.waitForTimeout(250)
   const text = (await page.locator('#main').innerText()).trim()
   const marker = MIGRATED[r]
@@ -71,17 +72,17 @@ for (const r of ROUTES) {
   console.log(`${ok ? '  ok' : 'FAIL'}  ${r.padEnd(12)} ${String(text.length).padStart(6)} 字符${mark}`)
 }
 
-// 语言切换：写 localStorage 后重载，已迁移的视图应显示中文（字典命中）。
-// 这条同时说明新组件的 t() 和旧看板的 ULANG 读的是同一个来源。
-// 循环最后停在 onboard，reload 前先切回 facts（hash 会被 boot() 读出来）
-await page.evaluate(() => { localStorage.setItem('ulang', 'zh'); window.go('facts') })
-// 必须 reload：语言是在模块加载时读一次，而改 hash 不会触发页面重载
+// 语言切换：写 localStorage 后重载，视图应显示中文（字典命中）。
+// 必须 reload —— 语言在模块加载时读一次。
+await page.evaluate(() => localStorage.setItem('ulang', 'zh'))
 await page.reload({ waitUntil: 'networkidle' })
 await page.waitForSelector('#side .navit')
+await page.click('#side .navit[data-route="facts"]')
+await page.waitForTimeout(300)
 const zhText = (await page.locator('#main').innerText()).trim()
 const zhOk = zhText.includes('纪律：')
 if (!zhOk) failed++
-console.log(`${zhOk ? '  ok' : 'FAIL'}  中文回退      已迁移视图的文案走 zh 字典`)
+console.log(`${zhOk ? '  ok' : 'FAIL'}  中文回退      视图文案走 zh 字典`)
 
 await browser.close()
 

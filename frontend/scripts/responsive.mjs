@@ -4,12 +4,13 @@
 const BASE = process.env.GL_URL || 'http://127.0.0.1:8799'
 const WIDTH = Number(process.env.GL_WIDTH || 375)
 
+// 侧栏能点到的 16 条（onboard 没有导航入口，见 smoke.mjs 的说明）
 const ROUTES = [
   'overview', 'engines', 'competitors', 'questions', 'samples',
   'siteaudit', 'gaps', 'channels', 'facts',
   'plan', 'workbench', 'assets',
   'verify', 'report',
-  'settings', 'publishing', 'onboard',
+  'settings', 'publishing',
 ]
 
 const { chromium } = await import('playwright')
@@ -21,7 +22,14 @@ await page.waitForSelector('#side .navit', { timeout: 10000 })
 
 let bad = 0
 for (const r of ROUTES) {
-  await page.evaluate((name) => window.go(name), r)
+  // 窄屏下侧栏是抽屉（#side 被推到屏幕外），得先点汉堡把它拉出来再点导航项。
+  // 宽屏时汉堡是 display:none，Playwright 会直接跳过不可见的元素。
+  const burger = page.locator('#burger')
+  if (await burger.isVisible()) {
+    await burger.click()
+    await page.waitForTimeout(150)
+  }
+  await page.click(`#side .navit[data-route="${r}"]`)
   await page.waitForTimeout(250)
   const m = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,

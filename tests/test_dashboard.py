@@ -107,12 +107,14 @@ class TestStaticServing(unittest.TestCase):
         status, _, _ = self._get("/assets/../../etc/passwd")
         self.assertEqual(status, 403)
 
-    def test_falls_back_to_legacy_when_dist_absent(self):
+    def test_missing_dist_is_a_plain_404(self):
+        """迁移收尾后没有回退：产物不在就是 404，不再悄悄退回旧单文件看板。
+
+        这个「悄悄回退」正是旧行为的隐患——页面看着能开，跑的是另一套前端。
+        """
         (Path(self.tmp.name) / "index.html").unlink()
-        status, _, body = self._get("/")
-        self.assertEqual(status, 200)
-        # 回退目标是仓库里那份 3023 行的旧看板。同样用 assertTrue 避免打印全文。
-        self.assertTrue(b"uiTranslate" in body, "dist 缺失时没有回退到旧看板")
+        status, _, _ = self._get("/")
+        self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":

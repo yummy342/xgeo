@@ -64,11 +64,9 @@ import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.j
     void project.data?.slug
     api('/api/keys').then((r) => {
       keys = Array.isArray(r) ? r : []
-      window.KEYS = keys
     })
     api('/api/projects').then((r) => {
       projects = Array.isArray(r) ? r : []
-      window.PROJECTS = projects
     })
   })
 
@@ -77,7 +75,6 @@ import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.j
     if (!slug) return
     api('/api/config/' + slug).then((r) => {
       cfg = r || null
-      window.SET_CFG = cfg
     })
   })
 

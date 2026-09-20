@@ -34,7 +34,6 @@
     if (!slug) return
     api('/api/publish/' + slug).then((r) => {
       pub = (r && !r.error) ? r : null
-      window.PUB = pub
     })
   })
 

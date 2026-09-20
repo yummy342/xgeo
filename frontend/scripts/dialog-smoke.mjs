@@ -26,7 +26,7 @@ const check = (name, ok, detail = '') => {
 }
 
 // ---- 样本复核弹窗 ----
-await page.evaluate(() => window.go('samples'))
+await page.click('#side .navit[data-route="samples"]')
 await page.waitForTimeout(600)
 
 const viewBtn = page.locator('#main button', { hasText: /^View$/ }).first()

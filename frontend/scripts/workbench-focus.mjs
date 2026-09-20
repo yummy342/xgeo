@@ -20,7 +20,7 @@ page.on('pageerror', (e) => errors.push(e.message))
 await page.goto(BASE, { waitUntil: 'networkidle' })
 await page.waitForSelector('#side .navit')
 
-await page.evaluate(() => window.go('workbench'))
+await page.click('#side .navit[data-route="workbench"]')
 await page.waitForTimeout(400)
 
 // 选题列表 → 点第一行进编辑态
@@ -45,28 +45,32 @@ await ta.click()
 await ta.type(MARK)
 const typed = await ta.inputValue()
 
-// 触发一次重渲染。旧实现里 render() 会整块重建视图（含 textarea）；
-// 新实现走 Svelte 更新，textarea 元素本身不动。
-// 直接调 window.render() 而不是点按钮，免去按钮文案的耦合。
-await page.evaluate(() => window.render())
-await page.waitForTimeout(600)
+// 给当前这个 textarea 节点打个标记。这一步是断言的核心：旧实现每次重渲染
+// 都用字符串重建整个 textarea，节点会被换掉、标记随之消失；新实现只更新状态，
+// 节点还是同一个。
+await page.evaluate(() => { document.getElementById('wbtext').dataset.probe = 'kept' })
+
+// 走真实路径触发重渲染：点「Re-check」会发请求并刷新预检面板。
+const recheck = page.locator('.editor-bar button', { hasText: /Re-check|重新预检/ }).first()
+await recheck.click()
+await page.waitForTimeout(1200)
 
 const state = await page.evaluate(() => {
   const el = document.getElementById('wbtext')
   return {
-    exists: !!el,
-    focused: document.activeElement === el,
-    activeId: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null,
+    sameNode: el ? el.dataset.probe === 'kept' : false,
     hasMark: el ? el.value.includes('focus-probe') : false,
+    // 光标位置也一并看看：节点被换掉的话它会回到 0
+    caret: el ? el.selectionStart : -1,
   }
 })
 
 const textOk = state.hasMark
-const focusOk = state.focused
+const nodeOk = state.sameNode
 
 console.log(`  文本保留    ${textOk ? 'ok' : 'FAIL'}   （输入了 ${typed.length} 字符）`)
-console.log(`  焦点保持    ${focusOk ? 'ok' : 'FAIL'}   （预检后 activeElement = ${state.activeId}）`)
+console.log(`  节点未重建  ${nodeOk ? 'ok' : 'FAIL'}   （预检后光标在 ${state.caret}，输入长度 ${typed.length}）`)
 
 await browser.close()
-console.log(`\n结果: 文本 ${textOk ? '保留' : '丢失'}, 焦点 ${focusOk ? '保持' : '丢失'}, 页面错误 ${errors.length}`)
-process.exit(textOk && focusOk ? 0 : 1)
+console.log(`\n结果: 文本 ${textOk ? '保留' : '丢失'}, textarea ${nodeOk ? '未被重建' : '被重建了'}, 页面错误 ${errors.length}`)
+process.exit(textOk && nodeOk ? 0 : 1)

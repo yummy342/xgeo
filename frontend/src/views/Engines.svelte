@@ -53,7 +53,6 @@
     void project.data?.slug
     api('/api/keys').then((r) => {
       keys = Array.isArray(r) ? r : []
-      window.KEYS = keys
     })
   })
 
