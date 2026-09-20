@@ -1,7 +1,6 @@
 <script>
   import { onMount } from 'svelte'
   import Sidebar from './components/Sidebar.svelte'
-  import LegacyView from './components/LegacyView.svelte'
   import Toast from './components/Toast.svelte'
   import Modal from './components/Modal.svelte'
   import Facts from './views/Facts.svelte'
@@ -22,8 +21,9 @@
   import Onboard from './views/Onboard.svelte'
   import Settings from './views/Settings.svelte'
 
-  // 17 个视图全部迁完了。LegacyView 目前仍是 fallback，B6 会连同
-  // legacy-views.js、installBridge 一起删掉。
+  // 17 个视图全部迁完，这里已经没有 fallback 分支——路由表就是全部。
+  // legacy-views.js 里剩下的辅助函数仍在用（弹窗、领域逻辑），
+  // 由 legacy.js 的 installBridge 注入它们读的全局。
   const MIGRATED = {
     facts: Facts, channels: Channels, plan: Plan, samples: Samples,
     verify: Verify, assets: Assets, gaps: Gaps, questions: Questions,
@@ -77,16 +77,12 @@
         </div>
       </div>
     {:else}
-      {#if MIGRATED[route.name]}
-        <!-- {#key} 是必需的：不加的话切路由时 Svelte 复用同一个组件实例，
-             新视图不渲染，页面停在上一页的内容上。 -->
-        {#key route.name}
-          {@const View = MIGRATED[route.name]}
-          <View />
-        {/key}
-      {:else}
-        <LegacyView name={route.name} />
-      {/if}
+      <!-- {#key} 是必需的：不加的话切路由时 Svelte 复用同一个组件实例，
+           新视图不渲染，页面停在上一页的内容上。 -->
+      {#key route.name}
+        {@const View = MIGRATED[route.name]}
+        <View />
+      {/key}
     {/if}
   </main>
 </div>

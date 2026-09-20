@@ -22,34 +22,45 @@ python scripts/geo.py ui --no-open --port 8765
 本项目要能离线/内网部署，全新克隆没法构建前端。所以 `npm install` 是开发者专属步骤，
 部署只消费已提交的文件。
 
-## 迁移期结构
+## 结构
 
-现在有两套东西同时在跑，边界是**「legacy 字符串函数 vs Svelte 组件」，不是「旧文件 vs 新文件」**：
+17 个视图全部在 `src/views/` 下，`App.svelte` 的 `MIGRATED` 就是完整路由表——
+没有 fallback 分支。仍然有一个普通脚本参与加载：
 
 ```
 index.html
-  ├─ <script src="/assets/legacy-views.js">   普通脚本，先执行
-  │    从 ui.html 抽出的 17 个旧视图。返回 HTML 字符串。
-  │    读一堆裸全局名（D / SLUG / ST / R / RUNNING / EXPD）。
-  └─ <script type="module">                   Vite 打包的新壳
-       main.js  → installBridge() 把 store 暴露成同名全局（用 getter，
-                  旧代码里 `ST.gapTab = x` 这类直接改写要能写回 store）
+  ├─ <script src="/assets/legacy-views.js">   普通脚本，先执行（58KB）
+  │    迁移收尾后剩下的旧辅助函数：纯工具、HTML 片段生成器、弹窗、任务动作。
+  │    它们读裸全局名（D / SLUG / ST / RUNNING / KEYS / WB…），由桥注入。
+  └─ <script type="module">
+       main.js  → installBridge() 把 store 暴露成同名全局
                 → mount(App)
-       App.svelte → Sidebar（Svelte）+ LegacyView（{@html} 塞旧视图输出）
-                    + Modal + Toast
+       App.svelte → Sidebar + <当前视图> + Modal + Toast
 ```
 
-于是旧视图一行不改就能在新壳里跑，每批替换几个，未替换的行为与旧看板完全一致。
-任何回归必然出在壳里（约 200 行）。
+`legacy-views.js` 由 `scripts/extract-legacy.py` 从 `scripts/ui.html` 按**保留名单**
+生成（不是按行区间——行号会漂移，名单不会）。名单来源是对 `frontend/src` 里
+`window.*` 调用的扫描：
 
-`lib/legacy.js` 的 `installBridge()` 是唯一的临时代码。如果逐视图迁移推进到一半
-而它没有变小，说明迁移没在动，该停下来重新评估。
+```bash
+grep -rhoE "window\.[a-zA-Z_][a-zA-Z0-9_]*" frontend/src | sort -u
+```
 
-### 已迁到 Svelte 的视图
+脚本自带两道自检，改名单时会挡住错误：
 
-在 `App.svelte` 的 `MIGRATED` 里登记，登记了就绕开 `LegacyView` 走新组件。
-`scripts/smoke.mjs` 里的 `MIGRATED` 映射会给每条已迁路由断言一段独有文案——
-两个实现都会渲染出内容，只看长度分不出有没有真的走新组件。
+- 名单里的名字必须在 `ui.html` 里存在（改名了要同步）
+- **保留的函数不能引用被丢弃的符号**——这条是必须的：`editFactsSrc` 调的是裸名
+  `saveFactsSrc` 而不是 `window.saveFactsSrc`，光靠扫描 `window.*` 定名单会漏掉它
+
+### 还没做完的
+
+- **弹窗仍在 legacy 里**（`factModal`、`pubModal`、`editKey`、`sampleModal`… 22 个）。
+  它们读 `window.KEYS` / `PUB` / `SET_CFG` / `WB` / `FACT_CARDS`，所以组件取完数据
+  要同步一份回 `window`。这是桥存在的唯一理由，把弹窗改成 Svelte 组件后就能拆。
+- **样本复核链依赖旧缓存**：`sampleModal` 保存后靠 `SMP=null` + `loadSamples()` 刷新，
+  后者末尾调 `render()` 正好 bump 组件依赖的 tick。Samples 组件只做了展示，
+  复核弹窗没迁。
+- **ja 字典未补**：`t()` 对 ja 回退到英文源文案。
 
 ### 四条容易踩的
 
