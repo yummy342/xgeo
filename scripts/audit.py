@@ -392,6 +392,11 @@ def run(slug: str) -> dict:
             f"（如 {site.get('sitemap_noisy_example')}），低价值页会稀释实体表征——"
             "从 sitemap 移出，并用 robots 通配符（如 `Disallow: /*?session=`、`Disallow: /search?`）挡掉")
     lch = site.get("llms_txt_check") or {}
+    if lch.get("html_body"):
+        site_issues.append(
+            "P0 llms.txt 返回的是 HTML 而不是纯文本：SPA 或托管重写把 /llms.txt "
+            "落到前端路由上了，看着「能访问」，引擎拿到的其实是首页。"
+            "加一条静态文件例外（先于 catch-all 路由匹配），或把文件放到不会被重写的目录再反向代理到根路径")
     if lch.get("broken"):
         site_issues.append(
             f"P1 llms.txt 里 {len(lch['broken'])}/{lch['checked']} 条抽样链接打不开"

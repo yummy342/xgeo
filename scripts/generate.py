@@ -934,6 +934,197 @@ def gen_attribution(slug: str) -> dict[str, str]:
     return {"ga4-channel.txt": ga4, "log-count.sh": log_cmd, "README.md": readme}
 
 
+def gen_deploy_md(slug: str) -> str:
+    """给开发同学的上线清单。每步写清「放到哪 / 别放到哪 / 怎么算做完」。
+
+    跟着项目生成，不是一份通用模板：路径、文件名、验收命令都取自这个项目
+    assets/ 下**实际存在**的文件（不是「应该生成」的清单——那样会把没生成的
+    也列上去，等于让人找一个不存在的文件）。
+
+    验收项一律落到「你能亲眼看到的响应」或「看板里能跑的检查」上。
+    写「确认配置正确」这种话等于没写。"""
+    cfg = G.load_config(slug)
+    b = cfg["brand"]
+    name = b["name"]
+    site = (b.get("site") or "").rstrip("/")
+    market = cfg.get("market", "cn")
+    has_site = G.has_site(cfg)
+    adir = G.project_dir(slug) / "assets"
+    have = {p.relative_to(adir).as_posix() for p in adir.rglob("*") if p.is_file()} \
+        if adir.exists() else set()
+
+    L = [f"# {name} · 上线部署清单", ""]
+    if not has_site:
+        L += ["这个项目没有自有网站，所以 llms.txt 与 JSON-LD 不适用"
+              "（它们必须挂在自有域名下才有意义），本站不用做。", "",
+              "要做的只有外部阵地那部分：内容照大纲写在平台侧发布，"
+              "归因包接进自己的统计工具。做完回到看板跑一次验收。", "",
+              "## 归因配置", "",
+              "- `attribution/ga4-channel.txt`：在 GA4 建「AI 引擎」渠道组，匹配正则照抄",
+              "- `attribution/log-count.sh`：你的服务器有 access.log 的话，本机能跑就按周统计",
+              "- 纪律：测到的 AI 流量是下界，报告口径写「可归因的 AI 会话 ≥ N」，不外推",
+              "", "## 验收", "",
+              "回看板跑一次完整周期，系统会重抓并自动判定哪些工单闭环。", ""]
+        return "\n".join(L)
+
+    L += [
+        "要把这份清单做到「引擎真的能读到」为止，不是把文件传上去就算完。",
+        "每一步下面都写了验收标准——做完一步勾一步，最后回看板跑一次验收，",
+        "系统重抓线上页面自动判定，不用谁来口头确认。", "",
+        "## 一、先决条件", "",
+        f"- 站点已上线，外网可访问：{site}",
+        "- 你能改服务器 / CDN / 托管平台的配置",
+        "- robots.txt 没有封禁 AI 爬虫（GPTBot / ClaudeBot / PerplexityBot 等）",
+        "- 站点若在 CDN 或 WAF 后面：这些 UA 没有被拦。"
+        "**浏览器能打开不代表爬虫能**——WAF 常见做法是只拦带工具标记的 UA，"
+        "站长自己看不出来。体检里「WAF/CDN 差异封锁」那条查的就是这个", "",
+        "## 二、要传的文件", "",
+        "| 文件 | 传到哪 | 谁用 |", "|---|---|---|",
+    ]
+    rows = [
+        ("assets/llms.txt", f"站点根目录，即 {site}/llms.txt 能直接打开", "开发"),
+        ("assets/llms.en.txt", f"站点根目录（英文站有独立域名就放那个站）", "开发"),
+        ("assets/jsonld/*.json", "按页面类型贴进该页的 `<head>`", "开发"),
+        ("assets/snippets/definition.zh.html", "首屏口号下方", "开发"),
+        ("assets/snippets/definition.en.html", "英文站首屏口号下方", "开发"),
+        ("assets/snippets/faq.zh.html", "FAQ 页或首页 FAQ 段", "开发"),
+        ("assets/snippets/faq.en.html", "英文站 FAQ 段", "开发"),
+        ("assets/attribution/ga4-channel.txt", "GA4 渠道组配置（照抄正则）", "开发/运营"),
+        ("assets/attribution/log-count.sh", "服务器上跑，统计 AI 来源与 AI 爬虫抓取", "开发"),
+        ("assets/outlines/*.md", "不部署，交给内容同学", "内容"),
+        ("assets/drafts/*.md", "不部署，人工核实后才发", "内容"),
+    ]
+    for f, where, who in rows:
+        rel = f[len("assets/"):]
+        if rel.endswith("*.json") or rel.endswith("*.md"):
+            top = rel.replace("/*.", "/")
+            if not any(x.startswith(top) for x in have):
+                continue
+        elif rel not in have:
+            continue
+        L.append(f"| `{f}` | {where} | {who} |")
+
+    L += ["", "## 三、逐步做", ""]
+    step = 0
+
+    if "llms.txt" in have:
+        step += 1
+        L += [
+            f"### {step}. llms.txt —— 官方事实索引", "",
+            f"**放哪**：站点根目录。做完之后 {site}/llms.txt 直接打开就是文件本身。",
+            "",
+            "**别放**：`/static/`、`/assets/`、或任何需要重写规则绕一圈才能访问的目录。",
+            "",
+            "**验收**：",
+            "",
+            f"1. 浏览器打开 {site}/llms.txt，第一行应当是 `# {name}`，"
+            "整页是纯文本，**不是网页**。",
+            "2. 最常踩的一个坑：SPA 或托管平台把所有路径都重写到 index.html，"
+            "于是 `/llms.txt` 返回 200，内容是首页 HTML。看着「能访问」，"
+            "引擎拿到的却是一份网页——它只会当网页解析，索引等于没建。",
+            "   修法：加一条静态文件例外，让磁盘上真实存在的文件先于 catch-all 路由匹配。",
+            "3. 文件里列的那些链接必须都能打开（404 的条目等于给了引擎一个死链接）。"
+            "看板体检会抽样验证里面的链接，以及那几条是否被 robots 封了。",
+            "",
+        ]
+
+    jsonld_rows = [
+        ("organization.json", "首页 / 关于页"),
+        ("software-application.json", "产品页（有产品实体才生成）"),
+        ("article.json", "文章页"),
+        ("breadcrumb.json", "所有内容页"),
+        ("faq-page.json", "有 FAQ 段的页面"),
+    ]
+    present = [(fn, w) for fn, w in jsonld_rows if f"jsonld/{fn}" in have]
+    if present:
+        step += 1
+        L += [
+            f"### {step}. JSON-LD —— 结构化数据", "",
+            "`assets/jsonld/` 里是按页面类型分好的，**不是往站点根目录传的文件**，"
+            "是整段贴进对应页面的 `<head>`：",
+            "",
+            "| 文件 | 贴到哪 |",
+            "|---|---|",
+        ]
+        L += [f"| `{fn}` | {w} |" for fn, w in present]
+        L += [
+            "",
+            "贴法（注意外层要包 `<script type=\"application/ld+json\">`，"
+            "不包的话搜索引擎读不到）：",
+            "",
+            "```html",
+            "<script type=\"application/ld+json\">",
+            "{ ... 这里放 json 文件的完整内容 ... }",
+            "</script>",
+            "```",
+            "",
+            "**验收**：改完之后用 Google 的 Rich Results Test 或 schema.org 校验器"
+            "跑一遍线上 URL，没有报错。看板体检的「理解层」也会检查 JSON-LD 类型是否齐全。",
+            "",
+        ]
+
+    if any(x.startswith("snippets/") for x in have):
+        step += 1
+        L += [
+            f"### {step}. 定义块与 FAQ 块 —— 页面上要真的看得见", "",
+            "定义块放首屏口号下方——口号负责转化，这一段负责被 AI 摘走。",
+            "",
+            "**关键纪律**：这段文字必须与官网首屏、关于页、JSON-LD 的 `description`、"
+            "`llms.txt` 四处**逐字一致**。口径不一致是 AI 描述品牌漂移的头号原因。",
+            "",
+            "FAQ 块的答案**必须在静态 HTML 里可见**——用 JS 渲染出来的内容是抓不到的。",
+            "",
+            "**验收**：",
+            "",
+            "1. 打开线上页面 → 右键「查看网页源代码」（不是「检查元素」，那个看的是"
+            "渲染后的 DOM）→ 搜定义句，**能搜到**才算数。",
+            "2. 四处定义句逐字一致。看板「品牌事实库」页有这条纪律的提醒。",
+            "",
+        ]
+    if any(x.startswith("attribution/") for x in have):
+        step += 1
+        L += [
+            f"### {step}. 归因包 —— 把闭环接到自己的数据里", "",
+            "1. GA4：管理 → 数据显示 → 渠道组 → 新建渠道「AI 引擎」，"
+            "正则照抄 `attribution/ga4-channel.txt`。",
+            "2. 服务器有 access.log 的话，把 `log-count.sh` 拷上去按周跑一次。",
+            "   AI 爬虫抓取量变多通常**先于**被引用变多，是前置信号。",
+            "3. 转化事件（注册 / 留资 / 下单）里存下来源快照："
+            "点击 ID > UTM > referrer > 直接/未知。",
+            "",
+            "**验收**：GA4 里「AI 引擎」渠道组能看到会话数。"
+            "数字很小是正常的——App 内打开常常不带 referrer，测到的是**下界**，"
+            "报告里就写「可归因的 AI 会话 ≥ N」，不要外推成总量。",
+            "",
+        ]
+    missing = [k for k in ("snippets", "attribution")
+               if not any(x.startswith(k + "/") for x in have)]
+    if step and missing:
+        L += [f"（这一期没生成 {'、'.join(missing)}；要补就跑 "
+              f"`geo.py generate --slug {slug} --asset {','.join(missing)}`。）", ""]
+
+    L += [
+        "## 四、上线后怎么复核", "",
+        "回到看板跑一次完整周期（设置 → 运行任务 → 跑完整一期），它会重抓线上页面，",
+        "自动判定哪些工单真的闭环；之前达标现在不达标的会自动打回，不会被忽略。",
+        "",
+        "无法程序判定的（比如百科词条有没有过审）会标「待人工」，确认后手动标记。",
+        "",
+        "节奏建议：**页面体检每周，AI 答案采样每两周或每月**。"
+        "采样有成本、指标本身有噪声，跑太密看不出信号，跑太疏发现问题太晚。",
+        "",
+        "## 五、几个会白干的坑", "",
+        "- **文件传上去了但路由不认**：见第 1 步第 2 条，SPA/托管重写的经典坑。",
+        "- **CDN 缓存了旧的 404**：传完文件刷一下缓存，否则爬虫拿到的还是 404。",
+        "- **robots.txt 一边给索引一边拦抓取**：llms.txt 里指向的页面如果被 "
+        "`Disallow` 封了 AI 爬虫，等于自相矛盾。体检会把这种条目单独列出来。",
+        "- **定义句改了四处只改了两处**：这是最高频的一类返工，改之前先搜全站。",
+        "- **内容里堆 UTM**：带参 URL 会稀释规范 URL 的引用份额，公开内容不要挂参数。",
+        "",
+    ]
+    return "\n".join(L)
+
+
 ASSETS = ["llms", "jsonld", "snippets", "outlines", "attribution"]
 
 
@@ -1038,6 +1229,11 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
         if rep.get("total_issues"):
             G.info(f"初稿风险检查：{rep['total_issues']} 项（高风险 {rep['high']} 项）"
                    f" → assets/drafts/_lint.json。**发布前必须人工核实**")
+
+    # 部署清单在最后生成：它要按 assets/ 下实际存在的文件来列（见 gen_deploy_md）
+    (adir).mkdir(parents=True, exist_ok=True)
+    (adir / "DEPLOY.md").write_text(gen_deploy_md(slug), "utf-8")
+    made.append("assets/DEPLOY.md")
 
     index = {"slug": slug, "generated_at": G.now_iso(), "market": market, "assets": made}
     G.write_json(adir / "index.json", index)

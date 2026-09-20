@@ -198,6 +198,9 @@ def probe_ai_ua(root: str, home: dict, robots_txt: str, delay: float) -> tuple[d
     return probe, ua_blocked
 
 
+LLMS_HTML_RX = re.compile(r"(?i)<!doctype\s+html|<html[\s>]|<head[\s>]|<\s*body[\s>]")
+
+
 def check_llms_txt(root: str, llms_txt: str, robots_txt: str) -> dict | None:
     """llms.txt 只有指向可抓取的有效页面才有意义：抽样验证里面的链接。"""
     if not llms_txt:
@@ -221,7 +224,10 @@ def check_llms_txt(root: str, llms_txt: str, robots_txt: str) -> dict | None:
             broken.append({"url": u, "status": res["status"]})
         time.sleep(0.3)
     return {"total_links": len(urls), "checked": len(sample),
-            "broken": broken, "robots_blocked": robots_blocked}
+            "broken": broken, "robots_blocked": robots_blocked,
+            # SPA / 带重写规则的托管：/llms.txt 落到前端路由上，200 返回的是首页
+            # HTML。只看「能不能访问」是看不出来的——拿到 HTML 的引擎只会当网页解析。
+            "html_body": bool(LLMS_HTML_RX.search(llms_txt[:600]))}
 
 
 def _crawl_failure_hint(pages: list[dict]) -> str:

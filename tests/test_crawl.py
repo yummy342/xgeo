@@ -108,6 +108,30 @@ class TestCrawlHealth(unittest.TestCase):
         crawl.check_crawl_health(self._pages([200] + [0] * 4))  # 20% 刚好达标
 
 
+class TestLlmsTxtBody(unittest.TestCase):
+    """llms.txt 的「能访问」和「是纯文本」是两回事。
+
+    SPA 或带重写规则的托管会把 /llms.txt 落到前端路由上，返回 200 + 首页 HTML。
+    只看状态码判断不出来，而引擎拿到的是一份 HTML，不是事实索引。"""
+
+    SPA = "<!doctype html><html lang=\"en\"><head><title>Home</title></head><body>x</body></html>"
+    REAL = "# 品牌名\n\n> 一句话定义。\n\n## 核心事实\n\n- 官网: https://a.example\n"
+
+    def _check(self, body, robots=""):
+        with mock.patch.object(crawl.G, "fetch",
+                               return_value={"status": 404, "html": ""}):
+            return crawl.check_llms_txt("https://a.example", body, robots)
+
+    def test_spa_html_body_is_flagged(self):
+        self.assertTrue(self._check(self.SPA)["html_body"])
+
+    def test_real_llms_txt_is_not_flagged(self):
+        self.assertFalse(self._check(self.REAL)["html_body"])
+
+    def test_missing_llms_txt_returns_none(self):
+        self.assertIsNone(crawl.check_llms_txt("https://a.example", "", ""))
+
+
 class TestWordCountKana(unittest.TestCase):
     def test_pure_kana_counts(self):
         self.assertGreater(G.word_count("これはテストです"), 0)
