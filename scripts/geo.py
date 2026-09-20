@@ -399,6 +399,7 @@ def cmd_task(a):
 
 
 def cmd_status(a):
+    import sample as S
     import tasks
 
     cfg = G.load_config(a.slug)
@@ -408,6 +409,15 @@ def cmd_status(a):
     print(f"\n{cfg['brand']['name']}  ({cfg.get('market')})  {cfg['brand']['site']}")
     print(f"  站点均分 {audit.get('avg_score', '—')}  页面 {audit.get('page_count', '—')}"
           f"  工单 {s.get('total', 0)} 条（可自动验收 {s.get('auto_verifiable', 0)}）")
+    u = S.usage_summary(a.slug)
+    if u["calls"]:
+        tail = f"，另有 {u['unknown']} 次未回传用量" if u["unknown"] else ""
+        print(f"  采样用量 输入 {u['in']:,} / 输出 {u['out']:,} tokens"
+              f"（{u['calls']} 次调用{tail}）")
+    elif u["unknown"]:
+        # 一次都没记上（记账之前采的样本，或中转不回传 usage）——报「未记录」而不是 0，
+        # 「不知道花了多少」和「没花钱」不是一回事
+        print(f"  采样用量 未记录（{u['unknown']} 次调用未回传用量）")
     if not data.get("tasks"):
         print("  还没有工单，运行 plan 生成\n")
         return

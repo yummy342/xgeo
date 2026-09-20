@@ -1,5 +1,7 @@
+import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -161,6 +163,96 @@ class TestAskRetry(unittest.TestCase):
         res, post = self._ask([_Resp(400, text="bad request")] * 5)
         self.assertFalse(res["ok"])
         self.assertEqual(post.call_count, 1)
+
+
+class TestUsageAccounting(unittest.TestCase):
+    """token 用量记账。三种协议的字段名不一样，都要认。
+
+    只记 token 不记钱：单价会漂移，token 是事实——有 token 随时能乘出成本，
+    反过来不成立。取不到时必须记 None 而不是 0，否则「不知道花了多少」
+    会被伪装成「没花钱」。
+    """
+
+    def test_openai_shape(self):
+        self.assertEqual(S._usage_of({"usage": {"prompt_tokens": 120, "completion_tokens": 30}}),
+                         {"in": 120, "out": 30})
+
+    def test_anthropic_shape(self):
+        self.assertEqual(S._usage_of({"usage": {"input_tokens": 9, "output_tokens": 4}}),
+                         {"in": 9, "out": 4})
+
+    def test_missing_usage_is_none(self):
+        for payload in ({}, {"usage": None}, {"usage": {}}, {"usage": "n/a"}):
+            self.assertIsNone(S._usage_of(payload), payload)
+
+    def test_half_present_is_kept(self):
+        self.assertEqual(S._usage_of({"usage": {"prompt_tokens": 7}}), {"in": 7, "out": 0})
+
+    def _ask_with(self, payload):
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "k"}):
+            with mock.patch.object(S.requests, "post", return_value=_Resp(200, payload)):
+                return S.ask("deepseek", "q")
+
+    def test_ask_surfaces_usage(self):
+        res = self._ask_with({**OK_PAYLOAD, "usage": {"prompt_tokens": 11, "completion_tokens": 2}})
+        self.assertEqual(res["usage"], {"in": 11, "out": 2})
+
+    def test_ask_without_usage_reports_none(self):
+        self.assertIsNone(self._ask_with(OK_PAYLOAD)["usage"])
+
+
+class TestUsageSummary(unittest.TestCase):
+    """累计用量：逐条加总，缺用量单独计。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = S.G.WORK
+        S.G.WORK = Path(self._tmp.name)
+        self.pdir = S.G.project_dir("demo")
+        (self.pdir / "samples").mkdir(parents=True)
+
+    def tearDown(self):
+        S.G.WORK = self._old
+        self._tmp.cleanup()
+
+    def _write(self, rows):
+        (self.pdir / "samples" / "2026-09-21.jsonl").write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", "utf-8")
+
+    def test_sums_and_splits_by_platform(self):
+        self._write([
+            {**make_row(platform="deepseek"), "usage": {"in": 100, "out": 20}},
+            {**make_row(platform="deepseek"), "usage": {"in": 50, "out": 10}},
+            {**make_row(platform="openai"), "usage": {"in": 7, "out": 3}},
+        ])
+        u = S.usage_summary("demo")
+        self.assertEqual((u["calls"], u["in"], u["out"]), (3, 157, 33))
+        self.assertEqual(u["by_platform"]["deepseek"]["in"], 150)
+        self.assertEqual(u["by_platform"]["openai"]["out"], 3)
+
+    def test_missing_usage_counted_separately(self):
+        # 没回传用量 ≠ 花了 0：并进总数会把「不知道」伪装成「没花钱」
+        self._write([{**make_row(), "usage": None},
+                     {**make_row(), "usage": {"in": 5, "out": 1}}])
+        u = S.usage_summary("demo")
+        self.assertEqual((u["calls"], u["unknown"], u["in"]), (1, 1, 5))
+
+    def test_rows_without_usage_key_are_unknown(self):
+        # 改动前采的历史样本没有 usage 字段，同样归入 unknown
+        self._write([make_row()])
+        u = S.usage_summary("demo")
+        self.assertEqual((u["calls"], u["unknown"]), (0, 1))
+
+    def test_failed_calls_excluded(self):
+        self._write([{**make_row(), "ok": False, "usage": None},
+                     {**make_row(), "usage": {"in": 3, "out": 1}}])
+        u = S.usage_summary("demo")
+        self.assertEqual((u["calls"], u["unknown"], u["in"]), (1, 0, 3))
+
+    def test_no_samples_is_zero(self):
+        u = S.usage_summary("demo")
+        self.assertEqual((u["calls"], u["unknown"], u["in"], u["out"]), (0, 0, 0, 0))
+        self.assertEqual(u["by_platform"], {})
 
 
 if __name__ == "__main__":

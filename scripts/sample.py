@@ -272,7 +272,7 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
                 seen = set()
                 refs = [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
                 return {"ok": True, "answer": answer, "citations": refs,
-                        "raw_model": _p_model(p), "searched": True}
+                        "raw_model": _p_model(p), "usage": _usage_of(d), "searched": True}
         elif "ToolNotOpen" not in r.text:
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except Exception:  # noqa: BLE001
@@ -286,7 +286,7 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
         d = r.json()
         return {"ok": True, "answer": d["choices"][0]["message"].get("content") or "",
-                "citations": [], "raw_model": _p_model(p), "searched": False}
+                "citations": [], "raw_model": _p_model(p), "usage": _usage_of(d), "searched": False}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "answer": "", "error": f"{type(e).__name__}: {e}"}
 
@@ -316,7 +316,7 @@ def ask_anthropic(p: dict, key: str, question: str, timeout: int) -> dict:
             answer = "".join(b.get("text", "") for b in d.get("content", [])
                              if b.get("type") == "text")
             return {"ok": True, "answer": answer, "citations": [],
-                    "raw_model": d.get("model", _p_model(p))}
+                    "raw_model": d.get("model", _p_model(p)), "usage": _usage_of(d)}
         except requests.exceptions.Timeout as e:
             if attempt < len(delays):
                 time.sleep(delays[attempt])
@@ -324,6 +324,25 @@ def ask_anthropic(p: dict, key: str, question: str, timeout: int) -> dict:
             return {"ok": False, "answer": "", "error": f"{type(e).__name__}: {e}"}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "answer": "", "error": f"{type(e).__name__}: {e}"}
+
+
+def _usage_of(data: dict) -> dict | None:
+    """归一化 token 用量，取不到返回 None。
+
+    三种协议的字段名不一样：OpenAI 兼容（含多数中转）是
+    prompt_tokens/completion_tokens，Anthropic 原生与火山 Responses API 是
+    input_tokens/output_tokens。两个都认，是因为同一个模型经不同中转时结构会变。
+
+    只记 token，不记钱：单价会漂移，而 token 是事实——有了它，任何时刻乘一遍
+    当前单价就能得出成本，反过来则不成立。
+    """
+    u = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(u, dict):
+        return None
+    i, o = u.get("prompt_tokens", u.get("input_tokens")), u.get("completion_tokens", u.get("output_tokens"))
+    if i is None and o is None:
+        return None
+    return {"in": int(i or 0), "out": int(o or 0)}
 
 
 def _refs_from(data: dict) -> list[dict]:
@@ -408,6 +427,7 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
             refs = _refs_from(data)
             return {"ok": True, "answer": answer, "citations": refs,
                     "raw_model": data.get("model", _p_model(p)),
+                    "usage": _usage_of(data),
                     "searched": bool(refs) or p.get("search", False)}
         except requests.exceptions.Timeout as e:
             if attempt < len(delays):
@@ -682,12 +702,14 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
         rec = {
             "date": G.today(), "ts": G.now_iso(),
             "platform": plat, "platform_name": PROVIDERS[plat]["name"],
+            "model": res.get("raw_model"),
             "market": market_of(plat), "terminal": "api", "sample_mode": "api",
             "evidence_level": "B_api_可复现",
             "search_enabled": res.get("searched", PROVIDERS[plat].get("search", False)),
             "question_id": q.get("id"), "question": q["text"], "round": rnd,
             "brand_in_question": brand_in_question(q["text"], cfg),
             "ok": res["ok"], "error": res.get("error"),
+            "usage": res.get("usage"),
             "elapsed_ms": elapsed_ms,
             "answer": res.get("answer", ""), "citations": res.get("citations", []),
         }
@@ -837,6 +859,38 @@ def sample_key(r: dict) -> str:
 def _sample_files(slug: str) -> list[Path]:
     d = G.project_dir(slug) / "samples"
     return sorted(d.glob("*.jsonl")) if d.exists() else []
+
+
+def usage_summary(slug: str) -> dict:
+    """API 采样累计花了多少 token。
+
+    只报 token 不折算成钱：单价会漂移，token 是事实——有 token 随时能按当前
+    单价乘出成本，反过来不成立。按平台分开报，因为各家单价差一个数量级，
+    混成一个总数看不出该省哪一家。
+
+    unknown 单独计——成功但没回传 usage 的调用（多数中转如此）。并进总数
+    等于把「不知道花了多少」记成「花了 0」。
+    """
+    def _zero():
+        return {"calls": 0, "unknown": 0, "in": 0, "out": 0}
+
+    total = _zero()
+    by_platform: dict[str, dict] = {}
+    for f in _sample_files(slug):
+        for r in G.read_jsonl(f):
+            if not r.get("ok"):
+                continue  # 失败调用不计费，也没有 usage 可记
+            p = by_platform.setdefault(r.get("platform") or "?", _zero())
+            u = r.get("usage")
+            if not isinstance(u, dict):
+                total["unknown"] += 1
+                p["unknown"] += 1
+                continue
+            for acc in (total, p):
+                acc["calls"] += 1
+                acc["in"] += u.get("in") or 0
+                acc["out"] += u.get("out") or 0
+    return {**total, "by_platform": by_platform}
 
 
 def list_samples(slug: str, date: str = "", platform: str = "", qid: str = "",
