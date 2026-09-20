@@ -32,6 +32,8 @@ import jobs as J
 import tasks as T
 
 UI = Path(__file__).resolve().parent / "ui.html"
+# 前端构建产物（Vite 输出）。存在就优先托管它，否则回退上面的旧单文件看板。
+UI_DIST = Path(__file__).resolve().parent / "ui_dist"
 
 
 # ---------------------------------------------------------------- 数据聚合
@@ -317,6 +319,20 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
+    def _static(self, base: Path, rel: str):
+        """从 base 目录下取静态文件，解析后必须仍落在 base 内（防目录穿越）。"""
+        target = (base / rel).resolve()
+        try:
+            target.relative_to(base.resolve())
+        except ValueError:
+            return self._send(403, b"forbidden", "text/plain")
+        if not target.is_file():
+            return self._send(404, b"not found", "text/plain")
+        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/json",):
+            ctype += "; charset=utf-8"
+        return self._send(200, target.read_bytes(), ctype)
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(n) or b"{}")
@@ -329,7 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         p, q = unquote(u.path), parse_qs(u.query)
         try:
             if p in ("/", "/index.html"):
-                return self._send(200, UI.read_bytes(), "text/html; charset=utf-8")
+                # 迁移期双分支：有构建产物就用它，否则回退旧单文件看板
+                shell = UI_DIST / "index.html"
+                html = shell.read_bytes() if shell.is_file() else UI.read_bytes()
+                return self._send(200, html, "text/html; charset=utf-8")
             if p == "/api/projects":
                 return self._json(list_projects())
             if p == "/api/actions":
@@ -479,18 +498,11 @@ class Handler(BaseHTTPRequestHandler):
                                if (pdir / "content").exists() else [],
                 })
             if p.startswith("/files/"):
-                rel = p[len("/files/"):]
-                target = (G.WORK / rel).resolve()
-                try:
-                    target.relative_to(G.WORK.resolve())
-                except ValueError:
-                    return self._send(403, b"forbidden", "text/plain")
-                if not target.is_file():
-                    return self._send(404, b"not found", "text/plain")
-                ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-                if ctype.startswith("text/") or ctype in ("application/json",):
-                    ctype += "; charset=utf-8"
-                return self._send(200, target.read_bytes(), ctype)
+                return self._static(G.WORK, p[len("/files/"):])
+            if p.startswith("/assets/"):
+                # 前端构建产物。URL /assets/x.js 对应文件 ui_dist/assets/x.js
+                # （Vite 默认把产物放进 assets/，index.html 也按这个路径引用）
+                return self._static(UI_DIST, "assets/" + p[len("/assets/"):])
             return self._send(404, b"not found", "text/plain")
         except FileNotFoundError:
             return self._json({"error": "文件不存在"}, 404)
@@ -779,6 +791,8 @@ def run(port: int = 8765, open_browser: bool = True,
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
     G.info(f"看板已启动：{url}（Ctrl+C 退出）"
            + ("，访问需令牌（GEOLOOK_TOKEN）" if token else ""))
+    if not (UI_DIST / "index.html").is_file():
+        G.info("未找到前端构建产物，回退旧看板。构建：npm --prefix frontend run build")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
