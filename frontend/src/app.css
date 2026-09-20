@@ -141,7 +141,29 @@ pre.log{background:var(--deep);border-radius:var(--r-md);box-shadow:var(--sh-sm)
 .grid-2-wide{grid-template-columns:1.35fr 1fr}
 .grid-side{grid-template-columns:300px 1fr;align-items:start}
 
+/* grid / flex 子项的默认 min-width 是 auto：内容一宽就把列撑开，父级跟着溢出。
+   .table 有 min-width:820px，一格表格足以带走整行。 */
+.grid > *, .kpis > *, .wb3 > * { min-width: 0 }
+#main [style*="grid-template-columns"] > * { min-width: 0 }
+/* 表格的滚动容器也会被内容撑开：.tbl 自己是 flex/grid item，min-width 默认 auto，
+   .table 的 min-width:820px 会顶穿它的 overflow 裁剪。 */
+#main .tbl { min-width: 0 }
+
 @media (max-width:640px){
+  /* 过渡方案：旧视图的栅格写死在内联 style 里，媒体查询够不着，只能用属性
+     选择器强制塌成一列（内联样式优先级更高，所以必须 !important）。
+     auto-fit minmax 那几处本来就自适应，排除掉。逐视图迁到 .grid-* 后删这条。 */
+  #main [style*="grid-template-columns"]:not([style*="auto-fit"]) {
+    grid-template-columns: 1fr !important;
+  }
+  /* 同类问题还有横向排布的 flex 行：四层链条、标题+按钮组都写死了单行。
+     没显式声明过 flex-wrap 的一律允许换行——窄屏下这是安全默认。 */
+  #main [style*="display:flex"]:not([style*="flex-wrap"]) {
+    flex-wrap: wrap;
+  }
+  /* 换行还不够：.row 作为 flex item 被内联 flex:none（即 flex:0 0 auto）钉住，
+     自己不会收缩，照样撑出容器。全仓只有问题库的按钮组用了这个组合。 */
+  #main .row[style*="flex:none"] { flex: 1 1 auto !important; min-width: 0; }
   .page{padding:18px 16px 48px}
   .grid-2,.grid-3,.grid-2-wide,.grid-side{grid-template-columns:1fr}
   .spec{grid-template-columns:repeat(2,auto);gap:14px}
