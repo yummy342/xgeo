@@ -5,8 +5,8 @@
 
   // 取代 ui.html:1922 的 taskModal。
   //
-  // 「去内容工作台」那步仍是 legacy 的 wbFromTask —— 它是领域逻辑
-  // （从任务标题/资产推断该写哪道题，见 taskWbTarget），不属于渲染层。
+  // 「去内容工作台」那步用 lib/domain.js 的 taskWbTarget——从任务标题/资产
+  // 推断该写哪道题，属于领域逻辑，不放在渲染层。
 
   let { task, onclose } = $props()
 

@@ -7,7 +7,8 @@
 
   // 迁自 ui.html:2671 vSiteAudit。
   // agrade / ablk 两个联动筛选原本是全局 ST 键，下沉成组件内 $state。
-  // auditFlag(i) 仍是 legacy（要开新窗口看 robots/sitemap，或跳相关工单）。
+  // auditFlag(i) 也搬进来了：六张卡片的联动，能直接看源文件的开新窗口，
+  // 其余跳到相关工单。
 
   let openTask = $state(null)
 

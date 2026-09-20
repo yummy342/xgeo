@@ -10,9 +10,7 @@
   // 迁自 ui.html:2317 vPublishing。
   //
   // 旧版是 async 视图：在渲染路径里 `if(!PUB) PUB = await api(...)`。
-  // 这里改成 $effect 取数。editPub() 仍是 legacy 弹窗（它读全局 PUB 的
-  // publishers，含每个渠道的申请指引和 env 字段），所以下面把结果同步回
-  // window.PUB，等那个弹窗也迁走就能删掉这段。
+  // 这里改成 $effect 取数，渠道弹窗改成组件（自己收 props），不再往全局挂。
 
   let pendingOpen = $state(false)
   let publishRel = $state(null)
@@ -144,7 +142,7 @@
   <PublishConfigDialog
     publisher={configTarget}
     onclose={() => (configTarget = null)}
-    onchanged={() => { configTarget = null; api('/api/publish/' + slug).then((r) => { if (r && !r.error) { pub = r; window.PUB = pub } }) }}
+    onchanged={() => { configTarget = null; api('/api/publish/' + slug).then((r) => { if (r && !r.error) { pub = r } }) }}
   />
 {/if}
 

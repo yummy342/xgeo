@@ -878,4 +878,15 @@ export const zh = {
   'running': '运行中',
   'No task has been started yet': '还没有启动过任务',
   'Last state:': '最后状态：',
+
+  // ---- 补漏（i18n-audit.mjs 扫出来的缺口）----
+  'Switch brand': '切换品牌',
+  'No projects yet': '还没有项目',
+  'Audit': '体检分',
+  'Brand': '品牌',
+  'Hits': '命中',
+  'Could not create': '创建失败',
+  'Enter the site domain': '请填写官网域名',
+  'No engine API key is configured yet.\n\nContinuing skips answer sampling and AI-derivation of the question bank and brand facts — it will only crawl and audit the site, and those two will need to be filled in by hand.\n\nConfigure at least one key first (DeepSeek or Zhipu GLM).\n\nContinue anyway?': '还没有配置任何引擎密钥。\n\n继续的话会跳过答案采样，以及问题库与品牌事实的 AI 推导——只抓取和体检官网，这两项要人工补。\n\n建议先配一个密钥（DeepSeek 或智谱 GLM）。\n\n仍要继续？',
+  'No configured engine key for {markets}. Automatic sampling will be skipped for that market (you can add a key later, or use a manual sampling sheet).\n\nContinue anyway?': '{markets} 还没有可用的引擎密钥。该市场的自动采样会被跳过（之后可以补密钥，也可以走人工采样表）。\n\n仍要继续？',
 }

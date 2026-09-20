@@ -7,8 +7,8 @@
   import { t } from '../lib/i18n/index.svelte.js'
 
   // 迁自 ui.html:1121 vOverview。
-  // headline() 仍是 legacy——它是「健康分 → 结论文案」的决策树，属于领域逻辑，
-  // 由后端算更合适；在迁走之前按名调用。趋势图是内联 SVG，这里原样重画。
+  // headline() 在 lib/domain.js——「健康分 → 结论文案」的决策树，属于领域逻辑，
+  // 由后端算更合适。趋势图是内联 SVG，这里原样重画。
 
   const D = $derived(project.data || {})
   const a = $derived(D.analytics || {})

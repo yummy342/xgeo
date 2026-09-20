@@ -16,9 +16,6 @@
   // oninput="WB.text=this.value" 手工镜像，每次 render() 都用字符串重建整个
   // textarea——文本能保住，但焦点和光标会丢（元素被换掉了）。
   // 换 bind:value 后 textarea 不再重建。
-  //
-  // WB 原本还兼作几个 legacy 函数的输入（pubModal 读 WB.cur），所以下面把
-  // 当前底稿同步回 window.WB，等 pubModal 也迁走就能删掉这段。
 
   let openChan = $state(null)
   let publishRel = $state(null)
@@ -53,9 +50,6 @@
     const list = (a.questions || []).filter((x) => !x.brand_probe && (!f || x.text.toLowerCase().includes(f)))
     return demandSort(list)
   })
-
-  // 旧 pubModal 读的是全局 WB.cur，这里同步一份过去
-  $effect(() => { window.WB = { cur, sources, q, text } })
 
   // 跳转传参：go('workbench', { wq: qid })
   $effect(() => {

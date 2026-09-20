@@ -8,8 +8,8 @@ import { runAction } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
 
   // 迁自 ui.html:2217 vReport。
-  // headline() 与 onePager/editSheet 仍是 legacy 实现（前者是健康度结论文案的
-  // 决策树，属于领域逻辑；后两者开新窗口/弹窗），这里直接按名调用。
+  // onePager 在 lib/onepager.js（开新窗口），editSheet 是 SheetEditor 组件。
+  // 领域的结论文案（headline）也在 lib/domain.js，不在这一层。
 
   let sheetName = $state(null)
 

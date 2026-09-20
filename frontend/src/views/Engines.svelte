@@ -10,7 +10,7 @@
 
   // 迁自 ui.html:1223 vEngines。
   // 旧版是 async 视图：`if(!KEYS) KEYS = await api('/api/keys')` 写在渲染路径里。
-  // 这里改成 $effect 取数，结果同样同步回 window.KEYS——Settings 还没迁，仍读它。
+  // 这里改成 $effect 取数，结果留在组件内，不再往全局挂。
   // engSel 保持跨视图传参（竞品页点引擎标签会设它再跳过来）。
 
   const D = $derived(project.data || {})

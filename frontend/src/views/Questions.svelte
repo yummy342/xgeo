@@ -13,7 +13,7 @@ import { runAction } from '../lib/jobs.svelte.js'
 
   // 迁自 ui.html:1469 vQuestions。
   // qGroup 原本是全局 ST.qGroup，下沉成组件内 $state。
-  // demandSort/demandTag 读 window.EXPD（桥注入），仍是 legacy 实现，直接复用。
+  // demandSort/demandTag 从 lib/domain.js 引入，按参数取值。
 
   let publishRel = $state(null)
   let editing = $state(false)
@@ -25,8 +25,8 @@ import { runAction } from '../lib/jobs.svelte.js'
 
   let group = $state(null)
 
-  // qid → 已发布渠道 / 承接成稿文件。旧代码把这两个挂在 window 上供 pubModal 使用，
-  // 这里照旧——弹窗仍是 legacy 实现，读的就是这两个全局。
+  // qid → 已发布渠道 / 承接成稿文件。旧代码把这两个挂在 window 上供弹窗读，
+  // 现在弹窗是组件、自己收 props。
   const pubMaps = $derived.by(() => {
     const pubQ = {}
     const qFile = {}

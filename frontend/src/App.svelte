@@ -28,8 +28,7 @@
   import { resumeJob } from './lib/jobs.svelte.js'
 
   // 17 个视图全部迁完，这里已经没有 fallback 分支——路由表就是全部。
-  // legacy-views.js 里剩下的辅助函数仍在用（弹窗、领域逻辑），
-  // 由 legacy.js 的 installBridge 注入它们读的全局。
+  // 迁移期的桥（legacy.js / legacy-views.js）已整体拆除，没有第二套实现。
   const MIGRATED = {
     facts: Facts, channels: Channels, plan: Plan, samples: Samples,
     verify: Verify, assets: Assets, gaps: Gaps, questions: Questions,
@@ -49,7 +48,6 @@
   })
 
   // 复刻 ui.html:3003-3020 的启动 IIFE 与 load() 末尾的路由决策。
-  // 装桥不在这里——见 main.js，必须早于组件挂载。
   async function boot() {
     await loadActions()
     const ps = await loadProjects()

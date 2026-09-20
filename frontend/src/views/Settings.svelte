@@ -17,9 +17,7 @@ import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from 
   // 旧版在渲染路径里做三件事：异步取 KEYS/PROJECTS/SET_CFG、以及一个裸
   // setTimeout 去回填上一个任务的日志（ui.html:2378）。前两件收进 $effect，
   // 第三件本来就是「任务结束后刷新日志」，也归 $effect——渲染函数不再有副作用。
-  //
-  // editKey / editConfig / switchProject / setMonitor / stopJob 仍是 legacy
-  // 弹窗与动作，它们读全局 KEYS / SET_CFG，所以下面把取到的值同步回 window。
+  // 密钥与品牌配置弹窗都已改成组件，自己收 props，不再往全局挂。
 
   let openKey = $state(null)
   let showConfig = $state(false)
