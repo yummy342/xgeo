@@ -92,13 +92,20 @@ def tail(job_id: str, offset: int = 0) -> tuple[str, int]:
     return chunk.decode("utf-8", "replace"), len(data)
 
 
-def running_for(slug: str) -> str | None:
-    with _lock:
-        jid = _running.get(slug)
+def _live_job(slug: str) -> str | None:
+    """本项目正在跑的任务 id。调用方必须已持有 _lock。
+
+    状态以 job 文件为准（服务重启后 _running 是空的，只能看文件）。"""
+    jid = _running.get(slug)
     if not jid:
         return None
     j = get(jid)
     return jid if j and j["status"] == "running" else None
+
+
+def running_for(slug: str) -> str | None:
+    with _lock:
+        return _live_job(slug)
 
 
 def recent(slug: str | None = None, limit: int = 12) -> list[dict]:
@@ -122,8 +129,6 @@ def recent(slug: str | None = None, limit: int = 12) -> list[dict]:
 def start(slug: str, action: str, params: dict | None = None) -> dict:
     if action not in ACTIONS:
         raise ValueError(f"不支持的动作：{action}")
-    if running_for(slug):
-        raise RuntimeError("该项目已有任务在运行，等它结束或先停止")
 
     spec = ACTIONS[action]
     cmd = [sys.executable, "-u", str(GEO_PY), action, "--slug", slug]
@@ -144,7 +149,14 @@ def start(slug: str, action: str, params: dict | None = None) -> dict:
         "cmd": " ".join(cmd[2:]),
     }
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    _write(job)
+    # 检查-占位必须在同一把锁里。分开写的话，两个请求同时进来会双双通过
+    # 「有没有在跑」的检查，起出两个任务抢同一份 audit.json。
+    # 落盘也放进来：running_for 判的是 job 文件的状态，文件没写完就等于没占位。
+    with _lock:
+        if _live_job(slug):
+            raise RuntimeError("该项目已有任务在运行，等它结束或先停止")
+        _write(job)
+        _running[slug] = job["id"]
     logf = _log_path(job["id"]).open("wb")
     logf.write(f"$ geo {' '.join(cmd[3:])}\n".encode())
     logf.flush()
@@ -155,52 +167,87 @@ def start(slug: str, action: str, params: dict | None = None) -> dict:
         proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                 cwd=str(G.ROOT), env=env, start_new_session=True)
     except Exception as e:  # noqa: BLE001  Popen 挂了不能留下永远 running 的僵尸记录
-        logf.close()
+        try:
+            logf.close()
+        except OSError:
+            pass
         job["status"] = "failed"
         job["error"] = f"{type(e).__name__}: {e}"
         job["finished_at"] = G.now_iso()
         _write(job)
+        with _lock:  # 放掉占位，否则这个项目再也起不了新任务
+            if _running.get(slug) == job["id"]:
+                _running.pop(slug, None)
         raise
     job["pid"] = proc.pid
     _write(job)
     with _lock:
-        _running[slug] = job["id"]
         _procs[job["id"]] = proc
 
     def waiter():
-        code = proc.wait()
-        logf.close()
-        j = get(job["id"]) or job
-        j["status"] = "done" if code == 0 else ("stopped" if code < 0 else "failed")
-        j["exit_code"] = code
-        j["finished_at"] = G.now_iso()
-        _write(j)
-        with _lock:
-            if _running.get(slug) == job["id"]:
-                _running.pop(slug, None)
-            _procs.pop(job["id"], None)
+        # 这个线程是唯一的收尾人：它一旦异常退出，job 就永远停在 running，
+        # 并发保护会把整个项目堵死。所以每一步都不能让异常漏出去。
+        code = None
+        error = None
+        try:
+            code = proc.wait()
+        except Exception as e:  # noqa: BLE001
+            error = f"等待子进程失败：{type(e).__name__}: {e}"
+        finally:
+            try:
+                logf.close()
+            except OSError:
+                pass
+        try:
+            j = get(job["id"]) or job
+            j["status"] = "done" if code == 0 else ("stopped" if code and code < 0 else "failed")
+            if error:
+                j["error"] = error
+            j["exit_code"] = code
+            j["finished_at"] = G.now_iso()
+            _write(j)
+        finally:
+            with _lock:
+                if _running.get(slug) == job["id"]:
+                    _running.pop(slug, None)
+                _procs.pop(job["id"], None)
 
     threading.Thread(target=waiter, daemon=True).start()
     return job
+
+
+def _terminate_tree(pid: int) -> bool:
+    """结束整个进程组：任务会自己再起子进程（抓取、采样），只杀父进程会留下
+    还在写文件的孤儿。Windows 没有进程组，退回单进程 terminate。"""
+    if hasattr(os, "getpgid"):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def stop(job_id: str) -> bool:
     with _lock:
         proc = _procs.get(job_id)
     if proc:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:  # noqa: BLE001
-            proc.terminate()
+        if not _terminate_tree(proc.pid):
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
         return True
     # 服务重启后 _procs 是空的，按 job 文件里落的 pid 兜底杀整组
     job = get(job_id)
     pid = (job or {}).get("pid")
     if not pid or job.get("status") != "running":
         return False
-    try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
-    except Exception:  # noqa: BLE001
+    if not _terminate_tree(pid):
         return False
     job["status"] = "stopped"  # 本进程没有 waiter，自己回写，免得列表里永远 running
     job["finished_at"] = G.now_iso()
@@ -229,10 +276,13 @@ def reap_orphans() -> int:
             try:
                 os.kill(pid, 0)
                 alive = True
-            except ProcessLookupError:
-                alive = False
             except PermissionError:
-                alive = True
+                alive = True   # 进程在，只是不属于本用户
+            except OSError:
+                # Windows 上死 pid 抛的是 OSError(WinError 87)，不是
+                # ProcessLookupError。只认后者的话记录原地留在 running，
+                # 并发保护永久挡住这个项目，看板自己都起不来。
+                alive = False
         if alive:
             continue
         job["status"] = "interrupted"

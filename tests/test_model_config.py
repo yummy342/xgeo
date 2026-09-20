@@ -109,7 +109,9 @@ class TestWriteEnv(unittest.TestCase):
                     self.assertEqual(os.environ.get("GLM_MODEL"), "glm-test-1")
                     text = (root / ".env").read_text()
                     self.assertIn("GLM_MODEL=glm-test-1", text)
-                    self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
+                    if os.name != "nt":
+                        # Windows 的 chmod 只切只读位，没有 0600 这个概念
+                        self.assertEqual((root / ".env").stat().st_mode & 0o777, 0o600)
                     # 与调用链联动：写完 model_for 立即取到新值
                     self.assertEqual(S.model_for("glm"), "glm-test-1")
                     # 空值 = 删除：文件行消失、进程环境回落

@@ -1,5 +1,6 @@
 import json, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 import sys; sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import geolib as G
 
@@ -10,6 +11,58 @@ class TestJsonIO(unittest.TestCase):
             G.write_json(p, {"a": 1})
             self.assertEqual(G.read_json(p), {"a": 1})
             self.assertFalse(list(Path(d).glob("*.tmp")))
+
+    def test_temp_name_is_not_shared_between_writes(self):
+        """临时文件名必须逐次唯一。
+
+        用 pid 拼临时名的话，同一进程里两个线程写同一个文件会写进同一个临时文件：
+        一个先 os.replace 走，另一个 replace 时临时文件已经不存在了，内容直接丢。"""
+        names = set()
+        real = G.os.replace
+
+        def spy(src, dst):
+            names.add(Path(src).name)
+            return real(src, dst)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(G.os, "replace", spy):
+            p = Path(d) / "x.json"
+            G.write_json(p, {"a": 1})
+            G.write_json(p, {"a": 2})
+        self.assertEqual(len(names), 2, f"两次写的临时文件名撞了：{names}")
+
+    def test_write_jsonl_keeps_old_content_when_interrupted(self):
+        """写一半崩掉不能把原文件毁掉——样本 jsonl 是一期采样的唯一记录。"""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.jsonl"
+            G.write_jsonl(p, [{"a": 1}])
+            with mock.patch.object(G.json, "dumps", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    G.write_jsonl(p, [{"a": 2}])
+            self.assertEqual(G.read_jsonl(p), [{"a": 1}], "中断把旧内容覆盖了")
+            self.assertEqual(list(Path(d).glob("*.tmp")), [], "留下了临时文件")
+
+    def test_save_config_is_atomic_and_backs_up(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(G, "WORK", Path(d)):
+            G.save_config("atomic", {"brand": {"name": "第一版"}})
+            G.save_config("atomic", {"brand": {"name": "第二版"}})
+            self.assertEqual(G.load_config("atomic")["brand"]["name"], "第二版")
+            self.assertEqual(list((Path(d) / "atomic").glob("*.tmp")), [])
+            baks = list((Path(d) / "atomic" / ".geo.bak").glob("geo-*.json"))
+            self.assertTrue(baks, "覆盖前没留备份")
+            self.assertEqual(json.loads(baks[0].read_text("utf-8"))["brand"]["name"], "第一版")
+
+    def test_read_jsonl_skips_a_truncated_line(self):
+        """进程被杀会在末尾留下半行。一行坏不该让整期体检中断。"""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.jsonl"
+            p.write_text('{"a": 1}\n{"b": 2}\n{"c": ', "utf-8")
+            self.assertEqual(G.read_jsonl(p), [{"a": 1}, {"b": 2}])
+
+    def test_read_jsonl_skips_a_corrupt_middle_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "s.jsonl"
+            p.write_text('{"a": 1}\n\nnot json at all\n{"b": 2}\n', "utf-8")
+            self.assertEqual(G.read_jsonl(p), [{"a": 1}, {"b": 2}])
 
     def test_read_json_corrupt_returns_default(self):
         with tempfile.TemporaryDirectory() as d:

@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,22 @@ def has_site(cfg: dict) -> bool:
     return bool((cfg.get("brand") or {}).get("site", "").strip())
 
 
+def _atomic_write(path: Path, write):
+    """先写同目录下的临时文件再 os.replace：中断时目标文件要么是旧内容、
+    要么是新内容，不会是半截。这几个文件都是整套流程的真相源，半截就等于丢掉一期。
+
+    临时名带随机串而不是 pid——同一进程里两个线程写同一个文件时 pid 会撞名。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def save_config(slug: str, cfg: dict):
     """写配置前先备份。geo.json 里是一期的人工投入（问题库、竞品、口径），
     被误覆盖的代价远大于留几个备份文件。"""
@@ -157,14 +174,13 @@ def save_config(slug: str, cfg: dict):
         old = sorted(bak.glob("geo-*.json"))
         for f in old[:-10]:
             f.unlink()
-    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+    _atomic_write(p, lambda t: t.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8"))
 
 
 def write_json(path: Path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-    os.replace(tmp, path)
+    _atomic_write(path, lambda t: t.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), "utf-8"))
 
 
 def read_json(path: Path, default=None):
@@ -179,24 +195,33 @@ def read_json(path: Path, default=None):
 
 
 def write_jsonl(path: Path, rows):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    def dump(tmp: Path):
+        with tmp.open("w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    _atomic_write(path, dump)
 
 
 def read_jsonl(path: Path):
     p = Path(path)
     if not p.exists():
         return []
-    out = []
+    out, bad = [], 0
     # 必须按 "\n" 切，不能用 splitlines()：后者还会在 U+2028/U+2029/U+0085/\v/\f
     # 处断行，而 json.dumps 不转义这些字符，抓到含 U+2028 的页面就会把一条记录
     # 劈成两半 → JSONDecodeError，整期体检中断。
     for line in p.read_text("utf-8").split("\n"):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             out.append(json.loads(line))
+        except json.JSONDecodeError:
+            # 一行坏（进程被杀导致的末尾截断、磁盘写坏）不该让整期工作全灭，
+            # 跳过它并留下痕迹，剩下的记录照常参与统计
+            bad += 1
+    if bad:
+        info(f"警告：{p} 有 {bad} 行损坏，已跳过")
     return out
 
 
