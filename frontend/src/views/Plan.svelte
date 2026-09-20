@@ -1,9 +1,21 @@
 <script>
   // 迁自 ui.html:1853 vPlan。
   // progBar 仍在 legacy 里（返回一段 HTML 字符串），所以这里用 {@html}。
-  import { project } from '../lib/stores/project.svelte.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+  import { post } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
   import PageHead from '../components/PageHead.svelte'
+  import TaskDialog from '../components/TaskDialog.svelte'
+
+  // 任务详情与状态改动的入口都收到这里，不再走 legacy 的 taskModal / setTask
+  let openTask = $state(null)
+
+  async function setStatus(id, status) {
+    const r = await post('/api/task', { slug: project.data?.slug, id, status })
+    if (!r.ok) { toast(r.error || t('Failed'), 'err'); return }
+    await loadProject(project.data.slug, true)
+  }
 
   const ts = $derived(project.data?.tasks || [])
   const deliveries = $derived(project.data?.deliveries || [])
@@ -89,7 +101,7 @@
           <tr>
             <td><span class="tag {task.priority === 'P0' ? 'tag-accent' : task.priority === 'P1' ? 'tag-neutral' : 'tag-dim'}">{task.priority}</span></td>
             <td>
-              <div class="task-t" title={t('Click for details: why, how, and what counts as done')} onclick={() => window.taskModal(task.id)}>
+              <div class="task-t" title={t('Click for details: why, how, and what counts as done')} onclick={() => (openTask = task)}>
                 {task.id} · {task.title} <span class="task-more">{t('details')}</span>
               </div>
               <div class="task-sub">
@@ -105,7 +117,7 @@
                 {#each STATUS as s (s)}
                   <button
                     class="btn {task.status === s ? 'btn-primary' : 'btn-ghost'} status-btn"
-                    onclick={() => window.setTask(task.id, s)}
+                    onclick={() => setStatus(task.id, s)}
                   >{t({ todo: 'To do', doing: 'In progress', blocked: 'Blocked', done: 'Done' }[s])}</button>
                 {/each}
               </div>
@@ -124,6 +136,10 @@
     </table>
   </div>
 </div>
+
+{#if openTask}
+  <TaskDialog task={openTask} onclose={() => (openTask = null)} />
+{/if}
 
 <style>
   .plan-head { align-items: flex-end; justify-content: space-between; gap: 20px; }

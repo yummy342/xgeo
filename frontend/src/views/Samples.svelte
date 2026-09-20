@@ -10,8 +10,11 @@
   import { api } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import PageHead from '../components/PageHead.svelte'
+  import SampleDialog from '../components/SampleDialog.svelte'
 
   const slug = $derived(project.data?.slug || '')
+  // 复核弹窗现在由本组件持有，不再走 legacy 的 sampleModal
+  let dialogKey = $state(null)
 
   let rows = $state([])
   let total = $state(0)
@@ -121,7 +124,7 @@
               {/if}
               {#if r.manual_override}<span class="tag tag-dim">{t('Manual')}</span>{/if}
             </td>
-            <td><button class="btn btn-ghost view-btn" onclick={() => window.sampleModal(r.key)}>{t('View')}</button></td>
+            <td><button class="btn btn-ghost view-btn" onclick={() => (dialogKey = r.key)}>{t('View')}</button></td>
           </tr>
         {:else}
           <tr><td colspan="10" class="muted empty">{ready ? t('No samples match the filter') : t('Loading…')}</td></tr>
@@ -130,6 +133,14 @@
     </table>
   </div>
 </div>
+
+{#if dialogKey}
+  <SampleDialog
+    sampleKey={dialogKey}
+    onclose={() => (dialogKey = null)}
+    onchanged={() => { void renderState.tick; fetchSamples() }}
+  />
+{/if}
 
 <style>
   .page.wide { max-width: 1360px; }

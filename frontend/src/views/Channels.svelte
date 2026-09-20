@@ -6,6 +6,9 @@
   import { t } from '../lib/i18n/index.svelte.js'
   import { esc, pct } from '../lib/format.js'
   import PageHead from '../components/PageHead.svelte'
+  import ChannelDialog from '../components/ChannelDialog.svelte'
+
+  let openChan = $state(null)
 
   const bp = $derived(project.data?.blueprint)
   const chs = $derived(bp?.channels || [])
@@ -32,7 +35,7 @@
         el.style.boxShadow = '0 0 0 2px var(--accent)'
         setTimeout(() => { el.style.boxShadow = 'var(--sh-sm)' }, 2600)
       }
-      window.chanOpen(sel)
+      openChan = bp?.channels?.find((c) => c.name === sel) || null
     }, 60)
     ui.chanSel = null
   })
@@ -73,7 +76,7 @@
             <span class="tier-count">{t('Covered')} {items.filter((c) => c.covered).length} / {items.length}</span>
           </div>
           {#each items as c (c.name)}
-            <div class="chan" data-chan={c.name} title={t('Click for build details')} onclick={() => window.chanOpen(c.name)}>
+            <div class="chan" data-chan={c.name} title={t('Click for build details')} onclick={() => (openChan = c)}>
               <div class="row">
                 <span class="dot" style="background:{c.covered ? 'var(--a400)' : '#595d6c'}"></span>
                 <span class="chan-name">{c.name}</span>
@@ -121,6 +124,10 @@
       </div>
     {/if}
   </div>
+{/if}
+
+{#if openChan}
+  <ChannelDialog channel={openChan} onclose={() => (openChan = null)} />
 {/if}
 
 <style>

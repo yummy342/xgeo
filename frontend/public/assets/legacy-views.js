@@ -269,36 +269,6 @@ async function saveQuestions(){
 
 /* ===================== 差距诊断 ===================== */
 
-async function addFact(pre){
-  modal(`<h4 style="font-size:17px">记录一条事实比对</h4>
-    <div class="field"><label>字段（如：适用规模 / 成立时间 / 价格）</label><input id="f-field" class="input" value="${esc(typeof pre==='string'?pre:'')}"></div>
-    <div class="field"><label>AI 说的（样本原话）</label><input id="f-said" class="input"></div>
-    <div class="field"><label>官方口径</label><input id="f-truth" class="input"></div>
-    <div class="field"><label>状态</label><div class="seg">
-      <label class="seg-opt"><input type="radio" name="fst" value="被说错" checked>被说错</label>
-      <label class="seg-opt"><input type="radio" name="fst" value="缺失">缺失</label>
-      <label class="seg-opt"><input type="radio" name="fst" value="一致">一致</label></div></div>
-    <div class="row" style="justify-content:flex-end;margin-top:12px">
-      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button class="btn btn-primary" onclick="saveFact()">保存</button></div>`);
-}
-
-async function saveFact(){
-  const items=(D.analytics.factcheck||[]).slice();
-  items.push({field:$('#f-field').value.trim(),said:$('#f-said').value.trim(),
-    truth:$('#f-truth').value.trim(),state:document.querySelector('input[name=fst]:checked').value});
-  const r=await post('/api/factcheck/'+SLUG,{items});
-  toast(r.ok?'已记录（健康分将随之更新）':'失败',r.ok?'':'err');
-  if(r.ok){closeModal();load(SLUG,true)}
-}
-
-async function delFact(i){
-  const items=(D.analytics.factcheck||[]).slice();items.splice(i,1);
-  await post('/api/factcheck/'+SLUG,{items});load(SLUG,true);
-}
-
-/* ===================== 阵地地图 ===================== */
-
 function chanFitQs(c){
   return (D.analytics.questions||[]).filter(q=>!q.brand_probe
     &&(c.fits||[]).includes(q.group)&&(q.market==='both'||q.market===c.market));
@@ -355,37 +325,6 @@ function chanOpen(name){
 
 /* ===================== 品牌事实库 ===================== */
 
-function factModal(i){
-  const c=FACT_CARDS[i];if(!c)return;
-  modal(`<h4 style="font-size:17px">${esc(c.field)}</h4>
-    <div style="font-size:12px;color:var(--t600);margin:10px 0 3px">官方口径（你希望 AI 这么说）</div>
-    <div style="font-size:13.5px;line-height:1.6">${esc(c.value)}</div>
-    <div style="font-size:12px;color:var(--t600);margin:12px 0 3px">AI 当前说法 ${c.ai.state?`<span class="tag ${c.ai.state==='一致'?'pill-good':'tag-accent'}" style="font-size:10px">${c.ai.state}</span>`:'<span class="tag tag-dim" style="font-size:10px">未比对</span>'}</div>
-    <div style="font-size:13px;line-height:1.6;color:var(--t400)">${esc(c.ai.txt)}</div>
-    <p class="muted" style="font-size:11.5px;margin-top:10px">「AI 当前说法」来自「引擎表现 → 样本回放」的真实回答。人工比对后记一条，「事实一致性」才会进健康分。</p>
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button class="btn btn-ghost" style="margin-right:auto" onclick="closeModal();editFactsSrc()">编辑口径（源文件）</button>
-      <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
-      <button class="btn btn-primary" onclick="closeModal();addFact(${esc(JSON.stringify(c.field))})">记一条比对</button></div>`);
-}
-
-async function editFactsSrc(){
-  const f=await api('/api/facts/'+SLUG);
-  modal(`<h4 style="font-size:17px">品牌事实卡 · 源文件</h4>
-    <p class="muted" style="font-size:12px">Markdown。每条事实标证据等级 A–E；没来源的标「待确认」，不许编。保存后点「重新生成」同步到资产。</p>
-    <textarea id="factsrc" class="input" rows="20">${esc(f.text||'')}</textarea>
-    <div class="row" style="justify-content:flex-end;margin-top:12px">
-      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button class="btn btn-primary" onclick="saveFactsSrc()">保存</button></div>`);
-}
-
-async function saveFactsSrc(){
-  const r=await post('/api/facts/'+SLUG,{text:$('#factsrc').value});
-  toast(r.ok?'已保存':'失败',r.ok?'':'err'); if(r.ok){closeModal();load(SLUG,true)}
-}
-
-/* ===================== 行动计划 ===================== */
-
 function taskWbTarget(t){
   // 行动计划 → 工作台的落点解析：尽量落到「这条任务最该写的那道题」，而不是列表页
   for(const a of (t.assets||[])){const m=String(a).match(/\bq\d{3}\b/);if(m)return m[0]}   // 资产已带 qid
@@ -409,41 +348,6 @@ function wbFromTask(id){
   closeModal&&closeModal();
   go('workbench',wq?{wq}:undefined);
 }
-
-function taskModal(id){
-  const t=(D.tasks||[]).find(x=>x.id===id);
-  if(!t)return;
-  const acc=t.acceptance||{};
-  const ev=(t.evidence||[]).slice(-3).reverse();
-  modal(`<h4 style="font-size:17px">${esc(t.id)} · ${esc(t.title)}</h4>
-    <div class="row" style="gap:6px;margin-top:6px">
-      <span class="tag ${t.priority==='P0'?'tag-accent':'tag-neutral'}">${t.priority}</span>
-      <span class="tag tag-outline">${esc(t.package)}</span>
-      ${t.risk?`<span class="tag ${t.risk==='high'?'tag-accent':'tag-dim'}">${({low:'低风险',watch:'需观察',high:'高风险'})[t.risk]}</span>`:''}
-      <span style="font-size:11.5px;color:var(--t600)">负责：${esc(t.owner)} · 工作量 ${esc(t.effort)} · 窗口 ${esc(t.window||'—')} · ${mktLabel(t.market)}</span></div>
-    <div style="font-size:12px;color:var(--t600);margin:12px 0 3px">为什么做</div>
-    <div style="font-size:13px;line-height:1.6;color:var(--t400)">${esc(t.why||'—')}</div>
-    <div style="font-size:12px;color:var(--t600);margin:12px 0 3px">具体怎么干</div>
-    <div style="font-size:13px;line-height:1.6">${esc(t.action||'—')}</div>
-    <div style="font-size:12px;color:var(--t600);margin:12px 0 3px">怎么算做完（${acc.type==='auto'?'自动验收——重抓/采样后系统判定，不靠人说':'人工验收'}）</div>
-    <div style="font-size:13px;line-height:1.6">${esc(acc.desc||'—')}${acc.check?`<div class="muted" style="font-size:11.5px;margin-top:2px">检查器：<code>${esc(acc.check)}</code></div>`:''}</div>
-    ${progBar(t.progress,t.progress_first)}
-    ${(t.affected||[]).length?`<div style="font-size:12px;color:var(--t600);margin:12px 0 3px">受影响页面（${t.affected.length}）</div>
-      <div style="max-height:120px;overflow:auto;font-size:11.5px;line-height:1.7;color:var(--t500)">${t.affected.slice(0,20).map(u=>`<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u)}</div>`).join('')}${t.affected.length>20?`<div class="muted">…共 ${t.affected.length} 个</div>`:''}</div>`:''}
-    ${ev.length?`<div style="font-size:12px;color:var(--t600);margin:12px 0 3px">最近验收记录</div>
-      ${ev.map(e=>`<div style="font-size:11.5px;color:var(--t500);padding:2px 0">${esc((e.at||'').slice(0,16).replace('T',' '))} · ${({pass:'✓ 通过',fail:'✗ 未达标',manual:'待人工'})[e.result]||esc(e.result)} · ${esc(e.note||'')}</div>`).join('')}`:''}
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
-      ${t.package==='内容矩阵'?`<button class="btn btn-secondary" style="margin-right:auto" onclick="wbFromTask(${esc(JSON.stringify(t.id))})">去内容工作台</button>`:''}
-      <button class="btn btn-primary" onclick="closeModal()">关闭</button></div>`);
-}
-
-async function setTask(id,status){
-  const r=await post('/api/task',{slug:SLUG,id,status});
-  if(!r.ok){toast(r.error||'失败','err');return}
-  const t=(D.tasks||[]).find(x=>x.id===id);if(t)t.status=status;render();
-}
-
-/* ===================== 内容工作台 ===================== */
 
 function pendPubModal(){
   const cp=D.content_pub||[];
@@ -715,94 +619,6 @@ async function obRetry(){
 }
 
 /* ===================== 站点体检 ===================== */
-
-function auditFlag(i){
-  // 站点体检顶部卡片的联动：robots/sitemap 直接看源文件，UA 实测跳相关工单，
-  // llms.txt 去部署资产，页面可访问定位到问题页列表，语言覆盖跳相关工单
-  const site=(D.brand.site||'').replace(/\/$/,'');
-  const byCheck=rx=>{const t=(D.tasks||[]).find(x=>rx.test((x.acceptance||{}).check||''));if(t)taskModal(t.id);else go('plan')};
-  if(i===0&&site)window.open(site+'/robots.txt','_blank');
-  else if(i===1)byCheck(/^site\.no_ai_ua_block/);
-  else if(i===2&&site)window.open(site+'/sitemap.xml','_blank');
-  else if(i===3)go('assets',{assetSel:'llms.txt'});
-  else if(i===4){const el=document.querySelector('#audit-pages');if(el)el.scrollIntoView({block:'start'})}
-  else if(i===5)byCheck(/^site\.(en_pages_gte|lang_balance)/);
-}
-
-/* ===================== 部署资产 ===================== */
-
-let SMP=null,SMPF={date:'',platform:'',flag:''};
-
-async function loadSamples(){
-  const q=new URLSearchParams({date:SMPF.date,platform:SMPF.platform,flag:SMPF.flag,limit:'300'});
-  SMP=await api(`/api/samples/${SLUG}?${q}`);
-  render();
-}
-
-async function sampleModal(key){
-  const r=await api(`/api/sample/${SLUG}?key=${encodeURIComponent(key)}`);
-  if(!r||r.error){toast('读取失败','err');return}
-  const a=r.analysis||{},cites=r.citations||[];
-  modal(`<h4 style="font-size:16px">${esc(r.question||'')}</h4>
-    <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
-      <span class="tag tag-outline">${esc(r.platform_name||r.platform)}</span>
-      <span class="tag tag-dim">${esc(r.date||'')}</span>
-      <span class="tag tag-dim">${esc(r.evidence_level||'')}</span>
-      ${r.session_label?`<span class="tag tag-outline" title="采样环境——不同环境的样本不该混在一起算平均">${esc(r.session_label)}</span>`:''}
-      ${r.manual_override?'<span class="tag tag-accent">已人工核对</span>':''}
-      <span style="font-size:11.5px;color:var(--t600)">${esc(r.terminal||'')} · ${esc(r.sample_mode||'')} · ${(r.answer||'').length} 字</span></div>
-    <div style="font-size:12px;color:var(--t600);margin:12px 0 3px">答案原文</div>
-    <div style="max-height:210px;overflow:auto;background:var(--deep);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.65;white-space:pre-wrap;color:var(--t400)">${esc(r.answer||'')}</div>
-    ${cites.length?(()=>{
-      // 源站构成：这条答案的引用都来自哪些域名、各占多少——占比高的就是该题的主导信源
-      const dom={};cites.forEach(c=>{try{const h=new URL(c.url).hostname.replace(/^www\./,'');dom[h]=(dom[h]||0)+1}catch(e){}});
-      const own=((D.brand&&D.brand.site)||'').replace(/^https?:\/\//,'').replace(/^www\./,'').split('/')[0];
-      const rows=Object.entries(dom).sort((a,b)=>b[1]-a[1]);
-      return `<div style="font-size:12px;color:var(--t600);margin:12px 0 3px">引用（${cites.length}）· 源站构成</div>
-      <div class="row" style="gap:5px;flex-wrap:wrap;margin-bottom:6px">
-        ${rows.map(([h,n])=>{const mine=own&&(h===own||h.endsWith('.'+own));
-          return `<span class="tag ${mine?'tag-accent':'tag-dim'}" style="font-size:11px" title="${mine?'你的官网':''}">${esc(h)} ×${n} · ${Math.round(n/cites.length*100)}%</span>`}).join('')}
-      </div>
-      <div style="max-height:110px;overflow:auto;font-size:11.5px;line-height:1.7">
-        ${cites.map(c=>`<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="${esc(c.url)}" target="_blank" style="color:var(--a300)">${esc(c.url)}</a> <span style="color:var(--t600)">${esc(c.title||'')}</span></div>`).join('')}</div>`})():''}
-    <div style="font-size:12px;color:var(--t600);margin:14px 0 4px">人工复核（改完立刻重算当日指标）</div>
-    <div class="row" style="gap:8px;flex-wrap:wrap">
-      <label class="small">品牌被提及
-        <select id="sm-men" style="background:var(--deep);color:var(--text);border:1px solid #3f424d;border-radius:6px;padding:4px 8px;font:inherit;margin-left:4px">
-          <option value="1" ${a.brand_mentioned?'selected':''}>是</option>
-          <option value="0" ${a.brand_mentioned?'':'selected'}>否</option></select></label>
-      <label class="small">位次 <input id="sm-rank" class="input" style="width:64px;display:inline-block;padding:4px 8px" value="${a.brand_rank||0}"></label>
-      <label class="small" style="flex:1;min-width:220px">竞品（顿号分隔）
-        <input id="sm-comp" class="input" style="padding:4px 8px" value="${esc((a.competitors_mentioned||[]).join('、'))}"></label>
-    </div>
-    <div class="field" style="margin-top:8px"><label>复核备注</label>
-      <input id="sm-note" class="input" value="${esc(r.review_note||'')}" placeholder="例：品牌名撞词，实际未提及"></div>
-    ${(a.negative_cues||[]).length?`<div class="small" style="color:var(--a300);margin-top:4px">负面线索词：${esc(a.negative_cues.join('、'))}——请人工判断是否真的负面</div>`:''}
-    <div class="row" style="justify-content:flex-end;margin-top:14px">
-      <button class="btn btn-ghost" style="margin-right:auto;color:var(--t500)" onclick="delSample(${esc(JSON.stringify(key))})">删除此样本</button>
-      ${r.needs_review?`<button class="btn btn-secondary" onclick="saveSample(${esc(JSON.stringify(key))},true)">标记已复核</button>`:''}
-      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button class="btn btn-primary" onclick="saveSample(${esc(JSON.stringify(key))})">保存</button></div>`);
-}
-
-async function saveSample(key,clearReview){
-  const comp=($('#sm-comp').value||'').split(/[、,，]/).map(s=>s.trim()).filter(Boolean);
-  const patch={brand_mentioned:$('#sm-men').value==='1',brand_rank:parseInt($('#sm-rank').value||'0',10)||0,
-    competitors_mentioned:comp,review_note:$('#sm-note').value.trim()};
-  if(clearReview)patch.needs_review=false;
-  const r=await post('/api/sample/'+SLUG,{key,patch});
-  if(!r.ok){toast(r.error||'保存失败','err');return}
-  toast('已保存，当日指标已重算');closeModal();SMP=null;await load(SLUG,true);loadSamples();
-}
-
-async function delSample(key){
-  if(!confirm('删除这条样本？当日指标会重算，且不可恢复。'))return;
-  const r=await post('/api/sample/'+SLUG,{key,patch:{delete:true}});
-  if(!r.ok){toast(r.error||'删除失败','err');return}
-  toast('已删除，指标已重算');closeModal();SMP=null;await load(SLUG,true);loadSamples();
-}
-
-/* ===================== 框架 ===================== */
 
 
 // 新壳的侧栏复用这三者（普通脚本的 const 不挂 window，必须显式导出）

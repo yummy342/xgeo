@@ -29,6 +29,7 @@
   const INTERNAL = { 'DEPLOY.md': 1, 'index.json': 1, '_lint.json': 1 }
 
   let tree = $state([])
+  let treeLoaded = $state(false)
   let cur = $state(null)
   let text = $state('')
   let loadingText = $state(false)
@@ -46,24 +47,37 @@
   $effect(() => {
     void project.data?.slug
     if (!slug) return
-    api('/api/assets/' + slug).then((r) => { tree = Array.isArray(r) ? r : [] })
+    api('/api/assets/' + slug).then((r) => {
+      tree = Array.isArray(r) ? r : []
+      treeLoaded = true
+    })
   })
 
-  // 从站点体检等处跳来时（ST.assetSel）直接打开指定文件。
-  // 旧代码把这段写在渲染函数体里，每次重渲染都会重跑。
+  // 从站点体检等处跳来时（assetSel）直接打开指定文件。
+  //
+  // 必须等 tree 到位再消费：视图是 {#key route.name} 重新挂载的，这两个
+  // $effect 会连续跑，若不等就会拿空 tree 去 some()，判false 却已经把
+  // assetSel 清掉了——那个入口等于从来不起作用。旧代码是把 api 请求 await
+  // 完之后才检查 ST.assetSel，所以没有这个问题。
   let handledSel = null
   $effect(() => {
     const p = ui.assetSel
-    if (!p || p === handledSel) return
+    if (!p || p === handledSel || !treeLoaded) return
     handledSel = p
     ui.assetSel = null
     if (tree.some((a) => a.path === p)) open(p)
   })
 
+  // 请求序号：连点两个文件时，先发的响应可能后到。不挡住的话，
+  // 编辑器头部显示的是 B、内容却是 A 的，按保存就把 A 写进了 B。
+  let openSeq = 0
+
   async function open(path) {
     cur = path
     loadingText = true
+    const mine = ++openSeq
     const r = await api(`/api/asset/${slug}?path=${encodeURIComponent(path)}`)
+    if (mine !== openSeq) return      // 已被更晚的点击取代，丢弃这次结果
     text = r.text || ''
     loadingText = false
   }

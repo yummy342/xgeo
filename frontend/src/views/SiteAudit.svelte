@@ -6,6 +6,9 @@
   import { t } from '../lib/i18n/index.svelte.js'
   import { esc } from '../lib/format.js'
   import PageHead from '../components/PageHead.svelte'
+  import TaskDialog from '../components/TaskDialog.svelte'
+
+  let openTask = $state(null)
 
   const D = $derived(project.data || {})
   const A = $derived(D.audit || {})
@@ -84,6 +87,24 @@
   })
 
   const blkTask = (b) => tasks.find((x) => ((x.acceptance || {}).check || '') === 'pages.block:' + b)
+
+  // 搬自 ui.html:2776 auditFlag。顶部六张卡片的联动：能直接看源文件的就开新窗口，
+  // 有对应工单的打开任务详情，其余跳到相关页面。
+  // 它原来在 legacy 里调 taskModal，迁到这里之后就能用本组件自己的弹窗状态。
+  function auditFlag(i) {
+    const siteRoot = (D.brand?.site || '').replace(/\/$/, '')
+    const byCheck = (rx) => {
+      const hit = tasks.find((x) => rx.test((x.acceptance || {}).check || ''))
+      if (hit) openTask = hit
+      else go('plan')
+    }
+    if (i === 0 && siteRoot) window.open(siteRoot + '/robots.txt', '_blank')
+    else if (i === 1) byCheck(/^site\.no_ai_ua_block/)
+    else if (i === 2 && siteRoot) window.open(siteRoot + '/sitemap.xml', '_blank')
+    else if (i === 3) go('assets', { assetSel: 'llms.txt' })
+    else if (i === 4) document.querySelector('#audit-pages')?.scrollIntoView({ block: 'start' })
+    else if (i === 5) byCheck(/^site\.(en_pages_gte|lang_balance)/)
+  }
 </script>
 
 {#if !D.brand?.site}
@@ -137,7 +158,7 @@
 
     <div class="kpis six audit-flags">
       {#each flags as f, i (f.label)}
-        <div class="card elev flag" onclick={() => window.auditFlag(i)} title={f.hint}>
+        <div class="card elev flag" onclick={() => auditFlag(i)} title={f.hint}>
           <div class="flag-l">{f.label}</div>
           <div class="flag-v" class:bad={!f.ok}>{f.value}</div>
           <div class="flag-foot">
@@ -192,8 +213,8 @@
                     {#if task}
                       <span class="tag tag-outline task-chip" title={t('Open task details')}
                             role="button" tabindex="0"
-                            onclick={(e) => { e.stopPropagation(); window.taskModal(task.id) }}
-                            onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); window.taskModal(task.id) } }}>{task.id} →</span>
+                            onclick={(e) => { e.stopPropagation(); openTask = task }}
+                            onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); openTask = task } }}>{task.id} →</span>
                     {:else}
                       <span class="muted blk-none">—</span>
                     {/if}
@@ -244,6 +265,10 @@
       {t('Pages with near-zero word counts are client-rendered shells — AI crawlers see blank, which is the most common fatal flaw on Chinese sites. The fix list is in the Action Plan.')}
     </p>
   </div>
+{/if}
+
+{#if openTask}
+  <TaskDialog task={openTask} onclose={() => (openTask = null)} />
 {/if}
 
 <style>

@@ -57,11 +57,25 @@ export async function loadProjects() {
 export async function loadProject(slug, keep = false) {
   project.loading = true
   project.slug = slug
-  const d = await api('/api/p/' + encodeURIComponent(slug))
+
+  // 这四个请求互不依赖，并行发。串行的话每次刷新要四个往返，
+  // 而所有弹窗保存后都会走这条路径——那是能感觉到的卡顿。
+  const [d, f, ex, jr] = await Promise.all([
+    api('/api/p/' + encodeURIComponent(slug)),
+    api('/api/files/' + encodeURIComponent(slug)),
+    api('/api/expand/' + encodeURIComponent(slug)),
+    api('/api/jobs?slug=' + encodeURIComponent(slug)),
+  ])
+
   const aerr = d.error || (d.analytics && d.analytics.error)
   d.brand = d.brand || {}
   d.tasks = d.tasks || []
   d.analytics = normAnalytics(d.analytics)
+  d.samples_sheets = f.samples || []
+  d.deliveries = f.deliveries || []
+  d.reports = f.reports || []
+  d.expand = (ex && !ex.error && ex.terms) ? ex : null
+  d.running_job = (jr && jr.running) || null
 
   if (aerr) {
     project.data = d
@@ -69,17 +83,6 @@ export async function loadProject(slug, keep = false) {
     project.loading = false
     return { error: aerr }
   }
-
-  const f = await api('/api/files/' + slug)
-  d.samples_sheets = f.samples || []
-  d.deliveries = f.deliveries || []
-  d.reports = f.reports || []
-
-  const ex = await api('/api/expand/' + slug)
-  d.expand = (ex && !ex.error && ex.terms) ? ex : null
-
-  const jr = await api('/api/jobs?slug=' + encodeURIComponent(slug))
-  d.running_job = (jr && jr.running) || null
 
   project.data = d
   project.error = null

@@ -34,23 +34,23 @@ KEEP = {
     # 领域逻辑（等后端提供接口后可以搬到后端）
     "headline", "chanFitQs", "distOf", "taskWbTarget",
     # 弹窗与动作
-    "chanOpen", "taskModal", "setTask", "wbFromTask", "factModal", "editFactsSrc",
-    "sampleModal", "addFact", "saveFact", "delFact", "editQuestions", "saveQuestions",
-    # 下面这些不是被组件直接调用，而是被保留的弹窗内部调用——
-    # 光看 window.* 的扫描结果会漏掉它们。
-    "saveFactsSrc",
-    # 样本复核链：Samples 组件目前只做展示，编辑仍走 legacy 的 sampleModal，
-    # 它保存后靠 SMP=null + loadSamples() 刷新（loadSamples 末尾会调 render()，
-    # 正好 bump 组件依赖的那个 tick）。整改时把复核弹窗也搬进组件，这几个就能删。
-    # SMP 那行同时声明了 SMPF（`let SMP=null,SMPF={...}`），块按第一个名字归档，
-    # 所以只列 SMP 就够。
-    "saveSample", "delSample", "SMP", "loadSamples",
+    # wbFromTask 留着：它是领域逻辑（从任务推断该写哪道题，见 taskWbTarget），
+    # 不是纯渲染，搬进组件反而更乱。taskModal / setTask 已迁到 TaskDialog。
+    "chanOpen", "wbFromTask", "taskWbTarget",
+    "editQuestions", "saveQuestions",
+    # 事实卡三件套已搬进 components/：FactCardDialog / FactsSourceDialog /
+    # AddFactDialog，factModal / editFactsSrc / saveFactsSrc / addFact /
+    # saveFact / delFact 都不再需要。
+    # 样本复核已搬进 components/SampleDialog.svelte，sampleModal / saveSample /
+    # delSample / SMP / loadSamples 这套旧刷新链随之不再需要。
     "showMethod", "expandModal", "expAddIdx", "expAdd",
     "pendPubModal", "pubModal", "doPublishSel",
     "onePager", "editSheet", "importSheet",
     "editPub", "savePub", "editKey", "editConfig", "switchProject", "switchModal",
     "saveCfg", "saveKey",
-    "auditFlag", "distToggle",
+    # auditFlag 已搬进 SiteAudit.svelte —— 它调 taskModal，而那个已迁到组件，
+    # 留在 legacy 里会引用到不存在的符号（自检就是这么发现的）。
+    "distToggle",
     "obCreate", "obRetry",
     "runAction", "pollJob", "stopJob", "showLog", "setMonitor",
     "setLang",

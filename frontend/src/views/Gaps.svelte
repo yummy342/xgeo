@@ -3,12 +3,14 @@
   // gapTab 原本是全局 ST.gapTab（配合 onclick="ST.gapTab='x';render()"），
   // 这里下沉成组件内的 $state。它是这一页自己的 tab，放全局只是历史包袱。
   // diagTag 仍在 legacy 里（返回 HTML 字符串），所以走 {@html}。
-  import { project } from '../lib/stores/project.svelte.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
+  import { requestPost } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
   import PageHead from '../components/PageHead.svelte'
+  import AddFactDialog from '../components/AddFactDialog.svelte'
 
   const a = $derived(project.data?.analytics || {})
   const bp = $derived(project.data?.blueprint || { channels: [] })
@@ -21,6 +23,15 @@
   const fc = $derived(a.factcheck || [])
 
   let tab = $state('content')
+  let addingFact = $state(false)
+
+  // 旧的 delFact 读全局 D 后整体覆盖写回，这里从 store 读、写完刷新项目
+  async function removeFact(i) {
+    const items = (project.data?.analytics?.factcheck || []).slice()
+    items.splice(i, 1)
+    await requestPost('/api/factcheck/' + project.data.slug, { items })
+    await loadProject(project.data.slug, true)
+  }
 
   // 来自「引擎表现 · 样本回放」的跳转传参（go('gaps', { gapTab: 'fact' })）。
   // 只取一次就清掉，否则下次进这一页会被旧值覆盖。
@@ -144,7 +155,7 @@
         <span class="muted fact-hint">
           {t('Record what AI gets wrong, found via Engines → sample replay. Only once something is recorded does fact consistency become measurable, and the health score moves with it.')}
         </span>
-        <button class="btn btn-secondary sm fact-add" onclick={() => window.addFact()}>{t('+ Record one')}</button>
+        <button class="btn btn-secondary sm fact-add" onclick={() => (addingFact = true)}>{t('+ Record one')}</button>
       </div>
       <div class="tbl">
         <table class="table">
@@ -159,7 +170,7 @@
                 <td class="said-cell">{f.said || ''}</td>
                 <td class="truth-cell">{f.truth || ''}</td>
                 <td><span class="tag {f.state === '一致' ? 'pill-good' : 'tag-accent'}">{f.state || t('Not compared')}</span></td>
-                <td><button class="btn btn-ghost sm" onclick={() => window.delFact(i)}>{t('Delete')}</button></td>
+                <td><button class="btn btn-ghost sm" onclick={() => removeFact(i)}>{t('Delete')}</button></td>
               </tr>
             {:else}
               <tr><td colspan="5" class="muted empty">{t('No comparisons recorded yet')}</td></tr>
@@ -170,6 +181,10 @@
     {/if}
   </div>
 </div>
+
+{#if addingFact}
+  <AddFactDialog onclose={() => (addingFact = false)} />
+{/if}
 
 <style>
   .gap-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 24px 0 16px; }

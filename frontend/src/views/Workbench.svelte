@@ -15,6 +15,9 @@
   import { pct } from '../lib/format.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { go } from '../lib/router.svelte.js'
+  import ChannelDialog from '../components/ChannelDialog.svelte'
+
+  let openChan = $state(null)
 
   const slug = $derived(project.data?.slug || '')
   const a = $derived(project.data?.analytics || {})
@@ -72,15 +75,23 @@
     if (sources.length) await loadFile(0)
   }
 
+  // 请求序号：在底稿之间快速切换时，先发的响应可能后到。那时高亮的是
+  // 「成稿」而正文却是「大纲」，点保存会把大纲内容写进成稿文件。
+  let loadSeq = 0
+
   async function loadFile(i) {
     curIdx = i
     const s = sources[i]
     busy = true
+    const mine = ++loadSeq
     const r = s.kind === 'content'
       ? await api(`/api/content/${slug}?path=${encodeURIComponent(s.path)}`)
       : await api(`/api/asset/${slug}?path=${encodeURIComponent(s.path)}`)
-    text = r.text || ''
-    const ck = await post('/api/precheck', { text })
+    if (mine !== loadSeq) return
+    const body = r.text || ''
+    const ck = await post('/api/precheck', { text: body })
+    if (mine !== loadSeq) return      // 预检是第二次往返，回来时可能又切走了
+    text = body
     check = (ck && ck.error) ? null : ck
     busy = false
   }
@@ -246,8 +257,8 @@
               <span class="dist-name" class:done={distDone(c.id)}>{c.name.split('（')[0]}</span>
               <span class="tag {c.priority === 'P0' ? 'tag-accent' : 'tag-dim'} pri">{c.priority}</span>
               <span class="tag tag-outline pri" role="button" tabindex="0"
-                    onclick={(e) => { e.preventDefault(); window.chanOpen(c.name) }}
-                    onkeydown={(e) => { if (e.key === 'Enter') window.chanOpen(c.name) }}>{t('details')}</span>
+                    onclick={(e) => { e.preventDefault(); openChan = c }}
+                    onkeydown={(e) => { if (e.key === 'Enter') openChan = c }}>{t('details')}</span>
             </label>
           {:else}
             <span class="muted side-empty">{t('No matching channel for this group')}</span>
@@ -285,6 +296,10 @@
     </div>
   {/if}
 </div>
+
+{#if openChan}
+  <ChannelDialog channel={openChan} onclose={() => (openChan = null)} />
+{/if}
 
 <style>
   .wb-page { padding: 28px 36px 60px; }
