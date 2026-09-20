@@ -4,6 +4,14 @@
   import LegacyView from './components/LegacyView.svelte'
   import Toast from './components/Toast.svelte'
   import Modal from './components/Modal.svelte'
+  import Facts from './views/Facts.svelte'
+  import Channels from './views/Channels.svelte'
+  import Plan from './views/Plan.svelte'
+  import Samples from './views/Samples.svelte'
+
+  // 已迁到 Svelte 的视图。没列在这里的走 LegacyView 的旧实现。
+  // 每批迁移就往这里加一个，B6 加满 17 个、删掉 LegacyView。
+  const MIGRATED = { facts: Facts, channels: Channels, plan: Plan, samples: Samples }
   import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
   import { ui } from './lib/stores/ui.svelte.js'
   import {
@@ -50,7 +58,16 @@
         </div>
       </div>
     {:else}
-      <LegacyView name={route.name} />
+      {#if MIGRATED[route.name]}
+        <!-- {#key} 是必需的：不加的话切路由时 Svelte 复用同一个组件实例，
+             新视图不渲染，页面停在上一页的内容上。 -->
+        {#key route.name}
+          {@const View = MIGRATED[route.name]}
+          <View />
+        {/key}
+      {:else}
+        <LegacyView name={route.name} />
+      {/if}
     {/if}
   </main>
 </div>

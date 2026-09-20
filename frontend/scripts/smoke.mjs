@@ -16,7 +16,9 @@ const ROUTES = [
 
 const { chromium } = await import('playwright')
 const browser = await chromium.launch()
-const page = await browser.newPage()
+// 必须显式指定：Playwright 默认跟随系统语言，在中文机器上会拿到 zh-CN，
+// 于是 t() 返回中文、下面那些英文断言全部落空。
+const page = await browser.newPage({ locale: 'en-US' })
 
 const consoleErrors = []
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
@@ -25,6 +27,15 @@ page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message))
 await page.goto(BASE, { waitUntil: 'networkidle' })
 // 等 boot() 跑完：侧栏出现说明 installBridge 和数据都就绪了
 await page.waitForSelector('#side .navit', { timeout: 10000 })
+
+// 已迁到 Svelte 的视图 → 它独有的一段文案。用来证明这条路由走的是新组件，
+// 而不是悄悄退回 LegacyView（两者都会渲染出内容，只看长度分不出来）。
+const MIGRATED = {
+  facts: 'Discipline:',                            // Facts.svelte 独有的英文源文案
+  channels: 'Build cadence in phases',             // Channels.svelte
+  plan: 'Auto-verify',                             // Plan.svelte
+  samples: 'reviewable and correctable',           // Samples.svelte
+}
 
 let failed = 0
 
@@ -37,10 +48,25 @@ for (const r of ROUTES) {
   await page.evaluate((name) => window.go(name), r)
   await page.waitForTimeout(250)
   const text = (await page.locator('#main').innerText()).trim()
-  const ok = text.length > 20
+  const marker = MIGRATED[r]
+  const markerOk = !marker || text.includes(marker)
+  const ok = text.length > 20 && markerOk
   if (!ok) failed++
-  console.log(`${ok ? '  ok' : 'FAIL'}  ${r.padEnd(12)} ${String(text.length).padStart(6)} 字符`)
+  const mark = marker ? (markerOk ? '  [svelte]' : '  ← 没走新组件') : ''
+  console.log(`${ok ? '  ok' : 'FAIL'}  ${r.padEnd(12)} ${String(text.length).padStart(6)} 字符${mark}`)
 }
+
+// 语言切换：写 localStorage 后重载，已迁移的视图应显示中文（字典命中）。
+// 这条同时说明新组件的 t() 和旧看板的 ULANG 读的是同一个来源。
+// 循环最后停在 onboard，reload 前先切回 facts（hash 会被 boot() 读出来）
+await page.evaluate(() => { localStorage.setItem('ulang', 'zh'); window.go('facts') })
+// 必须 reload：语言是在模块加载时读一次，而改 hash 不会触发页面重载
+await page.reload({ waitUntil: 'networkidle' })
+await page.waitForSelector('#side .navit')
+const zhText = (await page.locator('#main').innerText()).trim()
+const zhOk = zhText.includes('纪律：')
+if (!zhOk) failed++
+console.log(`${zhOk ? '  ok' : 'FAIL'}  中文回退      已迁移视图的文案走 zh 字典`)
 
 await browser.close()
 
