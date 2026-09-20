@@ -28,6 +28,15 @@ class JobsTest(unittest.TestCase):
         self.addCleanup(J._procs.clear)
         self.addCleanup(J._stopping.clear)
 
+    def _settle(self, job_id, timeout=5):
+        """等收尾线程写完终态。
+
+        不等的话 teardown 清临时目录会撞上正在写文件的 waiter，
+        在 Windows 上表现为「目录不是空的」——偶发红，跟被测代码无关。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline and (J.get(job_id) or {}).get("status") == "running":
+            time.sleep(0.02)
+
     def _write_job(self, job_id, **kw):
         job = {"id": job_id, "slug": "x", "action": "audit", "label": "页面体检",
                "status": "running", "started_at": "2026-07-28T10:00:00",
@@ -88,6 +97,7 @@ class JobsTest(unittest.TestCase):
         proc.wait.return_value = 0
         with mock.patch.object(J.subprocess, "Popen", return_value=proc):
             job = J.start("x", "audit")
+        self._settle(job["id"])
         j = J.get(job["id"])
         self.assertEqual(j["pid"], 424242)
 

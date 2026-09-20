@@ -488,6 +488,29 @@ def word_count(text: str) -> int:
     return int(cjk / 1.6 + latin)
 
 
+def strip_comments(text: str) -> str:
+    """去掉 <!-- --> 注释，保持 re.sub(r"<!--.*?-->", "", text, re.S) 的语义。
+
+    不用那个正则：输入里塞满 `<!--` 而结尾没有 `-->` 时，每个起始位置都要一路
+    扫到末尾才有结论，复杂度是 O(n²)。预检接口吃的正是用户粘贴的正文，
+    一条请求就能把服务拖住。这里是线性扫描。"""
+    if "<!--" not in text:
+        return text
+    out, i = [], 0
+    while True:
+        j = text.find("<!--", i)
+        if j < 0:
+            out.append(text[i:])
+            return "".join(out)
+        k = text.find("-->", j + 4)
+        if k < 0:
+            # 没有闭合的注释，正则那版也原样保留（从这里到结尾都不动）
+            out.append(text[i:])
+            return "".join(out)
+        out.append(text[i:j])
+        i = k + 3
+
+
 def jsonld(soup: BeautifulSoup) -> list:
     out = []
     for tag in soup.find_all("script", type=lambda v: v and "ld+json" in v):

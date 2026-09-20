@@ -488,7 +488,7 @@ def precheck(text: str) -> dict:
     """内容工作台的可被引用度预检——与 audit.py 同一套判据。"""
     import audit as A
 
-    body = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    body = G.strip_comments(text)
     wc = G.word_count(body)
     h2 = len(re.findall(r"^##\s|^<h2", body, re.M))
     blocks = {

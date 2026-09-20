@@ -96,7 +96,7 @@ def _cfg(slug: str, code: str) -> dict:
 # 不引第三方库；表格等复杂结构原样进 <p>，发布前在渠道后台肉眼过一遍。
 
 def md2html(md: str) -> str:
-    md = re.sub(r"<!--.*?-->", "", md, flags=re.S)
+    md = G.strip_comments(md)
     out, in_code, in_list = [], False, False
 
     def inline(s):

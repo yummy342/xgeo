@@ -179,6 +179,36 @@ class TestAuthorization(unittest.TestCase):
         status, _, _ = self._req("GET", "/api/p/alpha?token=" + self.TENANT)
         self.assertEqual(status, 302)
 
+    def test_non_ascii_token_does_not_break_the_request(self):
+        """hmac.compare_digest 收到含非 ASCII 的 str 会抛 TypeError，而 token
+        来自 URL/请求头，谁都能塞中文进来。_auth 在 try 之外，抛出来就是连接
+        被直接掐断，连 401 都回不去。"""
+        # GET 拒绝时回的是登录页（不是 JSON），这里只认状态码
+        self.assertEqual(self._req("GET", "/api/projects?token=%E4%B8%AD%E6%96%87")[0], 401)
+        status, body, _ = self._req("POST", "/api/precheck", "%E4%B8%AD%E6%96%87",
+                                    {"text": "x"})
+        self.assertEqual(status, 401)
+        self.assertIn("error", json.loads(body))
+
+    def test_oversized_body_is_rejected(self):
+        """请求体不设上限，一个声明超大 Content-Length 的请求就能把内存吃满。
+
+        这里只声明不真发 8MB：服务端在读完请求体之前就回包，真发会让连接状态
+        跟着变复杂，测的就成了协议而不是上限本身。"""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("POST", "/api/precheck", body=None, headers={
+                "X-Geolook-Token": self.ADMIN,
+                "Content-Type": "application/json",
+                "Content-Length": str(D.Handler.MAX_BODY + 1),
+            })
+            r = conn.getresponse()
+            status, body = r.status, r.read()
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+        self.assertIn("过大", json.loads(body)["error"])
+
     def test_sample_import_rejects_path_traversal(self):
         """file 字段直接拼进路径，必须挡住分隔符和 ..。
 

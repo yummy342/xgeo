@@ -275,6 +275,12 @@ def _cookie_value(cookie_header: str | None) -> str | None:
     return None
 
 
+def _same(a: str, b: str) -> bool:
+    """定长比较。先编码成字节——hmac.compare_digest 收到含非 ASCII 的 str 会直接
+    抛 TypeError，而候选凭证来自 URL 和请求头，谁都能塞一个中文 token 进来。"""
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 def _match_token(token: str | None, scoped: dict[str, set[str]],
                  cookie_header: str | None,
                  query_token: str | None = None,
@@ -287,9 +293,9 @@ def _match_token(token: str | None, scoped: dict[str, set[str]],
     digest = _cookie_value(cookie_header)
     for tok in ([token] if token else []) + list(scoped):
         for cand in creds:
-            if hmac.compare_digest(cand, tok):
+            if _same(cand, tok):
                 return tok
-        if digest and hmac.compare_digest(digest, _token_digest(tok)):
+        if digest and _same(digest, _token_digest(tok)):
             return tok
     return None
 
@@ -364,6 +370,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         u = urlparse(self.path)
         qt = (parse_qs(u.query).get("token") or [None])[0]
+        # _auth 在 try 之外调用：这里抛异常就是连接被直接掐断，连 401 都回不去
         if qt and _match_token(Handler.TOKEN, Handler.SCOPES, None, query_token=qt):
             # 令牌换 cookie 后跳回干净地址，别让令牌留在地址栏和访问日志里
             self.send_response(302)
@@ -434,8 +441,15 @@ class Handler(BaseHTTPRequestHandler):
             ctype += "; charset=utf-8"
         return self._send(200, target.read_bytes(), ctype)
 
+    MAX_BODY = 8 * 1024 * 1024   # 请求体上限：接口全在本机，8MB 够贴一篇长文
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length", 0))
+        if n > Handler.MAX_BODY:
+            # 不设上限的话，一个声明了超大 Content-Length 的请求就能把内存吃满。
+            # 连带把连接关掉：剩下的请求体不读了，留着会被当成下一个请求解析。
+            self.close_connection = True
+            raise ValueError(f"请求体过大：{n} 字节，上限 {Handler.MAX_BODY // 1024 // 1024}MB")
         return json.loads(self.rfile.read(n) or b"{}")
 
     # ------------------------------------------------------------ GET
