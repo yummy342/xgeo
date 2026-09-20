@@ -1,0 +1,150 @@
+/* Nocturne 设计系统令牌（取自设计稿 styles.css，暗色单主题）
+   —— 以下令牌与组件类从 scripts/ui.html 原样移植，不改色值、不改类名。
+   迁移期两套前端并存，视觉必须一致，任何"顺手改进"都会造成对照失真。 */
+:root{
+  --bg:#161826; --surface:#232532; --side:#1b1d2b; --deep:#1b1d2b;
+  --text:#e9e9ed; --t400:#b2b6ca; --t500:#9397ab; --t600:#75798c; --t700:#595d6c;
+  --accent:#9184d9; --a100:#f5f4ff; --a300:#d2cefd; --a400:#b5abfc;
+  --a700:#5d5294; --a800:#423a6a; --a900:#2b2741;
+  --n800:#3f424d; --n900:#292b31;
+  --divider:rgba(233,233,237,0.16); --line:rgba(233,233,237,0.08);
+  --r-md:8px; --r-lg:14px;
+  --sh-sm:0 0 0 1px #3f424d; --sh-md:0 0 0 1px #595d6c,0 6px 18px rgba(0,0,0,.55);
+  --font:"Inter",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 var(--font)}
+h1,h2,h3,h4{font-weight:500;line-height:1.12;letter-spacing:-.015em;margin:0 0 6px}
+h2{font-size:32px} h3{font-size:25px} h4{font-size:20px}
+p{margin:0 0 8px}
+a{color:var(--accent);text-underline-offset:3px}
+::selection{background:rgba(145,132,217,.3)}
+:focus{outline:none} :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#3f424d;border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+  font:500 14px/1.2 var(--font);color:var(--text);background:transparent;
+  border:1px solid transparent;padding:7px 12px;border-radius:var(--r-md);text-decoration:none}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{color:var(--accent);border-color:var(--accent)}
+.btn-primary:hover{background:rgba(145,132,217,.12)}
+.btn-secondary{border-color:var(--divider)}
+.btn-secondary:hover{background:rgba(233,233,237,.07)}
+.btn-ghost{color:var(--accent);padding-inline:4px}
+.btn-ghost:hover{background:rgba(145,132,217,.10)}
+.btn-block{width:100%}
+.card{display:flex;flex-direction:column;gap:6px;padding:16px;border-radius:var(--r-md);background:var(--surface)}
+.elev{box-shadow:var(--sh-sm)}
+.kicker{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+.tag{display:inline-flex;align-items:center;font-size:11px;letter-spacing:.02em;padding:3px 10px;border-radius:6px;white-space:nowrap}
+.tag-accent{background:var(--a800);color:var(--a100)}
+.tag-neutral{background:var(--n800);color:#f3f5fe}
+.tag-dim{background:var(--n900);color:var(--t500)}
+.tag-outline{border:1px solid var(--accent);color:var(--accent);background:transparent}
+.pill-good{background:var(--a900);color:var(--a300)}
+.pill-warn{background:var(--n800);color:#e4e7f5}
+.tbl{overflow-x:auto}
+.tbl .table{min-width:820px}
+.table{width:100%;border-collapse:collapse;font-size:14px}
+.table th{text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--t600);padding:6px 8px;white-space:nowrap}
+.table td{padding:8px;vertical-align:top}
+.table thead tr{background:linear-gradient(to right,transparent,var(--divider) 48px,var(--divider) calc(100% - 48px),transparent) no-repeat bottom/100% 1px}
+.table tbody tr{background:linear-gradient(to right,transparent,var(--line) 48px,var(--line) calc(100% - 48px),transparent) no-repeat bottom/100% 1px}
+.table tbody tr:hover{background:
+  linear-gradient(rgba(233,233,237,.04),rgba(233,233,237,.04)) no-repeat 0 0/100% 100%,
+  linear-gradient(to right,transparent,var(--line) 48px,var(--line) calc(100% - 48px),transparent) no-repeat bottom/100% 1px}
+.field>label{display:block;font-size:12px;margin-bottom:5px;color:rgba(233,233,237,.7)}
+.input{width:100%;min-height:36px;padding:6px 10px;font:inherit;font-size:14px;color:var(--text);
+  caret-color:var(--accent);background:var(--surface);border:1px solid var(--divider);border-radius:var(--r-md)}
+.input:hover{border-color:rgba(233,233,237,.45)}
+.input:focus-visible{border-color:var(--accent);outline-offset:0}
+textarea.input{min-height:90px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.7}
+.seg{display:inline-flex;overflow:hidden;border:1px solid var(--divider);border-radius:var(--r-md)}
+.seg-opt{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;font-size:13px;cursor:pointer}
+.seg-opt+.seg-opt{border-left:1px solid var(--divider)}
+.seg-opt input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.seg-opt:has(input:checked){color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.seg-opt:not(:has(input:checked)):hover{background:rgba(233,233,237,.07)}
+.tabs{display:inline-flex;background:var(--surface);border-radius:11px;padding:4px;gap:2px;box-shadow:var(--sh-sm)}
+.tab{border:0;background:none;color:var(--t500);font:500 13.5px/1 var(--font);padding:9px 18px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:color .12s,background .12s}
+.tab:hover{color:var(--t400)}
+.tab.on{background:var(--accent);color:#15172a}
+.tab .cnt{font-size:11px;padding:1px 7px;border-radius:99px;background:rgba(233,233,237,.10);color:var(--t500)}
+.tab.on .cnt{background:rgba(21,23,42,.22);color:#15172a}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--t600)} .soft{color:var(--t400)}
+pre.log{background:var(--deep);border-radius:var(--r-md);box-shadow:var(--sh-sm);padding:13px 15px;
+  font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:400px;overflow:auto;
+  white-space:pre-wrap;margin:0;color:var(--t400)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent);border-right-color:transparent;
+  border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:7px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--surface);box-shadow:var(--sh-md);
+  border-left:3px solid var(--accent);border-radius:var(--r-md);padding:11px 16px;z-index:90;
+  font-size:13px;max-width:400px;animation:sl .2s ease-out}
+@keyframes sl{from{transform:translateY(8px);opacity:0}}
+.toast.err{border-left-color:#d55}
+.modal{position:fixed;inset:0;background:rgba(41,43,49,.6);display:grid;place-items:center;z-index:60;padding:24px}
+.modal .box{background:var(--surface);border-radius:var(--r-lg);padding:22px 24px;max-width:620px;width:100%;
+  box-shadow:var(--sh-md);max-height:88vh;overflow:auto}
+.bar{height:7px;border-radius:4px;background:var(--deep);overflow:hidden}
+.bar>span{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#5d5294,#9184d9)}
+.uln{box-shadow:inset 0 -2px 0 var(--accent);padding-bottom:1px}
+.dot{width:7px;height:7px;border-radius:50%;flex:none;display:inline-block}
+.spec{display:grid;grid-template-columns:repeat(4,auto);gap:26px;justify-content:start}
+.spec .k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--t600)}
+.spec .v{font-size:12.5px;margin-top:2px}
+
+#side{width:236px;flex:none;display:flex;flex-direction:column;gap:18px;padding:18px 12px 20px;
+  background:var(--side);box-shadow:inset -1px 0 0 rgba(233,233,237,.10);
+  position:sticky;top:0;height:100vh;overflow:auto}
+.navgrp{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--t600);padding:0 8px 4px}
+.navit{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;cursor:pointer;
+  font:inherit;font-size:13px;padding:7px 8px;border-radius:6px;background:transparent;color:var(--t400)}
+.navit:hover{background:rgba(233,233,237,.05)}
+.navit.on{background:var(--a900);color:var(--text)}
+.navit .mark{width:2px;height:14px;border-radius:2px;flex:none;background:transparent}
+.navit.on .mark{background:var(--accent)}
+.navit .bdg{margin-left:auto;font-size:10.5px;color:var(--t600)}
+
+/* KPI 栅格与工作台三栏用 class 而非内联样式，方便窄屏媒体查询覆盖 */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:20px}
+.kpis.six{grid-template-columns:repeat(6,1fr)}
+.wb3{display:grid;grid-template-columns:262px minmax(360px,1fr) 300px;gap:14px;align-items:start;overflow-x:auto}
+#burger{display:none;position:fixed;top:10px;left:10px;z-index:70}
+@media (max-width:1100px){
+  .wb3{grid-template-columns:1fr;overflow-x:visible}
+}
+@media (max-width:900px){
+  #burger{display:inline-flex}
+  #side{position:fixed;left:-260px;transition:left .2s;z-index:50}
+  #side.open{left:0}
+  #main{margin-left:0;padding-top:52px}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+}
+
+/* ===== 以下是新前端新增：把壳的布局和内联栅格收进类，移动端才成体系 ===== */
+#shell{display:flex;align-items:stretch;min-height:100vh}
+#main{flex:1;min-width:0}
+
+/* 页容器。旧代码每个视图写一遍 padding + max-width 内联，
+   15 处内联 grid-template-columns 也因此收不进媒体查询。 */
+.page{padding:32px 44px 72px;max-width:1280px}
+.page.narrow{max-width:1080px}
+
+.grid{display:grid;gap:14px}
+.grid-2{grid-template-columns:1fr 1fr}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-2-wide{grid-template-columns:1.35fr 1fr}
+.grid-side{grid-template-columns:300px 1fr;align-items:start}
+
+@media (max-width:640px){
+  .page{padding:18px 16px 48px}
+  .grid-2,.grid-3,.grid-2-wide,.grid-side{grid-template-columns:1fr}
+  .spec{grid-template-columns:repeat(2,auto);gap:14px}
+  h2{font-size:24px} h3{font-size:20px}
+  .toast{left:16px;right:16px;max-width:none}
+}

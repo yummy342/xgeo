@@ -6,5 +6,6 @@ work/
 .jobs/
 docs/plans/
 web/
+frontend/node_modules/
 nohup.out
 .claude/
