@@ -92,6 +92,16 @@
       ? await api(`/api/content/${slug}?path=${encodeURIComponent(s.path)}`)
       : await api(`/api/asset/${slug}?path=${encodeURIComponent(s.path)}`)
     if (mine !== loadSeq) return
+    // 读失败不能当成空内容：编辑器会显示成空的，一点保存就把原文件覆盖成空。
+    // 这种情况下干脆不选中任何来源，保存按钮自然失效。
+    if (r.error) {
+      toast(r.error, 'err')
+      curIdx = -1
+      text = ''
+      check = null
+      busy = false
+      return
+    }
     const body = r.text || ''
     const ck = await post('/api/precheck', { text: body })
     if (mine !== loadSeq) return      // 预检是第二次往返，回来时可能又切走了

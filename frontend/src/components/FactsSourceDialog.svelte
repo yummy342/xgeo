@@ -13,6 +13,8 @@
   let text = $state('')
   let loaded = $state(false)
   let busy = $state(false)
+  // 读失败时不能给出空编辑器：用户一点保存就把 facts.md 覆盖成空文件
+  let err = $state(null)
 
   $effect(() => {
     const s = slug
@@ -20,7 +22,8 @@
     let cancelled = false
     api('/api/facts/' + s).then((r) => {
       if (cancelled) return
-      text = r?.text || ''
+      if (r?.error) { err = r.error; return }
+      text = r.text || ''
       loaded = true
     })
     return () => { cancelled = true }
@@ -42,19 +45,22 @@
     <p class="muted hint">
       {t('Markdown. Tag each fact with an evidence grade A–E; anything without a source is marked "to confirm" — do not invent one. After saving, hit Regenerate to sync it into the assets.')}
     </p>
-    {#if loaded}
+    {#if err}
+      <p class="err">{err}</p>
+    {:else if loaded}
       <textarea class="input" rows="20" bind:value={text}></textarea>
     {:else}
       <p class="soft">{t('Loading…')}</p>
     {/if}
     <div class="row actions">
       <button class="btn btn-secondary" onclick={() => onclose?.()}>{t('Cancel')}</button>
-      <button class="btn btn-primary" disabled={busy || !loaded} onclick={save}>{t('Save')}</button>
+      <button class="btn btn-primary" disabled={busy || !loaded || !!err} onclick={save}>{t('Save')}</button>
     </div>
   </div>
 </div>
 
 <style>
   .hint { font-size: 12px; }
+  .err { font-size: 13px; color: #d55; }
   .actions { justify-content: flex-end; margin-top: 12px; }
 </style>

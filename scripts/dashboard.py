@@ -78,6 +78,9 @@ def project(slug: str) -> dict:
         v = G.read_json(f, {})
         rs = v.get("results", [])
         verify_hist.append({
+            # date 只到天，同一天验收两次就重复了。前端拿它当 each 的 key，
+            # 重复键会让整个视图崩掉，所以另给一个逐文件唯一的键。
+            "key": f.stem,
             "date": (v.get("verified_at") or f.stem)[:10],
             "pass": sum(1 for r in rs if r["verdict"] == "通过"),
             "fail": sum(1 for r in rs if r["verdict"] == "未达标"),

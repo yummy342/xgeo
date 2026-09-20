@@ -79,11 +79,21 @@
     const mine = ++openSeq
     const r = await api(`/api/asset/${slug}?path=${encodeURIComponent(path)}`)
     if (mine !== openSeq) return      // 已被更晚的点击取代，丢弃这次结果
+    // 读失败不能当成空内容：编辑器会显示成空的，一点保存就把原文件覆盖成空。
+    // 退回到「没选文件」的状态，编辑器连同保存按钮一起消失。
+    if (r.error) {
+      toast(r.error, 'err')
+      cur = null
+      text = ''
+      loadingText = false
+      return
+    }
     text = r.text || ''
     loadingText = false
   }
 
   async function save() {
+    if (!cur) return
     await requestPost('/api/asset/' + slug, { path: cur, text })
     toast(t('Saved'))
   }

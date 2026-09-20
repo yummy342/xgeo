@@ -269,6 +269,32 @@ class TestAssetsAreNotExecutable(unittest.TestCase):
             conn.close()
 
 
+class TestVerifyHistoryKeys(unittest.TestCase):
+    """同一天验收两次：验收报告按 yyyy-mm-dd-HHMMSS 存，date 只截到天。
+
+    前端把 date 当 each 的键，两条同一天的报告撞键，整个验收视图直接崩。
+    所以载荷里必须另有一个逐文件唯一的键。"""
+
+    def test_same_day_reports_get_distinct_keys(self):
+        tmp = TemporaryDirectory()
+        try:
+            work = Path(tmp.name) / "work"
+            (work / "alpha" / "verify").mkdir(parents=True)
+            (work / "alpha" / "geo.json").write_text(
+                json.dumps({"brand": {"name": "alpha"}}), "utf-8")
+            for stamp in ("2026-09-21-100000", "2026-09-21-110000"):
+                (work / "alpha" / "verify" / f"{stamp}.json").write_text(
+                    json.dumps({"verified_at": "2026-09-21T10:00:00+08:00", "results": []}),
+                    "utf-8")
+            with mock.patch.object(D.G, "WORK", work):
+                hist = D.project("alpha")["verify_history"]
+        finally:
+            tmp.cleanup()
+        self.assertEqual(len(hist), 2)
+        self.assertEqual([h["date"] for h in hist], ["2026-09-21", "2026-09-21"])
+        self.assertEqual(len({h["key"] for h in hist}), 2, "同一天两份报告的项目键撞了")
+
+
 class TestPublicBindGuard(unittest.TestCase):
     def test_public_host_without_token_dies(self):
         with mock.patch.dict(D.os.environ, {}, clear=True), \

@@ -132,7 +132,7 @@
           <th>{t('Notes')}</th>
         </tr></thead>
         <tbody>
-          {#each vh.slice(-8).reverse() as v (v.date)}
+          {#each vh.slice(-8).reverse() as v (v.key)}
             <tr>
               <td class="date-cell">{v.date}</td>
               <td class="pass-cell">{v.pass}</td>
