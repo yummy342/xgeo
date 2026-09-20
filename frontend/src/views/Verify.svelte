@@ -1,13 +1,14 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import { pct } from '../lib/format.js'
+  import { progBar } from '../lib/domain.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:2158 vVerify。
   // 市场筛选原本是全局 ST.vfMkt（配合 onclick="ST.vfMkt='x';render()"），
   // 这里下沉成组件内的 $state——它是这一页自己的筛选态，不该放全局。
   // progBar 仍在 legacy 里，返回 HTML 字符串，所以走 {@html}。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { progBar } from '../lib/domain.js'
-  import PageHead from '../components/PageHead.svelte'
 
   const a = $derived(project.data?.analytics || {})
   const vh = $derived(project.data?.verify_history || [])

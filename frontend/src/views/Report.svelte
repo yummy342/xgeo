@@ -1,13 +1,15 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import SheetEditor from '../components/SheetEditor.svelte'
+  import { onePager } from '../lib/onepager.js'
+  import { pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:2217 vReport。
   // headline() 与 onePager/editSheet 仍是 legacy 实现（前者是健康度结论文案的
   // 决策树，属于领域逻辑；后两者开新窗口/弹窗），这里直接按名调用。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { onePager } from '../lib/onepager.js'
-  import PageHead from '../components/PageHead.svelte'
-  import SheetEditor from '../components/SheetEditor.svelte'
 
   let sheetName = $state(null)
 
@@ -83,13 +85,13 @@
             {#if r.exists}
               <a class="btn btn-primary sm" target="_blank" href="/files/{slug}/deliverables/{encodeURIComponent('3-GEO执行方案.html')}">{t('Open')}</a>
             {:else}
-              <button class="btn btn-secondary sm" onclick={() => window.runAction('deliverables')}>{t('Generate')}</button>
+              <button class="btn btn-secondary sm" onclick={() => runAction('deliverables')}>{t('Generate')}</button>
             {/if}
           {:else}
             {#if r.exists}
               <a class="btn btn-primary sm" target="_blank" href="/files/{slug}/delivery/{deliveries[0]}/index.html">{t('Open')}</a>
             {:else}
-              <button class="btn btn-secondary sm" onclick={() => window.runAction('deliver')}>{t('Generate')}</button>
+              <button class="btn btn-secondary sm" onclick={() => runAction('deliver')}>{t('Generate')}</button>
             {/if}
           {/if}
         </div>
@@ -107,7 +109,7 @@
     {t('Doubao App, Yuanbao, Baidu AI, ChatGPT web, and Google AI Overview have no public networked API. Export a sheet, paste each question\'s full answer into an ```answer block, then import.')}
   </p>
   <div class="row">
-    <button class="btn btn-secondary" onclick={() => window.runAction('sample-sheet')}>{t('Export sampling sheet')}</button>
+    <button class="btn btn-secondary" onclick={() => runAction('sample-sheet')}>{t('Export sampling sheet')}</button>
     {#each sheets.slice(0, 4) as s (s)}
       <button class="btn btn-ghost sm" onclick={() => (sheetName = s)}>{s}</button>
     {/each}

@@ -1,14 +1,15 @@
 <script>
+  import { api, post } from '../lib/api.js'
+  import { go } from '../lib/router.svelte.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2103 pubModal + 2130 doPublishSel。
   //
   // 旧版勾选状态从 DOM 读（document.querySelectorAll('.pub-ch:checked')），
   // 发布进度往 #pubprog 里 appendChild；这里都是响应式状态。
   // 上次勾选的渠道组合仍记在 localStorage（同一批文章通常发同一组渠道）。
-  import { api, post } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
-  import { go } from '../lib/router.svelte.js'
 
   let { rel: relProp = '', onclose } = $props()
 

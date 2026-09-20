@@ -1,4 +1,17 @@
 <script>
+  import BrandConfigDialog from '../components/BrandConfigDialog.svelte'
+  import KeyDialog from '../components/KeyDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
+  import { actions } from '../lib/stores/project.svelte.js'
+  import { api } from '../lib/api.js'
+  import { go } from '../lib/router.svelte.js'
+  import { jobs } from '../lib/stores/jobs.svelte.js'
+import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.js'
+  import { loadProject } from '../lib/stores/project.svelte.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:2371 vSettings。17 个视图里最大的一个，也是最后一个。
   //
   // 旧版在渲染路径里做三件事：异步取 KEYS/PROJECTS/SET_CFG、以及一个裸
@@ -7,17 +20,6 @@
   //
   // editKey / editConfig / switchProject / setMonitor / stopJob 仍是 legacy
   // 弹窗与动作，它们读全局 KEYS / SET_CFG，所以下面把取到的值同步回 window。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { jobs } from '../lib/stores/jobs.svelte.js'
-  import { actions } from '../lib/stores/project.svelte.js'
-  import { api } from '../lib/api.js'
-  import { loadProject } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { go } from '../lib/router.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
-  import KeyDialog from '../components/KeyDialog.svelte'
-  import BrandConfigDialog from '../components/BrandConfigDialog.svelte'
 
   let openKey = $state(null)
   let showConfig = $state(false)
@@ -82,9 +84,9 @@
   // 兜底：任务已结束但页面还停在旧日志上时，把它显示出来。
   // 旧代码把这段写成渲染路径里的裸 setTimeout，每次重渲染都会重跑一次。
   $effect(() => {
-    if (jobs.lastJob && !jobs.running && window.showLog) {
+    if (jobs.lastJob && !jobs.running && loadJobLog) {
       const id = jobs.lastJob
-      queueMicrotask(() => window.showLog(id))
+      queueMicrotask(() => loadJobLog(id))
     }
   })
 
@@ -185,7 +187,7 @@
       {/each}
       <div class="row manual-row">
         <span class="muted manual-note">{t('These engines have no API but the most real users — run a manual sheet weekly (incognito), and once imported they count with the same basis as API samples.')}</span>
-        <button class="btn btn-ghost sm" disabled={running} onclick={() => window.runAction('sample-sheet')}>{t('Generate weekly sheet')}</button>
+        <button class="btn btn-ghost sm" disabled={running} onclick={() => runAction('sample-sheet')}>{t('Generate weekly sheet')}</button>
       </div>
     </div>
 
@@ -195,12 +197,12 @@
         <div class="panel-s">{t('Runs as a background subprocess; it finishes even if you close the page. One task per project at a time.')}</div>
       </div>
       <div class="row btn-row">
-        <button class="btn btn-primary sm" disabled={running} onclick={() => window.runAction('autopilot')}>{t('✦ Full automatic run')}</button>
-        <button class="btn btn-primary sm" disabled={running} onclick={() => window.runAction('serve')}>{t('▶ Run full cycle')}</button>
+        <button class="btn btn-primary sm" disabled={running} onclick={() => runAction('autopilot')}>{t('✦ Full automatic run')}</button>
+        <button class="btn btn-primary sm" disabled={running} onclick={() => runAction('serve')}>{t('▶ Run full cycle')}</button>
       </div>
       <div class="row btn-row">
         {#each ACTS as x (x)}
-          <button class="btn btn-secondary act-btn" disabled={running} onclick={() => window.runAction(x)}>
+          <button class="btn btn-secondary act-btn" disabled={running} onclick={() => runAction(x)}>
             {(actions.map[x] || {}).label || x}
           </button>
         {/each}
@@ -208,7 +210,7 @@
       <div class="row sched-row">
         <span class="sched-label">{t('Recurring run')}</span>
         {#each [0, 7, 14, 30] as dd (dd)}
-          <button class="btn {monCur === dd ? 'btn-secondary' : 'btn-ghost'} sched-btn" onclick={() => window.setMonitor(dd)}>
+          <button class="btn {monCur === dd ? 'btn-secondary' : 'btn-ghost'} sched-btn" onclick={() => setMonitor(dd)}>
             {dd ? t('every {d}d').replace('{d}', String(dd)) : t('Off')}
           </button>
         {/each}
@@ -219,7 +221,7 @@
       <div class="row job-row">
         <div id="jobstat" class="jobstat"></div>
         {#if running}
-          <button class="btn btn-secondary sm" onclick={() => window.stopJob()}>{t('Stop task')}</button>
+          <button class="btn btn-secondary sm" onclick={() => stopJob()}>{t('Stop task')}</button>
         {/if}
       </div>
       <pre class="log joblog" id="joblog"></pre>

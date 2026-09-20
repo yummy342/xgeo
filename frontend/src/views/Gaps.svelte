@@ -1,17 +1,18 @@
 <script>
+  import AddFactDialog from '../components/AddFactDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
+  import { diagTag } from '../lib/domain.js'
+  import { go } from '../lib/router.svelte.js'
+  import { pct } from '../lib/format.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+  import { requestPost } from '../lib/api.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:1599 vGaps。
   // gapTab 原本是全局 ST.gapTab（配合 onclick="ST.gapTab='x';render()"），
   // 这里下沉成组件内的 $state。它是这一页自己的 tab，放全局只是历史包袱。
   // diagTag 仍在 legacy 里（返回 HTML 字符串），所以走 {@html}。
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { go } from '../lib/router.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { diagTag } from '../lib/domain.js'
-  import PageHead from '../components/PageHead.svelte'
-  import AddFactDialog from '../components/AddFactDialog.svelte'
 
   const a = $derived(project.data?.analytics || {})
   const bp = $derived(project.data?.blueprint || { channels: [] })

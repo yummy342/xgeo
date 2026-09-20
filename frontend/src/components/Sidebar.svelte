@@ -1,10 +1,12 @@
 <script>
-  // 复刻 ui.html:1048-1081 的 renderSide。导航结构与语言列表直接取 legacy 的
-  // GL_NAV / GL_ULANG，不重新定义——两套前端同时在线，漂移了就没法对照。
+  import SwitchBrandDialog from './SwitchBrandDialog.svelte'
+  import { jobs } from '../lib/stores/jobs.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { route, go } from '../lib/router.svelte.js'
-  import { jobs } from '../lib/stores/jobs.svelte.js'
-  import SwitchBrandDialog from './SwitchBrandDialog.svelte'
+import { runAction } from '../lib/jobs.svelte.js'
+
+  // 复刻 ui.html:1048-1081 的 renderSide。导航结构与语言列表直接取 legacy 的
+  // GL_NAV / GL_ULANG，不重新定义——两套前端同时在线，漂移了就没法对照。
 
   let switching = $state(false)
 
@@ -58,7 +60,7 @@
       {#if jobs.running}
         <span class="spin"></span>任务运行中
       {:else}
-        <button class="btn btn-ghost run-btn" onclick={() => window.runAction('serve')}>▶ 跑完整一期</button>
+        <button class="btn btn-ghost run-btn" onclick={() => runAction('serve')}>▶ 跑完整一期</button>
       {/if}
     </div>
   </div>

@@ -1,14 +1,15 @@
 <script>
+  import { api } from '../lib/api.js'
+  import { go } from '../lib/router.svelte.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:2585 vOnboard。
   //
   // 这个视图的逻辑基本都在 legacy 里（obCreate / obRetry），它们读写 ST.ob*
   // 和 KEYS。ob* 是接入引导的跨步骤状态，本来就该留在 ui store，所以这里
   // 只负责渲染 + 按 id 暴露表单元素（obCreate 用 $('#ob-url') 取值）。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { api } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { go } from '../lib/router.svelte.js'
 
   let keys = $state([])
 

@@ -1,17 +1,18 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import PendingDialog from '../components/PendingDialog.svelte'
+  import PublishConfigDialog from '../components/PublishConfigDialog.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
+  import { api } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:2317 vPublishing。
   //
   // 旧版是 async 视图：在渲染路径里 `if(!PUB) PUB = await api(...)`。
   // 这里改成 $effect 取数。editPub() 仍是 legacy 弹窗（它读全局 PUB 的
   // publishers，含每个渠道的申请指引和 env 字段），所以下面把结果同步回
   // window.PUB，等那个弹窗也迁走就能删掉这段。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { api } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
-  import PendingDialog from '../components/PendingDialog.svelte'
-  import PublishDialog from '../components/PublishDialog.svelte'
-  import PublishConfigDialog from '../components/PublishConfigDialog.svelte'
 
   let pendingOpen = $state(false)
   let publishRel = $state(null)

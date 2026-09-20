@@ -1,12 +1,13 @@
 <script>
+  import { api, requestPost } from '../lib/api.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:1401 editQuestions + 1411 saveQuestions。
   // 每行一题的纯文本编辑：`编号|分组|市场|问题`。
   // 旧版保存前重新 GET 一次配置（拿到的可能已经不是刚才编辑时那份），
   // 这里同样以最新配置为基底，只替换 questions 字段。
-  import { api, requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
 
   let { onclose } = $props()
 

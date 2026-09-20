@@ -1,13 +1,14 @@
 <script>
+  import { api, requestPost } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2532 editConfig + saveCfg。
   //
   // 旧 saveCfg 有两个毛病：保存失败时 toast 的是硬编码的 '失败'，把服务端的
   // r.error 丢掉了；以及它重新 GET 一次配置再改。这里直接拿调用方已有的配置
   // 做副本，保存走 requestPost（错误文案由它统一弹）。
-  import { api, requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project } from '../lib/stores/project.svelte.js'
 
   let { onclose, onchanged } = $props()
 

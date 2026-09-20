@@ -1,11 +1,12 @@
 <script>
-  // 取代 ui.html:1755 的 chanOpen。
-  // chanFitQs / distOf 是领域函数（哪道题适配哪个阵地、是否已铺），仍在 legacy 里。
+  import { chanFitQs, distOf } from '../lib/domain.js'
+  import { esc } from '../lib/format.js'
+  import { go } from '../lib/router.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
-  import { esc } from '../lib/format.js'
-  import { chanFitQs, distOf } from '../lib/domain.js'
-  import { go } from '../lib/router.svelte.js'
+
+  // 取代 ui.html:1755 的 chanOpen。
+  // chanFitQs / distOf 是领域函数（哪道题适配哪个阵地、是否已铺），仍在 legacy 里。
 
   let { channel, onclose } = $props()
 

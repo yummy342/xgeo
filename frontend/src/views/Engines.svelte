@@ -1,16 +1,17 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import { api } from '../lib/api.js'
+  import { distRows } from '../lib/domain.js'
+  import { go } from '../lib/router.svelte.js'
+  import { pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:1223 vEngines。
   // 旧版是 async 视图：`if(!KEYS) KEYS = await api('/api/keys')` 写在渲染路径里。
   // 这里改成 $effect 取数，结果同样同步回 window.KEYS——Settings 还没迁，仍读它。
   // engSel 保持跨视图传参（竞品页点引擎标签会设它再跳过来）。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { api } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { distRows } from '../lib/domain.js'
-  import { go } from '../lib/router.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
 
   const D = $derived(project.data || {})
   const a = $derived(D.analytics || {})

@@ -1,13 +1,14 @@
 <script>
+  import ChannelDialog from '../components/ChannelDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
+  import { chanFitQs, distOf } from '../lib/domain.js'
+  import { esc, pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:1692 vChannels。阵地的适配题数依赖 chanFitQs，它和
   // distOf 都还在 legacy 里（读的是全局 D），这里直接复用不做重复实现。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { esc, pct } from '../lib/format.js'
-  import { chanFitQs, distOf } from '../lib/domain.js'
-  import PageHead from '../components/PageHead.svelte'
-  import ChannelDialog from '../components/ChannelDialog.svelte'
 
   let openChan = $state(null)
 

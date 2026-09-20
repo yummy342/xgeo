@@ -1,4 +1,15 @@
 <script>
+  import ChannelDialog from '../components/ChannelDialog.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
+  import { api, post, request } from '../lib/api.js'
+  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
+  import { go } from '../lib/router.svelte.js'
+  import { pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:1971 vWorkbench。
   //
   // 这是整仓最该换掉的一处：旧版把编辑内容挂在全局 WB 上，textarea 用
@@ -8,16 +19,6 @@
   //
   // WB 原本还兼作几个 legacy 函数的输入（pubModal 读 WB.cur），所以下面把
   // 当前底稿同步回 window.WB，等 pubModal 也迁走就能删掉这段。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { api, post, request } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { go } from '../lib/router.svelte.js'
-  import ChannelDialog from '../components/ChannelDialog.svelte'
-  import PublishDialog from '../components/PublishDialog.svelte'
 
   let openChan = $state(null)
   let publishRel = $state(null)

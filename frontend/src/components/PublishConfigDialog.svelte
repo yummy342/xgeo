@@ -1,14 +1,15 @@
 <script>
+  import { project } from '../lib/stores/project.svelte.js'
+  import { requestPost } from '../lib/api.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2466 editPub + 2486 savePub。
   //
   // 保存分两段：先写凭据（/api/keys → .env），再写渠道配置
   // （/api/publishcfg → geo.json.publishing）。旧版从 DOM 读值
   // （.pub-env / .pub-cfg 的 dataset），这里都是响应式状态。
   // 凭据留空即保持不变——这一点在 label 里写明。
-  import { requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project } from '../lib/stores/project.svelte.js'
 
   let { publisher, onclose, onchanged } = $props()
 

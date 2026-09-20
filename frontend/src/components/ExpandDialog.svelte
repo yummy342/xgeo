@@ -1,13 +1,15 @@
 <script>
+  import { post } from '../lib/api.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:1422 expandModal + 1453 expAddIdx + 1457 expAdd。
   //
   // 勾选状态旧版是从 DOM 读的（.expchk 的 checked + dataset），这里用 Set。
   // 「入库」这一动作的语义：把勾选的候选题批量加进问题库（/api/questions-add），
   // 不自动加题 —— 必须人工勾。
-  import { post } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
 
   let { onclose } = $props()
 
@@ -88,7 +90,7 @@
     {/if}
 
     <div class="row actions">
-      <button class="btn btn-ghost" onclick={() => { onclose?.(); window.runAction('expand') }}>{t('Mine again')}</button>
+      <button class="btn btn-ghost" onclick={() => { onclose?.(); runAction('expand') }}>{t('Mine again')}</button>
       <button class="btn btn-secondary" onclick={() => onclose?.()}>{t('Cancel')}</button>
       <button class="btn btn-primary" disabled={busy || !pickedItems.length} onclick={() => addAll(pickedItems)}>
         {t('Add to question bank')}{#if pickedItems.length} ({pickedItems.length}){/if}

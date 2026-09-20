@@ -1,16 +1,17 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import SampleDialog from '../components/SampleDialog.svelte'
+  import { api } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { renderState } from '../lib/stores/render.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:2857 vSamples。
   //
   // 旧版把数据和筛选状态放在全局 SMP / SMPF 里，靠 loadSamples() 手写刷新。
   // 这里改成组件内状态。但 sampleModal（仍在 legacy 里）保存后会调全局的
   // loadSamples() 和 load()，后者最终 bump renderTick——所以下面监听 tick
   // 重新拉数据，编辑样本后列表才会更新。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { renderState } from '../lib/stores/render.svelte.js'
-  import { api } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
-  import SampleDialog from '../components/SampleDialog.svelte'
 
   const slug = $derived(project.data?.slug || '')
   // 复核弹窗现在由本组件持有，不再走 legacy 的 sampleModal

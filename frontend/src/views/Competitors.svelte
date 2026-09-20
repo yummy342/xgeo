@@ -1,16 +1,19 @@
 <script>
+  import ExpandDialog from '../components/ExpandDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
+  import { go } from '../lib/router.svelte.js'
+  import { loadProject } from '../lib/stores/project.svelte.js'
+  import { pct } from '../lib/format.js'
+  import { post } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:1307 vCompetitors。
   // compTab 原本是全局 ST.compTab，下沉成组件内 $state。
   // engSel 仍是跨视图传参（点引擎标签跳「引擎表现」），留在 ui store。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { post } from '../lib/api.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { loadProject } from '../lib/stores/project.svelte.js'
-  import { go } from '../lib/router.svelte.js'
-  import ExpandDialog from '../components/ExpandDialog.svelte'
 
   let mining = $state(false)
 
@@ -24,7 +27,6 @@
     toast(t('Added {n} questions').replace('{n}', String(r.added)))
     await loadProject(D.slug, true)
   }
-  import PageHead from '../components/PageHead.svelte'
 
   const D = $derived(project.data || {})
   const c = $derived(D.analytics?.competitors || {})
@@ -182,7 +184,7 @@
           <div class="mining-t">{t('Rival keywords · users are actively looking for alternatives')}</div>
           <div class="mining-s">{t('Real autocomplete terms from rival word roots — the alternative/comparison phrasings users already search. The sharpest attack topics.')}</div>
         </div>
-        <button class="btn btn-ghost" onclick={() => (D.expand ? (mining = true) : window.runAction('expand'))}>
+        <button class="btn btn-ghost" onclick={() => (D.expand ? (mining = true) : runAction('expand'))}>
           {D.expand ? t('Mine topics') : t('Start mining')}
         </button>
       </div>

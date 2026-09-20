@@ -1,12 +1,13 @@
 <script>
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+  import { requestPost } from '../lib/api.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2297 editSheet + 2308 importSheet。
   //
   // 无公开 API 的引擎靠人工查：导出采样表 → 逐题把答案原文粘进 ```answer 块
   // → 导入。这个弹窗就是「粘贴 + 导入」那一步。
-  import { requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
 
   let { name, onclose } = $props()
 

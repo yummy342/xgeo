@@ -1,14 +1,15 @@
 <script>
+  import { api, post } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2897 的 sampleModal。
   //
   // 旧版是往 #modal 注入 HTML 字符串，字段值靠 $('#sm-men').value 读回来，
   // 保存后还要靠 `SMP = null; loadSamples()` 这个全局缓存链去刷新列表——
   // 那条链在 B6 里被误删过，复核功能实际是坏的。
   // 现在表单用 bind:value，保存后直接回调父组件重新取数。
-  import { api, post } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import { project } from '../lib/stores/project.svelte.js'
 
   let { sampleKey, onclose, onchanged } = $props()
 

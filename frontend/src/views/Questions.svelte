@@ -1,17 +1,19 @@
 <script>
-  // 迁自 ui.html:1469 vQuestions。
-  // qGroup 原本是全局 ST.qGroup，下沉成组件内 $state。
-  // demandSort/demandTag 读 window.EXPD（桥注入），仍是 legacy 实现，直接复用。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { go } from '../lib/router.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
+  import ExpandDialog from '../components/ExpandDialog.svelte'
+  import MethodDialog from '../components/MethodDialog.svelte'
   import PageHead from '../components/PageHead.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
   import QuestionsEditor from '../components/QuestionsEditor.svelte'
-  import MethodDialog from '../components/MethodDialog.svelte'
-  import ExpandDialog from '../components/ExpandDialog.svelte'
+  import { demandSort, demandTag, diagTag } from '../lib/domain.js'
+  import { go } from '../lib/router.svelte.js'
+  import { pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
+  // 迁自 ui.html:1469 vQuestions。
+  // qGroup 原本是全局 ST.qGroup，下沉成组件内 $state。
+  // demandSort/demandTag 读 window.EXPD（桥注入），仍是 legacy 实现，直接复用。
 
   let publishRel = $state(null)
   let editing = $state(false)
@@ -64,7 +66,7 @@
       <button class="btn btn-ghost" onclick={() => (showMethod = true)}>{t('Generation rules')}</button>
       <button class="btn btn-secondary" onclick={() => (editing = true)}>{t('Edit questions')}</button>
       <button class="btn btn-secondary" onclick={() => (mining = true)}>{t('Mine topics')}</button>
-      <button class="btn btn-primary" onclick={() => window.runAction('bootstrap')}>{t('AI add topics')}</button>
+      <button class="btn btn-primary" onclick={() => runAction('bootstrap')}>{t('AI add topics')}</button>
     </div>
   </div>
 

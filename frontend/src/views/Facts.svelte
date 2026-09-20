@@ -1,16 +1,18 @@
 <script>
+  import AddFactDialog from '../components/AddFactDialog.svelte'
+  import FactCardDialog from '../components/FactCardDialog.svelte'
+  import FactsSourceDialog from '../components/FactsSourceDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
+  import { project } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:1797 vFacts。弹窗全部改成了组件
   // （FactCardDialog / FactsSourceDialog / AddFactDialog），
   // 所以不再需要往 window.FACT_CARDS 同步缓存。
   //
   // 注意：模板里不要再套 esc()。旧代码在字符串拼接时必须手工转义，
   // Svelte 的 {expr} 已经自动转义，再套一层会显示成 &amp;lt; 之类。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
-  import FactCardDialog from '../components/FactCardDialog.svelte'
-  import FactsSourceDialog from '../components/FactsSourceDialog.svelte'
-  import AddFactDialog from '../components/AddFactDialog.svelte'
 
   const f = $derived(project.data?.facts_struct || {})
   const fc = $derived(project.data?.analytics?.factcheck || [])
@@ -80,7 +82,7 @@
   </div>
 
   <div class="row" style="margin-top:22px">
-    <button class="btn btn-primary" onclick={() => window.runAction('generate', { '--asset': 'llms,jsonld,snippets' })}>
+    <button class="btn btn-primary" onclick={() => runAction('generate', { '--asset': 'llms,jsonld,snippets' })}>
       {t('Regenerate llms.txt and structured data')}
     </button>
     <a class="btn btn-secondary" target="_blank" href="/files/{slug}/assets/llms.txt">{t('View llms.txt')}</a>

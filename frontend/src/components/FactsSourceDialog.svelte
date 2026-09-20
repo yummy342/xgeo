@@ -1,10 +1,11 @@
 <script>
-  // 取代 ui.html:1838 的 editFactsSrc + saveFactsSrc。
-  // 旧版把 textarea 的值在保存时用 $('#factsrc').value 读回来，这里 bind:value。
   import { api, requestPost } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
-  import { project } from '../lib/stores/project.svelte.js'
+
+  // 取代 ui.html:1838 的 editFactsSrc + saveFactsSrc。
+  // 旧版把 textarea 的值在保存时用 $('#factsrc').value 读回来，这里 bind:value。
 
   let { onclose, onchanged } = $props()
 

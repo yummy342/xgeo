@@ -1,11 +1,12 @@
 <script>
+  import { requestPost } from '../lib/api.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
   // 取代 ui.html:2556 editKey + saveKey。
   //
   // 旧版从 $('#k-key') 读值，保存失败时只 toast('失败：'+error)；
   // 这里走 requestPost，错误文案由它统一弹出。
-  import { requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
 
   let { entry, onclose, onchanged } = $props()
 

@@ -1,16 +1,17 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import { api, requestPost } from '../lib/api.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 迁自 ui.html:2799 vAssets。
   //
   // 旧版是 async 视图（在渲染路径里 fetch），而且 asOpen() 拿完数据后直接
   // 操作 DOM（$('#asview').innerHTML = ...），textarea 的值靠 oninput 手动
   // 镜像回全局 AS.text。这里都换成组件状态：数据在 $effect 里取，编辑用
   // bind:value——不再需要手工同步。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { api, requestPost } from '../lib/api.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
 
   const slug = $derived(project.data?.slug || '')
   const lint = $derived(project.data?.lint || {})

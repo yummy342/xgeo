@@ -1,11 +1,12 @@
 <script>
+  import { go } from '../lib/router.svelte.js'
+  import { progBar, taskWbTarget } from '../lib/domain.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 取代 ui.html:1922 的 taskModal。
   //
   // 「去内容工作台」那步仍是 legacy 的 wbFromTask —— 它是领域逻辑
   // （从任务标题/资产推断该写哪道题，见 taskWbTarget），不属于渲染层。
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { progBar, taskWbTarget } from '../lib/domain.js'
-  import { go } from '../lib/router.svelte.js'
 
   let { task, onclose } = $props()
 

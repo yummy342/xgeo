@@ -1,11 +1,12 @@
 <script>
-  // 取代 ui.html:1665 的 addFact + saveFact。
-  // 旧版从三个 input 里读值再 push 进现有 factcheck 数组整体覆盖；
-  // 这里保留同样的语义（读现有数组 → 追加 → 整体写回），只是改用 bind:value。
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
   import { requestPost } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
+
+  // 取代 ui.html:1665 的 addFact + saveFact。
+  // 旧版从三个 input 里读值再 push 进现有 factcheck 数组整体覆盖；
+  // 这里保留同样的语义（读现有数组 → 追加 → 整体写回），只是改用 bind:value。
 
   let { prefill = '', onclose } = $props()
 

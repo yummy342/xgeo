@@ -1,12 +1,13 @@
 <script>
+  import { api } from '../lib/api.js'
+  import { go } from '../lib/router.svelte.js'
+  import { loadProject } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
+
   // 取代 ui.html:2512 的 switchModal。
   // 切换项目的实际动作收在这里：旧 switchProject 要手工清六个全局缓存，
   // 现在组件各自持有状态，只需要清跨视图的 engSel 再加载新项目。
-  import { api } from '../lib/api.js'
-  import { loadProject } from '../lib/stores/project.svelte.js'
-  import { ui } from '../lib/stores/ui.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { go } from '../lib/router.svelte.js'
 
   let { currentSlug, onclose } = $props()
 

@@ -1,8 +1,9 @@
 <script>
-  // 取代 ui.html:2084 pendPubModal。逐篇成稿的发布状态与再发布入口。
-  // 点「发布」时切到 PublishDialog，由父组件持有那个弹窗的状态。
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
+
+  // 取代 ui.html:2084 pendPubModal。逐篇成稿的发布状态与再发布入口。
+  // 点「发布」时切到 PublishDialog，由父组件持有那个弹窗的状态。
 
   let { onclose, onpublish } = $props()
 

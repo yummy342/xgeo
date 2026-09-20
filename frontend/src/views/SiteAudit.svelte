@@ -1,12 +1,13 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import TaskDialog from '../components/TaskDialog.svelte'
+  import { esc } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:2671 vSiteAudit。
   // agrade / ablk 两个联动筛选原本是全局 ST 键，下沉成组件内 $state。
   // auditFlag(i) 仍是 legacy（要开新窗口看 robots/sitemap，或跳相关工单）。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { esc } from '../lib/format.js'
-  import PageHead from '../components/PageHead.svelte'
-  import TaskDialog from '../components/TaskDialog.svelte'
 
   let openTask = $state(null)
 

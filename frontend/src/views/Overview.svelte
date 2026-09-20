@@ -1,13 +1,14 @@
 <script>
+  import PageHead from '../components/PageHead.svelte'
+  import { go } from '../lib/router.svelte.js'
+  import { headline } from '../lib/domain.js'
+  import { pct } from '../lib/format.js'
+  import { project } from '../lib/stores/project.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+
   // 迁自 ui.html:1121 vOverview。
   // headline() 仍是 legacy——它是「健康分 → 结论文案」的决策树，属于领域逻辑，
   // 由后端算更合适；在迁走之前按名调用。趋势图是内联 SVG，这里原样重画。
-  import { project } from '../lib/stores/project.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { pct } from '../lib/format.js'
-  import { headline } from '../lib/domain.js'
-  import { go } from '../lib/router.svelte.js'
-  import PageHead from '../components/PageHead.svelte'
 
   const D = $derived(project.data || {})
   const a = $derived(D.analytics || {})

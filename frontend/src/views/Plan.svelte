@@ -1,16 +1,18 @@
 <script>
-  // 迁自 ui.html:1853 vPlan。
-  // progBar 仍在 legacy 里（返回一段 HTML 字符串），所以这里用 {@html}。
-  import { project, loadProject } from '../lib/stores/project.svelte.js'
-  import { post } from '../lib/api.js'
-  import { progBar, taskWbTarget } from '../lib/domain.js'
-  import { go } from '../lib/router.svelte.js'
-  import { t } from '../lib/i18n/index.svelte.js'
-  import { toast } from '../lib/stores/toast.svelte.js'
   import PageHead from '../components/PageHead.svelte'
-  import TaskDialog from '../components/TaskDialog.svelte'
   import PendingDialog from '../components/PendingDialog.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
+  import TaskDialog from '../components/TaskDialog.svelte'
+  import { go } from '../lib/router.svelte.js'
+  import { post } from '../lib/api.js'
+  import { progBar, taskWbTarget } from '../lib/domain.js'
+  import { project, loadProject } from '../lib/stores/project.svelte.js'
+import { runAction } from '../lib/jobs.svelte.js'
+  import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+
+  // 迁自 ui.html:1853 vPlan。
+  // progBar 仍在 legacy 里（返回一段 HTML 字符串），所以这里用 {@html}。
 
   // 任务详情与状态改动的入口都收到这里，不再走 legacy 的 taskModal / setTask
   let openTask = $state(null)
@@ -59,7 +61,7 @@
       {#if deliveries.length}
         <a class="btn btn-secondary" href="/files/{slug}/delivery/{deliveries[0]}/03-工单表.csv">{t('Export CSV')}</a>
       {/if}
-      <button class="btn btn-primary" onclick={() => window.runAction('verify')}>{t('Auto-verify')}</button>
+      <button class="btn btn-primary" onclick={() => runAction('verify')}>{t('Auto-verify')}</button>
     </div>
   </div>
 

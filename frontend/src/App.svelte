@@ -1,25 +1,30 @@
 <script>
-  import { onMount } from 'svelte'
-  import Sidebar from './components/Sidebar.svelte'
-  import Toast from './components/Toast.svelte'
-  import Modal from './components/Modal.svelte'
-  import Facts from './views/Facts.svelte'
-  import Channels from './views/Channels.svelte'
-  import Plan from './views/Plan.svelte'
-  import Samples from './views/Samples.svelte'
-  import Verify from './views/Verify.svelte'
   import Assets from './views/Assets.svelte'
+  import Channels from './views/Channels.svelte'
+  import Competitors from './views/Competitors.svelte'
+  import Engines from './views/Engines.svelte'
+  import Facts from './views/Facts.svelte'
   import Gaps from './views/Gaps.svelte'
+  import Modal from './components/Modal.svelte'
+  import Onboard from './views/Onboard.svelte'
+  import Overview from './views/Overview.svelte'
+  import Plan from './views/Plan.svelte'
+  import Publishing from './views/Publishing.svelte'
   import Questions from './views/Questions.svelte'
   import Report from './views/Report.svelte'
-  import Workbench from './views/Workbench.svelte'
-  import SiteAudit from './views/SiteAudit.svelte'
-  import Competitors from './views/Competitors.svelte'
-  import Publishing from './views/Publishing.svelte'
-  import Engines from './views/Engines.svelte'
-  import Overview from './views/Overview.svelte'
-  import Onboard from './views/Onboard.svelte'
+  import Samples from './views/Samples.svelte'
   import Settings from './views/Settings.svelte'
+  import Sidebar from './components/Sidebar.svelte'
+  import SiteAudit from './views/SiteAudit.svelte'
+  import Toast from './components/Toast.svelte'
+  import Verify from './views/Verify.svelte'
+  import Workbench from './views/Workbench.svelte'
+  import { onMount } from 'svelte'
+  import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
+  import {
+    project, projects, loadActions, loadProjects, loadProject, clearProject,
+  } from './lib/stores/project.svelte.js'
+  import { ui } from './lib/stores/ui.svelte.js'
 
   // 17 个视图全部迁完，这里已经没有 fallback 分支——路由表就是全部。
   // legacy-views.js 里剩下的辅助函数仍在用（弹窗、领域逻辑），
@@ -31,11 +36,6 @@
     competitors: Competitors, publishing: Publishing, engines: Engines,
     overview: Overview, onboard: Onboard, settings: Settings,
   }
-  import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
-  import { ui } from './lib/stores/ui.svelte.js'
-  import {
-    project, projects, loadActions, loadProjects, loadProject, clearProject,
-  } from './lib/stores/project.svelte.js'
 
   onMount(boot)
 
