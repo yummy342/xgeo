@@ -27,7 +27,7 @@ page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text(
 page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message))
 
 await page.goto(BASE, { waitUntil: 'networkidle' })
-// 等 boot() 跑完：侧栏出现说明 installBridge 和数据都就绪了
+// 等 boot() 跑完：侧栏出现说明数据和路由都就绪了
 await page.waitForSelector('#side .navit', { timeout: 10000 })
 
 // 已迁到 Svelte 的视图 → 它独有的一段文案。用来证明这条路由走的是新组件，
@@ -72,6 +72,19 @@ for (const r of ROUTES) {
   console.log(`${ok ? '  ok' : 'FAIL'}  ${r.padEnd(12)} ${String(text.length).padStart(6)} 字符${mark}`)
 }
 
+// onboard：接入引导页没有导航入口，只在「一个项目都没有」时自动出现，
+// 所以上面那 16 条覆盖不到它。走深链进来单独验一次——它同样是迁移过来的视图，
+// 一样会坏，只是没人点得到而已。
+await page.goto(`${BASE}/#onboard`, { waitUntil: 'networkidle' })
+await page.reload({ waitUntil: 'networkidle' })   // 只改 hash 不会重载，boot() 也就不重跑
+await page.waitForTimeout(400)
+const obText = (await page.locator('#main').innerText()).trim()
+const obMarkers = ['ONBOARDING', 'Site domain', 'Create and start the automatic run']
+const obOk = obMarkers.every((m) => obText.includes(m))
+if (!obOk) failed++
+console.log(`${obOk ? '  ok' : 'FAIL'}  ${'onboard'.padEnd(12)} ${String(obText.length).padStart(6)} 字符`
+  + `${obOk ? '  [svelte]' : '  ← 没渲染出引导页'}`)
+
 // 语言切换：写 localStorage 后重载，视图应显示中文（字典命中）。
 // 必须 reload —— 语言在模块加载时读一次。
 await page.evaluate(() => localStorage.setItem('ulang', 'zh'))
@@ -90,5 +103,7 @@ if (consoleErrors.length) {
   console.log(`\n控制台错误 ${consoleErrors.length} 条:`)
   for (const e of consoleErrors.slice(0, 10)) console.log('  ' + e)
 }
-console.log(`\n结果: ${ROUTES.length - failed}/${ROUTES.length} 路由渲染成功, 导航 ${navCount} 项, 控制台错误 ${consoleErrors.length}`)
+const TOTAL = ROUTES.length + 1   // + onboard（深链单独验）
+console.log(`\n结果: ${TOTAL - failed}/${TOTAL} 页面渲染成功`
+  + `（含深链的 onboard）, 导航 ${navCount} 项, 控制台错误 ${consoleErrors.length}`)
 process.exit(failed || consoleErrors.length ? 1 : 0)

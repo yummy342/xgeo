@@ -4,9 +4,10 @@
 // 每次 render() 都用字符串重建整个 textarea。文本能保住（WB.text 是同步的），
 // 但**焦点和光标位置会丢**——元素被换掉了。
 //
-// 新实现用 bind:value，textarea 不重建。所以断言两件事：
-//   1) 点「重新预检」后 textarea 仍是 document.activeElement
-//   2) 输入的内容还在
+// 新实现用 bind:value，textarea 不重建。断言三件事：
+//   1) 点「重新预检」后 textarea 仍是同一个节点、输入还在
+//   2) 预检面板的数字真的变了（不然「重新预检」被摘成空操作也照样绿）
+//   3) 全程没有页面错误——出错必须进退出码，不能带着绿灯过关
 //
 // 用法：GL_URL=http://127.0.0.1:8799 node frontend/scripts/workbench-focus.mjs
 const BASE = process.env.GL_URL || 'http://127.0.0.1:8799'
@@ -16,6 +17,7 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ locale: 'en-US' })
 const errors = []
 page.on('pageerror', (e) => errors.push(e.message))
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
 
 await page.goto(BASE, { waitUntil: 'networkidle' })
 await page.waitForSelector('#side .navit')
@@ -23,12 +25,14 @@ await page.waitForSelector('#side .navit')
 await page.click('#side .navit[data-route="workbench"]')
 await page.waitForTimeout(400)
 
-// 选题列表 → 点第一行进编辑态
-const first = page.locator('#wbpick > div').first()
+// 选题列表 → 点第一行进编辑态。
+// 注意选 .pick-row：旧写法 #wbpick > div 也会命中 {:else} 那个空态 div，
+// 池子空的时候不跳过，而是去点「No matching questions」，变成假红。
+const first = page.locator('#wbpick .pick-row').first()
 if (!(await first.count())) {
-  console.log('SKIP  选题池为空，无法测编辑态')
+  console.log('FAIL  选题池为空——工作台编辑态无从验证。先建问题库（接入品牌 / 编辑问题库）。')
   await browser.close()
-  process.exit(0)
+  process.exit(1)
 }
 await first.click()
 await page.waitForTimeout(600)
@@ -39,6 +43,8 @@ if (!(await ta.count())) {
   await browser.close()
   process.exit(1)
 }
+
+const gradeBefore = (await page.locator('.grade-sub').innerText()).trim()
 
 const MARK = ' focus-probe-文本 '
 await ta.click()
@@ -64,13 +70,23 @@ const state = await page.evaluate(() => {
     caret: el ? el.selectionStart : -1,
   }
 })
+const gradeAfter = (await page.locator('.grade-sub').innerText()).trim()
 
 const textOk = state.hasMark
 const nodeOk = state.sameNode
+// 输入了 20 来个字符，预检的词数必然变。变了才说明 Re-check 真跑了一趟。
+const checkOk = gradeBefore !== gradeAfter
 
 console.log(`  文本保留    ${textOk ? 'ok' : 'FAIL'}   （输入了 ${typed.length} 字符）`)
 console.log(`  节点未重建  ${nodeOk ? 'ok' : 'FAIL'}   （预检后光标在 ${state.caret}，输入长度 ${typed.length}）`)
+console.log(`  预检真的重算 ${checkOk ? 'ok' : 'FAIL'}   （"${gradeBefore}" → "${gradeAfter}"）`)
 
 await browser.close()
-console.log(`\n结果: 文本 ${textOk ? '保留' : '丢失'}, textarea ${nodeOk ? '未被重建' : '被重建了'}, 页面错误 ${errors.length}`)
-process.exit(textOk && nodeOk ? 0 : 1)
+const pass = textOk && nodeOk && checkOk && !errors.length
+if (errors.length) {
+  console.log(`\n页面错误 ${errors.length} 条:`)
+  for (const e of errors.slice(0, 5)) console.log('  ' + e)
+}
+console.log(`\n结果: ${pass ? '通过' : '有失败'}（文本 ${textOk ? '保留' : '丢失'}，`
+  + `节点 ${nodeOk ? '未重建' : '被重建'}，预检 ${checkOk ? '已重算' : '没变'}，页面错误 ${errors.length}）`)
+process.exit(pass ? 0 : 1)
