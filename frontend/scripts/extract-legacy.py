@@ -44,10 +44,13 @@ KEEP = {
     # 样本复核已搬进 components/SampleDialog.svelte，sampleModal / saveSample /
     # delSample / SMP / loadSamples 这套旧刷新链随之不再需要。
     "showMethod", "expandModal", "expAddIdx", "expAdd",
-    "pendPubModal", "pubModal", "doPublishSel",
+    # pendPubModal / pubModal / doPublishSel 已迁到 components/PendingDialog.svelte
+    # 与 PublishDialog.svelte。
     "onePager", "editSheet", "importSheet",
-    "editPub", "savePub", "editKey", "editConfig", "switchProject", "switchModal",
-    "saveCfg", "saveKey",
+    "editPub", "savePub",
+    # editKey / saveKey / editConfig / saveCfg / switchProject / switchModal
+    # 已迁到 components/KeyDialog.svelte、BrandConfigDialog.svelte、
+    # SwitchBrandDialog.svelte 与 Settings.svelte 内部。
     # auditFlag 已搬进 SiteAudit.svelte —— 它调 taskModal，而那个已迁到组件，
     # 留在 legacy 里会引用到不存在的符号（自检就是这么发现的）。
     "distToggle",

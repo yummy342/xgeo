@@ -9,6 +9,11 @@
   import { api } from '../lib/api.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import PageHead from '../components/PageHead.svelte'
+  import PendingDialog from '../components/PendingDialog.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
+
+  let pendingOpen = $state(false)
+  let publishRel = $state(null)
 
   const D = $derived(project.data || {})
   const slug = $derived(D.slug || '')
@@ -53,7 +58,7 @@
       <div class="pk-l">{t('Drafts / published')}</div>
       <div class="pk-v">{contentPub.length}<span class="pk-u"> / {contentPub.length - pend.length} {t('sent')}</span></div>
     </div>
-    <div class="card elev pk clickable" onclick={() => window.pendPubModal()} title={t('Open the pending list')}>
+    <div class="card elev pk clickable" onclick={() => (pendingOpen = true)} title={t('Open the pending list')}>
       <div class="pk-l">{t('Pending')}</div>
       <div class="pk-v" class:pend={pend.length}>{pend.length}<span class="pk-link"> {t('list →')}</span></div>
     </div>
@@ -124,6 +129,14 @@
     <div class="muted empty">{t('No publish records yet — publish your first piece from Action Plan → draft publishing, or the Workbench.')}</div>
   {/if}
 </div>
+
+{#if pendingOpen}
+  <PendingDialog onclose={() => (pendingOpen = false)} onpublish={(rel) => (publishRel = rel)} />
+{/if}
+
+{#if publishRel}
+  <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
+{/if}
 
 <style>
   .page.wide { max-width: 1080px; }

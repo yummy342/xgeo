@@ -4,6 +4,9 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { route, go } from '../lib/router.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
+  import SwitchBrandDialog from './SwitchBrandDialog.svelte'
+
+  let switching = $state(false)
 
   const NAV = window.GL_NAV || []
   const badgeOf = window.GL_BADGE || (() => '')
@@ -27,7 +30,7 @@
     <div class="tagline">生成式引擎优化平台</div>
   </div>
 
-  <button class="btn btn-secondary pick" onclick={() => window.switchModal()}>
+  <button class="btn btn-secondary pick" onclick={() => (switching = true)}>
     <span class="pick-l">
       <span class="pick-k">当前品牌</span>
       <span class="pick-v">{brandName}</span>
@@ -60,6 +63,10 @@
     </div>
   </div>
 </aside>
+
+{#if switching}
+  <SwitchBrandDialog currentSlug={project.slug} onclose={() => (switching = false)} />
+{/if}
 
 <style>
   .top { padding: 0 8px; }

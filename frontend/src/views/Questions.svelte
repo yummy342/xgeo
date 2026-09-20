@@ -7,6 +7,9 @@
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
   import PageHead from '../components/PageHead.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
+
+  let publishRel = $state(null)
 
   const a = $derived(project.data?.analytics || {})
   const contentPub = $derived(project.data?.content_pub || [])
@@ -123,7 +126,7 @@
                 <button class="btn btn-ghost sm" onclick={() => go('workbench', { wq: q.id })}>{t('Write')}</button>
                 {#if pubMaps.qFile[q.id]}
                   <button class="btn btn-ghost sm pub-btn" title={t('Publish the draft for this question: {p}').replace('{p}', pubMaps.qFile[q.id])}
-                          onclick={() => window.pubModal('content/' + pubMaps.qFile[q.id])}>{t('Publish')}</button>
+                          onclick={() => (publishRel = 'content/' + pubMaps.qFile[q.id])}>{t('Publish')}</button>
                 {/if}
               </div>
             </td>
@@ -133,6 +136,10 @@
     </table>
   </div>
 </div>
+
+{#if publishRel}
+  <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
+{/if}
 
 <style>
   .q-head { align-items: flex-end; justify-content: space-between; gap: 20px; }

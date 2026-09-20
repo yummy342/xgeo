@@ -16,8 +16,10 @@
   import { toast } from '../lib/stores/toast.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import ChannelDialog from '../components/ChannelDialog.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
 
   let openChan = $state(null)
+  let publishRel = $state(null)
 
   const slug = $derived(project.data?.slug || '')
   const a = $derived(project.data?.analytics || {})
@@ -207,7 +209,7 @@
               <button class="btn btn-primary sm" onclick={publish}>{t('Publish as final')}</button>
             {/if}
             {#if cur && cur.kind === 'content'}
-              <button class="btn btn-primary sm" onclick={() => window.pubModal()}>{t('Publish to channels…')}</button>
+              <button class="btn btn-primary sm" onclick={() => (publishRel = 'content/' + cur.path)}>{t('Publish to channels…')}</button>
             {/if}
           </span>
         </div>
@@ -299,6 +301,10 @@
 
 {#if openChan}
   <ChannelDialog channel={openChan} onclose={() => (openChan = null)} />
+{/if}
+
+{#if publishRel}
+  <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
 {/if}
 
 <style>

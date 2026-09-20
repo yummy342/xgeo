@@ -7,9 +7,13 @@
   import { toast } from '../lib/stores/toast.svelte.js'
   import PageHead from '../components/PageHead.svelte'
   import TaskDialog from '../components/TaskDialog.svelte'
+  import PendingDialog from '../components/PendingDialog.svelte'
+  import PublishDialog from '../components/PublishDialog.svelte'
 
   // 任务详情与状态改动的入口都收到这里，不再走 legacy 的 taskModal / setTask
   let openTask = $state(null)
+  let pendingOpen = $state(false)
+  let publishRel = $state(null)
 
   async function setStatus(id, status) {
     const r = await post('/api/task', { slug: project.data?.slug, id, status })
@@ -81,7 +85,7 @@
           </div>
         </div>
         {#if pend.length}
-          <button class="btn btn-primary pub-btn" onclick={() => window.pendPubModal()}>{t('Pending list →')}</button>
+          <button class="btn btn-primary pub-btn" onclick={() => (pendingOpen = true)}>{t('Pending list →')}</button>
         {:else}
           <span class="tag tag-dim" style="flex:none">{t('All published')}</span>
         {/if}
@@ -126,7 +130,7 @@
               <div class="row" style="gap:4px">
                 {#if task.package === '内容矩阵'}
                   <button class="btn btn-ghost row-btn" title={t('Jump straight to the question this task most needs written')} onclick={() => window.wbFromTask(task.id)}>{t('Open')}</button>
-                  <button class="btn btn-ghost row-btn pub-open" title={t('Draft publish status and per-article publishing')} onclick={() => window.pendPubModal()}>{t('Publish')}</button>
+                  <button class="btn btn-ghost row-btn pub-open" title={t('Draft publish status and per-article publishing')} onclick={() => (pendingOpen = true)}>{t('Publish')}</button>
                 {/if}
               </div>
             </td>
@@ -139,6 +143,14 @@
 
 {#if openTask}
   <TaskDialog task={openTask} onclose={() => (openTask = null)} />
+{/if}
+
+{#if pendingOpen}
+  <PendingDialog onclose={() => (pendingOpen = false)} onpublish={(rel) => (publishRel = rel)} />
+{/if}
+
+{#if publishRel}
+  <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
 {/if}
 
 <style>

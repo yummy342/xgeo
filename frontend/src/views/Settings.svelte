@@ -11,9 +11,25 @@
   import { jobs } from '../lib/stores/jobs.svelte.js'
   import { actions } from '../lib/stores/project.svelte.js'
   import { api } from '../lib/api.js'
+  import { loadProject } from '../lib/stores/project.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import PageHead from '../components/PageHead.svelte'
+  import KeyDialog from '../components/KeyDialog.svelte'
+  import BrandConfigDialog from '../components/BrandConfigDialog.svelte'
+
+  let openKey = $state(null)
+  let showConfig = $state(false)
+
+  // 旧 switchProject 要手工清 KEYS / PROJECTS / SET_CFG / PUB / AS / WB 六个全局
+  // 缓存，再 load + 跳转。现在这些缓存都由各自组件持有，切项目时它们随
+  // {#key route.name} 与 project.data 变化自然重建，只剩跨视图的 engSel 要清。
+  async function switchProject(slug) {
+    ui.engSel = null
+    await loadProject(slug)
+    go('overview')
+  }
 
   const D = $derived(project.data || {})
   const slug = $derived(D.slug || '')
@@ -102,7 +118,7 @@
             <td class="cell-soft">{p.avg_score == null ? '—' : p.avg_score}</td>
             <td class="cell-soft">{p.tasks_total || '—'}</td>
             <td>
-              <button class="btn btn-ghost sm" onclick={() => window.switchProject(p.slug)}>
+              <button class="btn btn-ghost sm" onclick={() => switchProject(p.slug)}>
                 {p.slug === slug ? t('Refresh') : t('Open')}
               </button>
             </td>
@@ -113,7 +129,7 @@
   </div>
   <div class="row brand-actions">
     <button class="btn btn-primary" onclick={() => go('onboard', { obStep: 1 })}>{t('+ Add a brand')}</button>
-    <button class="btn btn-secondary" onclick={() => window.editConfig()}>{t('Edit current brand config')}</button>
+    <button class="btn btn-secondary" onclick={() => (showConfig = true)}>{t('Edit current brand config')}</button>
   </div>
 
   <div class="settings-grid">
@@ -141,7 +157,7 @@
           <span class="key-state">
             {k.ok === true ? t('Configured') + (k.key_tail ? ` ····${k.key_tail}` : '') : k.env}
           </span>
-          <button class="btn {k.ok === true ? 'btn-ghost' : 'btn-secondary'} key-btn" onclick={() => window.editKey(k.i)}>
+          <button class="btn {k.ok === true ? 'btn-ghost' : 'btn-secondary'} key-btn" onclick={() => (openKey = k)}>
             {k.ok === true ? t('Change') : t('Configure')}
           </button>
         </div>
@@ -154,7 +170,7 @@
             <span class="dot" style="background:{k.ok === true ? 'var(--a400)' : '#3f424d'}"></span>
             <span class="key-label">{k.label}<span class="muted key-mkt">{mktName(k.market)}</span></span>
             <span class="key-state">{t('Not needed for this project')}</span>
-            <button class="btn btn-ghost key-btn" onclick={() => window.editKey(k.i)}>{t('Configure anyway')}</button>
+            <button class="btn btn-ghost key-btn" onclick={() => (openKey = k)}>{t('Configure anyway')}</button>
           </div>
         {/each}
       {/if}
@@ -218,6 +234,21 @@
     {t('Teams and permissions: this is a single-machine, self-hosted build with no account system; the service binds 127.0.0.1 only. Multi-user access needs your own reverse proxy and authentication.')}
   </p>
 </div>
+
+{#if openKey}
+  <KeyDialog
+    entry={openKey}
+    onclose={() => (openKey = null)}
+    onchanged={() => { openKey = null; api('/api/keys').then((r) => { keys = Array.isArray(r) ? r : [] }) }}
+  />
+{/if}
+
+{#if showConfig}
+  <BrandConfigDialog
+    onclose={() => (showConfig = false)}
+    onchanged={() => loadProject(slug, true)}
+  />
+{/if}
 
 <style>
   .page.wide { max-width: 1180px; }
