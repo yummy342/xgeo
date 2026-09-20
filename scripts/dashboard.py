@@ -4,7 +4,7 @@
 
 服务本身只用标准库 http.server，但顶层 import geolib 需要第三方依赖
 （requests / beautifulsoup4 / lxml），缺失时会给出安装提示。
-前端是 scripts/ui.html 单页应用，数据走 /api，
+前端是 frontend/ 下的 Svelte 工程，构建产物在 scripts/ui_dist/，数据走 /api，
 工单状态可以直接在界面上改（写回 tasks.json）。
 """
 

@@ -219,7 +219,8 @@ python3 scripts/geo.py sample-import --slug <project> --file <sheet>
 ## 構成
 
 ```
-scripts/          全ロジック（geo.py CLI · dashboard.py サーバー · ui.html シングルページ UI · service.sh）
+scripts/          全ロジック（geo.py CLI · dashboard.py サーバー · ui_dist ビルド済み UI · service.sh）
+frontend/         ダッシュボード UI のソース（Svelte + Vite、ビルド先は scripts/ui_dist/）
 extension/        Chrome サンプリングアシスタント + sandbox.sh + e2e テスト
 references/       方法論：サンプリング規律、コンテンツパターン、引用構造
 tests/            ユニットテスト

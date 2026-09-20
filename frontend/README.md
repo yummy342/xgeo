@@ -8,20 +8,32 @@
 npm install        # 只有开发者需要；部署直接消费已提交的构建产物
 npm run dev        # vite 5173，/api 与 /files 代理到 8765
 npm run build      # 产物输出到 ../scripts/ui_dist/
+npm test           # 静态断言，不需要起服务
 ```
 
-起服务与验证：
+`npm test` 串起三条 grep 级断言，缺一条就红：
+
+```
+scripts/i18n-audit.mjs       t('...') 用到的键 vs zh.js 字典，缺条目 = 回退成英文
+scripts/legacy-globals.mjs   src/ 里不许再出现 window.<大写> = …（迁移期的桥已拆）
+scripts/dist-integrity.mjs   index.html 引用的产物必须存在，assets/ 不许有构建碎片
+```
+
+真浏览器的四条要另外跑，先起服务：
 
 ```bash
-python scripts/geo.py ui --no-open --port 8765
+python scripts/geo.py ui --no-open --port 8799
+npm run test:e2e
 
-node scripts/smoke.mjs            # 16 路由渲染 + 语言回退 + 控制台无错
+node scripts/smoke.mjs            # 16 路由 + 深链的 onboard + 语言回退 + 控制台无错
 node scripts/responsive.mjs       # 逐路由断言不横向溢出（GL_WIDTH 调宽度）
-node scripts/dialog-smoke.mjs     # 样本复核弹窗：改→存→重开读回
-node scripts/workbench-focus.mjs  # 编辑态：文本保留 + textarea 未被重建
+node scripts/dialog-smoke.mjs     # 样本复核弹窗：改→存→列表计数 +1→重开读回
+node scripts/workbench-focus.mjs  # 编辑态：文本保留 + textarea 未重建 + 预检真重算
 ```
 
-前两个和最后两个都需要先起服务；它们用 `GL_URL` 覆盖地址，默认 `http://127.0.0.1:8799`。
+四条都用 `GL_URL` 覆盖地址，默认 `http://127.0.0.1:8799`。它们的判据都按
+「把目标 bug 重新引入，这条会不会红」验过一遍——只断言「页面有内容」的检查
+挡不住迁移期那类「视图没重渲染、悄悄退回旧组件」的故障。
 
 构建产物 `scripts/ui_dist/` **提交进仓库**。这不是风格选择：`npm install` 需要联网，而本项目要能离线/内网部署，全新克隆没法构建前端。所以 `npm install` 是开发者专属步骤，部署只消费已提交的文件。
 
@@ -58,9 +70,16 @@ src/
 
 ### 异步请求要防竞态
 
-两处曾经因此写错文件：`Assets.open()` 与 `Workbench.loadFile()`。快速连点两个文件时，
-先发的响应可能后到——头部显示 B、正文是 A，按保存就把 A 写进了 B。
-两处都用请求序号丢弃过期响应（Workbench 还在预检那次二次往返后再查一次）。
+四处曾经因此读到错的、或写错文件。快速连点两个文件/切两次项目时，先发的响应可能后到：
+
+| 位置 | 后果 |
+|---|---|
+| `Assets.open()` / `Workbench.loadFile()` | 头部显示 B、正文是 A，按保存就把 A 写进了 B |
+| `loadProject()`（`stores/project.svelte.js`） | 切项目时把新项目的数据覆盖成旧项目的 |
+| `Workbench.loadQuestion()` | qid 是 B，sources 却是 A 的文件 |
+
+都用请求序号丢弃过期响应。`loadFile` 还有第二次往返（预检），回来时要再查一次序号。
+新增异步取数时照这个模式写，别省。
 
 ### i18n
 

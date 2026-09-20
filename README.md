@@ -226,7 +226,8 @@ This repo doubles as a Claude Code skill ([SKILL.md](SKILL.md)): drop it into yo
 ## Layout
 
 ```
-scripts/          All logic (geo.py CLI · dashboard.py server · ui.html single-page UI · service.sh)
+scripts/          All logic (geo.py CLI · dashboard.py server · ui_dist/ prebuilt UI · service.sh)
+frontend/         Svelte UI source (Vite build → scripts/ui_dist/)
 extension/        Chrome sampling assistant + sandbox.sh + its own e2e tests
 references/       Methodology: sampling discipline, content patterns, attribution, citation structures
 tests/            Unit tests

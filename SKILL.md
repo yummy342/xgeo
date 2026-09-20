@@ -356,9 +356,10 @@ python3 scripts/geo.py status --slug <项目>     # 进度看板
 │   ├── verify.py    自动验收    deliver.py   客户交付包
 │   ├── bootstrap.py 自动推导底座  deliverables.py 三份交付物
 │   ├── blueprint.py 建设地图
-│   ├── dashboard.py 界面后端    ui.html      前端工作台
+│   ├── dashboard.py 界面后端    ui_dist/     前端工作台（已构建产物）
 │   ├── jobs.py      后台任务（子进程 + 实时日志）
 │   └── report.py    报告渲染    geolib.py    共用工具
+├── frontend/        看板前端源码（Svelte + Vite → scripts/ui_dist/）
 └── work/<slug>/
     ├── geo.json        品牌、竞品、问题库、平台、目标
     ├── content/facts.md 品牌事实卡（所有资产的输入）

@@ -259,7 +259,8 @@ python3 scripts/geo.py sample-import --slug <项目> --file <采样表>
 ## 目录结构
 
 ```
-scripts/          全部逻辑（geo.py CLI · dashboard.py 看板服务 · ui.html 单页前端 · service.sh 常驻服务）
+scripts/          全部逻辑（geo.py CLI · dashboard.py 看板服务 · ui_dist 预构建前端 · service.sh 常驻服务）
+frontend/         看板前端源码（Svelte + Vite，构建产物输出到 scripts/ui_dist/）
 extension/        Chrome 采样助手插件 + sandbox.sh 沙箱 + 自带 e2e 测试
 references/       方法论：采样纪律、内容模式实测、归因口径、国内外平台引用结构
 tests/            单元测试
