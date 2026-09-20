@@ -20,10 +20,21 @@ function appendLog(chunk) {
   jobLog.text = next
 }
 
-function statusLabel(status) {
+export function statusLabel(status) {
   return {
-    done: t('finished'), failed: t('failed'), stopped: t('stopped'), interrupted: t('interrupted'),
-  }[status] || status
+    running: t('running'), done: t('finished'), failed: t('failed'),
+    stopped: t('stopped'), interrupted: t('interrupted'),
+  }[status] || status || ''
+}
+
+/** 接回一个已经在跑的任务（刷新后用）：日志从头拉一遍，然后继续轮询。 */
+export async function resumeJob(jobId) {
+  if (!jobId || jobs.running === jobId) return
+  jobs.offset = 0
+  jobLog.text = ''
+  jobs.lastJob = jobId
+  jobs.running = jobId
+  await watchJob(jobId)
 }
 
 /** 启动一个后台任务。返回 job 对象，失败返回 null。 */
@@ -37,6 +48,7 @@ export async function runAction(action, params) {
   jobs.lastJob = r.job.id
   jobs.offset = 0
   jobLog.text = ''
+  jobLog.status = 'running'   // 上一轮的状态留着的话，新任务一进来就被当成已结束
   jobLog.label = r.job.label || action
   toast(t('Started: {label}').replace('{label}', r.job.label || action))
   watchJob(r.job.id)

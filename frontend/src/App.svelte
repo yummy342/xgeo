@@ -25,6 +25,7 @@
     project, projects, loadActions, loadProjects, loadProject, clearProject,
   } from './lib/stores/project.svelte.js'
   import { ui } from './lib/stores/ui.svelte.js'
+  import { resumeJob } from './lib/jobs.svelte.js'
 
   // 17 个视图全部迁完，这里已经没有 fallback 分支——路由表就是全部。
   // legacy-views.js 里剩下的辅助函数仍在用（弹窗、领域逻辑），
@@ -38,6 +39,14 @@
   }
 
   onMount(boot)
+
+  // 刷新接回还在跑的任务。不接的话页面看着是空闲的，后台其实在跑，
+  // 用户会再点一次「开始」——服务端挡住并报「已有任务在运行」，
+  // 等于白等一轮；日志面板也永远是空的。
+  $effect(() => {
+    const jid = project.data?.running_job
+    if (jid) resumeJob(jid)
+  })
 
   // 复刻 ui.html:3003-3020 的启动 IIFE 与 load() 末尾的路由决策。
   // 装桥不在这里——见 main.js，必须早于组件挂载。

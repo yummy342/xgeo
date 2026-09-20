@@ -65,9 +65,15 @@
     loadQuestion(wq)
   })
 
+  // 换题时先发的响应可能后到：那时 qid 是 B，sources 却是 A 的文件，
+  // 选中并保存就把 A 的正文写进 B。
+  let qSeq = 0
+
   async function loadQuestion(id) {
     busy = true
+    const mine = ++qSeq
     const w = await api(`/api/workbench/${slug}?qid=${encodeURIComponent(id || '')}`)
+    if (mine !== qSeq) return
     qid = id
     sources = w.sources || []
     q = w.question

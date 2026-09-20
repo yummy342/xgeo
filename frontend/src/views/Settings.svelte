@@ -6,7 +6,7 @@
   import { api } from '../lib/api.js'
   import { go } from '../lib/router.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
-import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.js'
+import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from '../lib/jobs.svelte.js'
   import { loadProject } from '../lib/stores/project.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
@@ -216,12 +216,19 @@ import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.j
         {/if}
       </div>
       <div class="row job-row">
-        <div id="jobstat" class="jobstat"></div>
+        <div id="jobstat" class="jobstat">
+          {#if jobLog.label}
+            <span class="job-name">{jobLog.label}</span>
+            <span class="job-state" class:on={running}>{statusLabel(jobLog.status)}</span>
+          {:else}
+            <span class="muted">{t('No task has been started yet')}</span>
+          {/if}
+        </div>
         {#if running}
           <button class="btn btn-secondary sm" onclick={() => stopJob()}>{t('Stop task')}</button>
         {/if}
       </div>
-      <pre class="log joblog" id="joblog"></pre>
+      <pre class="log joblog" id="joblog">{jobLog.text}</pre>
     </div>
   </div>
 
@@ -286,7 +293,10 @@ import { loadJobLog, runAction, setMonitor, stopJob } from '../lib/jobs.svelte.j
   .sched-btn { font-size: 11.5px; padding: 3px 9px; }
   .sched-note { font-size: 11.5px; }
   .job-row { gap: 6px; }
-  .jobstat { font-size: 12.5px; flex: 1; }
+  .jobstat { font-size: 12.5px; flex: 1; display: flex; gap: 8px; align-items: center; }
+  .job-name { color: var(--t300); }
+  .job-state { font-size: 11.5px; color: var(--t500); }
+  .job-state.on { color: var(--accent); }
   .joblog { max-height: 260px; }
 
   .pub-link { margin-top: 14px; font-size: 12.5px; color: var(--t500); }

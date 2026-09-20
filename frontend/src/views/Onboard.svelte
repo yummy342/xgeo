@@ -2,7 +2,7 @@
   import { api, post } from '../lib/api.js'
   import { go, route } from '../lib/router.svelte.js'
   import { loadProject, project } from '../lib/stores/project.svelte.js'
-  import { runAction } from '../lib/jobs.svelte.js'
+  import { jobLog, runAction, statusLabel } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
@@ -68,6 +68,16 @@
   }
 
   const step = $derived(ui.obStep || 1)
+
+  // 第 1 步只到第 2 步就断了：跑完 / 跑挂了都没人把 obStep 推到 3，
+  // 「完成」那一步从这个文件写出来起就没被渲染过。
+  // 这里把 obStep 3 接上——自动跑成功进完成页，失败留在第 2 步给重试。
+  $effect(() => {
+    if (step !== 2) return
+    const s = jobLog.status
+    if (!s || s === 'running') return
+    if (s === 'done') { ui.obFail = false; ui.obStep = 3 } else { ui.obFail = true }
+  })
   const okCn = $derived(keys.filter((k) => k.ok === true && k.market === 'cn').length)
   const okGl = $derived(keys.filter((k) => k.ok === true && k.market === 'global').length)
   const noKey = $derived(!(okCn + okGl))
@@ -144,11 +154,14 @@
         <div id="jobstat" class="ob-status">
           {#if ui.obFail}
             {t('✗ The first run did not finish (failed, stopped, or interrupted). Log below; you can retry.')}
+            {#if jobLog.status}
+              <span class="ob-state">{t('Last state:')} {statusLabel(jobLog.status)}</span>
+            {/if}
           {:else}
             <span class="spin"></span>{t('Crawling the site, deriving brand facts / competitors / question bank, sampling, and generating deliverables…')}
           {/if}
         </div>
-        <pre class="log" id="joblog"></pre>
+        <pre class="log ob-log" id="joblog">{jobLog.text}</pre>
         {#if ui.obFail}
           <div class="row">
             <button class="btn btn-primary" onclick={retry}>{t('Retry')}</button>
@@ -198,6 +211,8 @@
   .sm { font-size: 12.5px; }
 
   .ob-status { font-size: 13px; }
+  .ob-state { font-size: 11.5px; color: var(--t500); margin-left: 6px; }
+  .ob-log { max-height: 280px; }
   .ob-note { font-size: 12px; }
   .ob-done { font-size: 14px; }
 

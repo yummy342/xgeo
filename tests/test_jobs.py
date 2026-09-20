@@ -23,8 +23,10 @@ class JobsTest(unittest.TestCase):
         self.addCleanup(setattr, J, "JOBS_DIR", self._orig_dir)
         J._running.clear()
         J._procs.clear()
+        J._stopping.clear()
         self.addCleanup(J._running.clear)
         self.addCleanup(J._procs.clear)
+        self.addCleanup(J._stopping.clear)
 
     def _write_job(self, job_id, **kw):
         job = {"id": job_id, "slug": "x", "action": "audit", "label": "页面体检",
@@ -203,6 +205,27 @@ class JobsTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertIsNone(J.running_for("x"), "占位没被放掉，项目被永久堵死")
         self.assertNotIn("x", J._running)
+
+    def test_stop_labels_the_job_stopped_not_failed(self):
+        """用户点了停止就该报「已停止」。只看退出码不够：POSIX 被信号杀掉返回
+        负码，Windows 的 TerminateProcess 返回正数，会被当成失败。"""
+        gate = threading.Event()
+        proc = mock.Mock()
+        proc.pid = 424242
+        proc.wait.side_effect = lambda: (gate.wait(5), 15)[1]   # 卡住，等测试放开
+
+        with mock.patch.object(J.subprocess, "Popen", return_value=proc), \
+             mock.patch.object(J, "_terminate_tree", return_value=True):
+            job = J.start("x", "audit")
+            self.assertTrue(J.stop(job["id"]))
+            gate.set()
+            deadline = time.time() + 5
+            while time.time() < deadline and J.get(job["id"])["status"] == "running":
+                time.sleep(0.05)
+
+        j = J.get(job["id"])
+        self.assertEqual(j["status"], "stopped", f"退出码 15 被当成了失败：{j}")
+        self.assertEqual(j["exit_code"], 15)
 
     def test_stop_unknown_job(self):
         self.assertFalse(J.stop("nosuchjob000"))

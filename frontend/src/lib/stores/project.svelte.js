@@ -53,8 +53,13 @@ export async function loadProjects() {
   return r
 }
 
+// 请求序号：切项目时先发的响应可能后到，把新项目的数据覆盖成旧项目的。
+// 保存弹窗的回调、侧栏切项目、启动决策都会走这条路，所以判据放在最共享的这里。
+let loadSeq = 0
+
 /** 载入一个项目的全量数据。keep=true 时保留当前路由（刷新用）。 */
 export async function loadProject(slug, keep = false) {
+  const mine = ++loadSeq
   project.loading = true
   project.slug = slug
 
@@ -66,6 +71,7 @@ export async function loadProject(slug, keep = false) {
     api('/api/expand/' + encodeURIComponent(slug)),
     api('/api/jobs?slug=' + encodeURIComponent(slug)),
   ])
+  if (mine !== loadSeq) return { error: null, stale: true }  // 已被更晚的载入取代
 
   const aerr = d.error || (d.analytics && d.analytics.error)
   d.brand = d.brand || {}

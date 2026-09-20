@@ -875,4 +875,7 @@ export const zh = {
   'No project loaded': '还没有载入项目',
   'On: a full cycle every {d} days, first at {n}': '已开启：每 {d} 天自动跑完整一期，首次 {n}',
   'Recurring run turned off': '已关闭周期复跑',
+  'running': '运行中',
+  'No task has been started yet': '还没有启动过任务',
+  'Last state:': '最后状态：',
 }

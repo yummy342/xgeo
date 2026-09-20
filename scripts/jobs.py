@@ -57,6 +57,7 @@ FLAG_ARGS = {"--no-recrawl", "--draft", "--no-sample", "--skip-llm", "--no-llm"}
 _lock = threading.Lock()
 _running: dict[str, str] = {}   # slug -> job_id
 _procs: dict[str, subprocess.Popen] = {}
+_stopping: set[str] = set()     # 收到过停止信号、还没收尾的 job
 
 
 def _job_path(job_id: str) -> Path:
@@ -198,9 +199,15 @@ def start(slug: str, action: str, params: dict | None = None) -> dict:
                 logf.close()
             except OSError:
                 pass
+        with _lock:
+            asked_to_stop = job["id"] in _stopping
+            _stopping.discard(job["id"])
         try:
             j = get(job["id"]) or job
-            j["status"] = "done" if code == 0 else ("stopped" if code and code < 0 else "failed")
+            # 用户点了停止就是「已停止」，别报成失败。只看退出码不够：
+            # POSIX 被杀返回负码，Windows 的 TerminateProcess 返回的是正数。
+            j["status"] = "done" if code == 0 else (
+                "stopped" if asked_to_stop or (code and code < 0) else "failed")
             if error:
                 j["error"] = error
             j["exit_code"] = code
@@ -236,6 +243,8 @@ def stop(job_id: str) -> bool:
     with _lock:
         proc = _procs.get(job_id)
     if proc:
+        with _lock:
+            _stopping.add(job_id)   # 让收尾线程知道这是用户主动停的，不是自己崩的
         if not _terminate_tree(proc.pid):
             try:
                 proc.terminate()
