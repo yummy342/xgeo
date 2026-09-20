@@ -33,13 +33,14 @@ KEEP = {
     # diagTag distRows progBar demandTag demandRank demandSort headline
     # chanFitQs distOf taskWbTarget —— 连同一个被它们替代的调用方
     # chanOpen（ChannelDialog 取代）和 wbFromTask（导航那半截归组件）。
-    "editQuestions", "saveQuestions",
+    # editQuestions / saveQuestions 已搬进 components/QuestionsEditor.svelte。
     # 事实卡三件套已搬进 components/：FactCardDialog / FactsSourceDialog /
     # AddFactDialog，factModal / editFactsSrc / saveFactsSrc / addFact /
     # saveFact / delFact 都不再需要。
     # 样本复核已搬进 components/SampleDialog.svelte，sampleModal / saveSample /
     # delSample / SMP / loadSamples 这套旧刷新链随之不再需要。
-    "showMethod", "expandModal", "expAddIdx", "expAdd",
+    # showMethod 已搬进 components/MethodDialog.svelte
+    "expandModal", "expAddIdx", "expAdd",
     # pendPubModal / pubModal / doPublishSel 已迁到 components/PendingDialog.svelte
     # 与 PublishDialog.svelte。
     # onePager 已搬到 lib/onepager.js（往新窗口写独立 HTML，不是弹窗）

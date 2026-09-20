@@ -9,8 +9,12 @@
   import { demandSort, demandTag, diagTag } from '../lib/domain.js'
   import PageHead from '../components/PageHead.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
+  import QuestionsEditor from '../components/QuestionsEditor.svelte'
+  import MethodDialog from '../components/MethodDialog.svelte'
 
   let publishRel = $state(null)
+  let editing = $state(false)
+  let showMethod = $state(false)
 
   const a = $derived(project.data?.analytics || {})
   const contentPub = $derived(project.data?.content_pub || [])
@@ -55,8 +59,8 @@
       />
     </div>
     <div class="row" style="flex:none">
-      <button class="btn btn-ghost" onclick={() => window.showMethod()}>{t('Generation rules')}</button>
-      <button class="btn btn-secondary" onclick={() => window.editQuestions()}>{t('Edit questions')}</button>
+      <button class="btn btn-ghost" onclick={() => (showMethod = true)}>{t('Generation rules')}</button>
+      <button class="btn btn-secondary" onclick={() => (editing = true)}>{t('Edit questions')}</button>
       <button class="btn btn-secondary" onclick={() => window.expandModal()}>{t('Mine topics')}</button>
       <button class="btn btn-primary" onclick={() => window.runAction('bootstrap')}>{t('AI add topics')}</button>
     </div>
@@ -140,6 +144,14 @@
 
 {#if publishRel}
   <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
+{/if}
+
+{#if editing}
+  <QuestionsEditor onclose={() => (editing = false)} />
+{/if}
+
+{#if showMethod}
+  <MethodDialog onclose={() => (showMethod = false)} />
 {/if}
 
 <style>
