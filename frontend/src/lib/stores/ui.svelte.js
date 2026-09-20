@@ -14,6 +14,9 @@ export const ui = $state({
   wq: null,
   chanSel: null,
   assetSel: null,
+  // gapTab 只在「引擎表现 → 发现说错了 → 记一条事实偏差」这一处跨视图传参
+  // （ui.html:1271）。它不是页内筛选态——页内那个 tab 在 Gaps 组件自己的 $state 里。
+  gapTab: null,
   // 接入引导的跨步骤状态
   obStep: 1,
   obSlug: null,

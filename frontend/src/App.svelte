@@ -16,14 +16,20 @@
   import Workbench from './views/Workbench.svelte'
   import SiteAudit from './views/SiteAudit.svelte'
   import Competitors from './views/Competitors.svelte'
+  import Publishing from './views/Publishing.svelte'
+  import Engines from './views/Engines.svelte'
+  import Overview from './views/Overview.svelte'
+  import Onboard from './views/Onboard.svelte'
+  import Settings from './views/Settings.svelte'
 
-  // 已迁到 Svelte 的视图。没列在这里的走 LegacyView 的旧实现。
-  // 每批迁移就往这里加一个，B6 加满 17 个、删掉 LegacyView。
+  // 17 个视图全部迁完了。LegacyView 目前仍是 fallback，B6 会连同
+  // legacy-views.js、installBridge 一起删掉。
   const MIGRATED = {
     facts: Facts, channels: Channels, plan: Plan, samples: Samples,
     verify: Verify, assets: Assets, gaps: Gaps, questions: Questions,
     report: Report, workbench: Workbench, siteaudit: SiteAudit,
-    competitors: Competitors,
+    competitors: Competitors, publishing: Publishing, engines: Engines,
+    overview: Overview, onboard: Onboard, settings: Settings,
   }
   import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
   import { ui } from './lib/stores/ui.svelte.js'

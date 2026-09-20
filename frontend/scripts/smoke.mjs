@@ -45,6 +45,11 @@ const MIGRATED = {
   siteaudit: 'SITE AUDIT',                         // SiteAudit.svelte — 用 kicker，
                                                    // 有站点/无站点两个分支都有它
   competitors: 'COMPETITORS',                      // Competitors.svelte — 同样用 kicker
+  publishing: 'PUBLISHING',                        // Publishing.svelte
+  engines: 'ENGINES',                              // Engines.svelte
+  overview: 'OVERVIEW',                            // Overview.svelte
+  onboard: 'ONBOARDING',                           // Onboard.svelte
+  settings: 'grouped by what changing it affects', // Settings.svelte
 }
 
 let failed = 0

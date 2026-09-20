@@ -4,6 +4,7 @@
   // 这里下沉成组件内的 $state。它是这一页自己的 tab，放全局只是历史包袱。
   // diagTag 仍在 legacy 里（返回 HTML 字符串），所以走 {@html}。
   import { project } from '../lib/stores/project.svelte.js'
+  import { ui } from '../lib/stores/ui.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { go } from '../lib/router.svelte.js'
   import { pct } from '../lib/format.js'
@@ -20,6 +21,15 @@
   const fc = $derived(a.factcheck || [])
 
   let tab = $state('content')
+
+  // 来自「引擎表现 · 样本回放」的跳转传参（go('gaps', { gapTab: 'fact' })）。
+  // 只取一次就清掉，否则下次进这一页会被旧值覆盖。
+  $effect(() => {
+    const g = ui.gapTab
+    if (!g) return
+    ui.gapTab = null
+    tab = g
+  })
 
   const cards = $derived([
     {
