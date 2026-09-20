@@ -17,10 +17,7 @@ export function go(name, extra, fromPop) {
   route.name = name
   if (extra) Object.assign(ui, extra)
   if (!fromPop) {
-    history.pushState(
-      { r: name, engSel: ui.engSel, gapTab: ui.gapTab, wq: extra?.wq || null },
-      '', '#' + name,
-    )
+    history.pushState({ r: name, engSel: ui.engSel, wq: extra?.wq || null }, '', '#' + name)
   }
   scrollTo(0, 0)
   document.getElementById('side')?.classList.remove('open')
@@ -33,10 +30,7 @@ export function routeFromHash() {
 }
 
 export function syncHash(name) {
-  history.replaceState(
-    { r: name, engSel: ui.engSel, gapTab: ui.gapTab, wq: null },
-    '', '#' + name,
-  )
+  history.replaceState({ r: name, engSel: ui.engSel, wq: null }, '', '#' + name)
 }
 
 if (typeof window !== 'undefined') {
@@ -44,7 +38,6 @@ if (typeof window !== 'undefined') {
     const s = e.state
     if (!s || !s.r) return
     if (s.engSel !== undefined) ui.engSel = s.engSel
-    if (s.gapTab) ui.gapTab = s.gapTab
     if (s.r === 'workbench' && s.wq) ui.wq = s.wq
     go(s.r, null, true)
   })

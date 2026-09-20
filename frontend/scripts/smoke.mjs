@@ -35,6 +35,12 @@ const MIGRATED = {
   channels: 'Build cadence in phases',             // Channels.svelte
   plan: 'Auto-verify',                             // Plan.svelte
   samples: 'reviewable and correctable',           // Samples.svelte
+  verify: 'Per-question before',                   // Verify.svelte（别选依赖数据的段落，
+                                                   // 数据为空时那一段根本不渲染）
+  assets: 'deployable artifacts',                  // Assets.svelte
+  gaps: 'fix them in order',                       // Gaps.svelte
+  questions: 'source of every number',             // Questions.svelte
+  report: 'Three people need',                     // Report.svelte
 }
 
 let failed = 0

@@ -2794,3 +2794,9 @@ window.LEGACY_VIEWS = {
 window.GL_NAV = NAV;
 window.GL_BADGE = badge;
 window.GL_ULANG = ULANG;
+
+// 这两个是 const 箭头函数，不会像 function 声明那样自动成为 window 属性，
+// 新组件里要按名字调用就得显式挂上（progBar/chanOpen 那些是 function 声明，
+// 本来就在 window 上，不必列）。
+window.diagTag = diagTag;
+window.distRows = distRows;
