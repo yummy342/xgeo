@@ -31,8 +31,8 @@ except ModuleNotFoundError as e:
 import jobs as J
 import tasks as T
 
-UI = Path(__file__).resolve().parent / "ui.html"
-# 前端构建产物（Vite 输出）。存在就优先托管它，否则回退上面的旧单文件看板。
+# 前端构建产物（frontend/ 下的 Svelte 工程，Vite 输出到这里）。
+# 缺失时 run() 会给出构建提示——服务本身照常起，只有页面打不开。
 UI_DIST = Path(__file__).resolve().parent / "ui_dist"
 
 
@@ -345,10 +345,8 @@ class Handler(BaseHTTPRequestHandler):
         p, q = unquote(u.path), parse_qs(u.query)
         try:
             if p in ("/", "/index.html"):
-                # 迁移期双分支：有构建产物就用它，否则回退旧单文件看板
-                shell = UI_DIST / "index.html"
-                html = shell.read_bytes() if shell.is_file() else UI.read_bytes()
-                return self._send(200, html, "text/html; charset=utf-8")
+                return self._send(200, (UI_DIST / "index.html").read_bytes(),
+                                  "text/html; charset=utf-8")
             if p == "/api/projects":
                 return self._json(list_projects())
             if p == "/api/actions":
@@ -792,7 +790,7 @@ def run(port: int = 8765, open_browser: bool = True,
     G.info(f"看板已启动：{url}（Ctrl+C 退出）"
            + ("，访问需令牌（GEOLOOK_TOKEN）" if token else ""))
     if not (UI_DIST / "index.html").is_file():
-        G.info("未找到前端构建产物，回退旧看板。构建：npm --prefix frontend run build")
+        G.info("未找到前端构建产物，页面会打不开。构建：npm --prefix frontend run build")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
