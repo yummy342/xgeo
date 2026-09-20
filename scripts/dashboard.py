@@ -236,31 +236,99 @@ def create_project(url: str, name: str, slug: str, market: str, max_pages: int) 
 
 
 # ---------------------------------------------------------------- 访问令牌
-# 看板默认只绑 127.0.0.1；要暴露到公网（GEOLOOK_HOST=0.0.0.0）必须设 GEOLOOK_TOKEN。
+# 看板默认只绑 127.0.0.1；要暴露到公网（GEOLOOK_HOST=0.0.0.0）必须设令牌。
 # 浏览器首次带 ?token= 访问后种 HttpOnly cookie（存摘要不存原文），之后正常访问；
 # API 调用也可带 X-Geolook-Token 头。
+#
+# 两种令牌：
+#   GEOLOOK_TOKEN          全局管理员，不受项目限制
+#   GEOLOOK_PROJECT_TOKENS 分项目租户，格式 'tok1:proj-a,proj-b;tok2:proj-c'
+# 只设后者时，每个令牌只能碰自己名下的项目——这是多租户下的隔离边界。
 
 AUTH_COOKIE = "glk_auth"
+
+
+def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
+    """'tok1:a,b;tok2:c' → {tok1:{a,b}, tok2:{c}}。缺令牌或缺项目的段整条丢弃。"""
+    out: dict[str, set[str]] = {}
+    for part in (raw or "").split(";"):
+        tok, _, slugs = part.partition(":")
+        names = {s.strip() for s in slugs.split(",") if s.strip()}
+        tok = tok.strip()
+        if tok and names:
+            out[tok] = names
+    return out
 
 
 def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def auth_ok(token: str | None, cookie_header: str | None,
-            query_token: str | None = None, header_token: str | None = None) -> bool:
-    """纯函数便于测试：任一凭证匹配即放行；未设 token 时全部放行。"""
-    if not token:
-        return True
-    for cand in (query_token, header_token):
-        if cand and hmac.compare_digest(cand, token):
-            return True
-    digest = _token_digest(token)
+def _cookie_value(cookie_header: str | None) -> str | None:
     for part in (cookie_header or "").split(";"):
         k, _, v = part.strip().partition("=")
-        if k == AUTH_COOKIE and v and hmac.compare_digest(v, digest):
-            return True
-    return False
+        if k == AUTH_COOKIE and v:
+            return v
+    return None
+
+
+def _match_token(token: str | None, scoped: dict[str, set[str]],
+                 cookie_header: str | None,
+                 query_token: str | None = None,
+                 header_token: str | None = None) -> str | None:
+    """凭证 → 命中的令牌原文；都没命中返回 None。
+
+    query 参数和请求头带的是令牌原文，cookie 里存的是摘要。
+    纯函数便于测试。"""
+    creds = [c for c in (query_token, header_token) if c]
+    digest = _cookie_value(cookie_header)
+    for tok in ([token] if token else []) + list(scoped):
+        for cand in creds:
+            if hmac.compare_digest(cand, tok):
+                return tok
+        if digest and hmac.compare_digest(digest, _token_digest(tok)):
+            return tok
+    return None
+
+
+def auth_ok(token: str | None, scoped: dict[str, set[str]],
+            cookie_header: str | None,
+            query_token: str | None = None, header_token: str | None = None) -> bool:
+    """未配置任何令牌时全放行；否则必须有凭证命中。"""
+    if not token and not scoped:
+        return True
+    return _match_token(token, scoped, cookie_header, query_token, header_token) is not None
+
+
+def scope_of(token: str | None, scoped: dict[str, set[str]],
+             cookie_header: str | None,
+             query_token: str | None = None, header_token: str | None = None) -> set[str] | None:
+    """命中的令牌能访问哪些项目。None = 不受限（管理员）；空集合 = 未命中。"""
+    hit = _match_token(token, scoped, cookie_header, query_token, header_token)
+    if hit is None:
+        return set()
+    return None if hit == token else scoped[hit]
+
+
+# 项目标识出现在路径里的路由前缀。集中列在这里而不是散在各个分支里——
+# 授权漏检一次就是跨租户读数据，靠人逐个分支去记得加检查迟早会漏。
+SLUG_PREFIXES = (
+    "/api/p/", "/api/config/", "/api/facts/", "/api/assets/", "/api/asset/",
+    "/api/workbench/", "/api/samples/", "/api/sample/", "/api/collect/",
+    "/api/factcheck/", "/api/expand/", "/api/publish/", "/api/publishcfg/",
+    "/api/content/", "/api/distribution/", "/api/files/", "/files/",
+)
+
+
+def path_slug(path: str) -> str | None:
+    """从已解码的 URL 路径里取项目标识；非项目级路由返回 None。"""
+    pre = "/api/collect/queue/"  # 收集队列的 slug 在第一段之后，单独处理
+    if path.startswith(pre):
+        return path[len(pre):].split("/")[0]
+    for pre in SLUG_PREFIXES:
+        if path.startswith(pre):
+            return path[len(pre):].split("/")[0]
+    return None
 
 
 _LOGIN_HTML = """<!doctype html><meta charset="utf-8"><title>GeoLook</title>
@@ -279,28 +347,33 @@ padding:10px 18px;font-size:14px;margin-left:8px;cursor:pointer">进入</button>
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    TOKEN: str | None = None  # run() 注入；None = 不启用认证
+    TOKEN: str | None = None          # run() 注入；None = 没有管理员令牌
+    SCOPES: dict[str, set[str]] = {}  # run() 注入；分项目令牌 → 允许的项目
+    _scope: set[str] | None = None    # 本请求命中的令牌的授权范围，_auth 里赋值
 
     def log_message(self, *a):  # 静音访问日志
         pass
 
     def _auth(self) -> bool:
         """True=放行；False=已自行响应（401 或换 cookie 的 302）。"""
-        if not Handler.TOKEN:
+        if not Handler.TOKEN and not Handler.SCOPES:
+            self._scope = None
             return True
         u = urlparse(self.path)
         qt = (parse_qs(u.query).get("token") or [None])[0]
-        if qt and hmac.compare_digest(qt, Handler.TOKEN):
+        if qt and _match_token(Handler.TOKEN, Handler.SCOPES, None, query_token=qt):
             # 令牌换 cookie 后跳回干净地址，别让令牌留在地址栏和访问日志里
             self.send_response(302)
             self.send_header("Location", u.path or "/")
-            self.send_header("Set-Cookie", f"{AUTH_COOKIE}={_token_digest(Handler.TOKEN)}; "
+            self.send_header("Set-Cookie", f"{AUTH_COOKIE}={_token_digest(qt)}; "
                                            "HttpOnly; SameSite=Strict; Path=/")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return False
-        if auth_ok(Handler.TOKEN, self.headers.get("Cookie"),
+        if auth_ok(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
                    header_token=self.headers.get("X-Geolook-Token")):
+            self._scope = scope_of(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
+                                   header_token=self.headers.get("X-Geolook-Token"))
             return True
         if self.command == "GET":
             self._send(401, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
@@ -308,19 +381,42 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "未授权：需要 X-Geolook-Token 头或先在浏览器登录"}, 401)
         return False
 
+    def _deny(self, slug: str | None) -> bool:
+        """项目级授权。True = 已响应 403，调用方直接 return。
+
+        slug 为空表示这条路由不归属任何项目（前端产物、/api/projects 等），
+        不在这里拦——跨项目的列表泄漏由各路由自己筛。"""
+        if self._scope is None or not slug or slug in self._scope:
+            return False
+        self._json({"error": f"无权访问项目 {slug}"}, 403)
+        return True
+
+    def _deny_admin(self, what: str) -> bool:
+        """管理员专属接口：分项目令牌一律不给。True = 已响应 403。"""
+        if self._scope is None:
+            return False
+        self._json({"error": f"{what}只有管理员令牌可用"}, 403)
+        return True
+
     def _send(self, code, body: bytes, ctype="application/json; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 内容类型由扩展名猜，猜错就等于让浏览器改按 HTML 解析
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, obj, code=200):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
-    def _static(self, base: Path, rel: str):
-        """从 base 目录下取静态文件，解析后必须仍落在 base 内（防目录穿越）。"""
+    def _static(self, base: Path, rel: str, force_text: bool = False):
+        """从 base 目录下取静态文件，解析后必须仍落在 base 内（防目录穿越）。
+
+        force_text：把能被浏览器执行的类型（html/svg/xml）降级成纯文本。
+        用于 assets/ 这类**可写**目录——不降级的话，写接口就等于拿到了同源
+        脚本执行权（存储型 XSS）。"""
         target = (base / rel).resolve()
         try:
             target.relative_to(base.resolve())
@@ -329,6 +425,8 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             return self._send(404, b"not found", "text/plain")
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if force_text and ctype not in ("text/plain", "text/markdown", "application/json"):
+            ctype = "text/plain"
         if ctype.startswith("text/") or ctype in ("application/json",):
             ctype += "; charset=utf-8"
         return self._send(200, target.read_bytes(), ctype)
@@ -343,12 +441,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         u = urlparse(self.path)
         p, q = unquote(u.path), parse_qs(u.query)
+        # 项目级授权统一在这里判，各个分支不再各自检查
+        if self._deny(path_slug(p)):
+            return
         try:
             if p in ("/", "/index.html"):
                 return self._send(200, (UI_DIST / "index.html").read_bytes(),
                                   "text/html; charset=utf-8")
             if p == "/api/projects":
-                return self._json(list_projects())
+                rows = list_projects()
+                if self._scope is not None:
+                    rows = [r for r in rows if r["slug"] in self._scope]
+                return self._json(rows)
             if p == "/api/actions":
                 return self._json(J.ACTIONS)
             if p.startswith("/api/p/"):
@@ -415,6 +519,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "groups": groups, "selected": picked})
             if p == "/api/keys":
                 import sample as S
+                if self._deny_admin("密钥配置"):
+                    return
                 rows = []
                 for code, spec in S.PROVIDERS.items():
                     key = os.environ.get(spec["key_env"], "")
@@ -467,13 +573,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"files": files})
             if p == "/api/jobs":
                 slug = q.get("slug", [None])[0]
-                return self._json({"jobs": J.recent(slug),
+                if slug and self._deny(slug):
+                    return
+                jobs = J.recent(slug)
+                if self._scope is not None:
+                    # 不带 slug 时 recent() 返回所有项目的任务，按授权范围筛掉别人的
+                    jobs = [j for j in jobs if j.get("slug") in self._scope]
+                return self._json({"jobs": jobs,
                                    "running": J.running_for(slug) if slug else None})
             if p.startswith("/api/job/"):
                 jid = p[len("/api/job/"):]
                 job = J.get(jid)
                 if not job:
                     return self._json({"error": "job not found"}, 404)
+                if self._deny(job.get("slug")):
+                    return
                 try:
                     off = int(q.get("offset", ["0"])[0])
                 except ValueError:
@@ -496,7 +610,9 @@ class Handler(BaseHTTPRequestHandler):
                                if (pdir / "content").exists() else [],
                 })
             if p.startswith("/files/"):
-                return self._static(G.WORK, p[len("/files/"):])
+                rel = p[len("/files/"):]
+                # assets/ 是可写目录，按 HTML 发出去等于给了写接口同源脚本执行权
+                return self._static(G.WORK, rel, force_text="/assets/" in rel)
             if p.startswith("/assets/"):
                 # 前端构建产物。URL /assets/x.js 对应文件 ui_dist/assets/x.js
                 # （Vite 默认把产物放进 assets/，index.html 也按这个路径引用）
@@ -516,6 +632,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth():
             return
         p = unquote(urlparse(self.path).path)
+        if self._deny(path_slug(p)):
+            return
         try:
             body = self._body()
 
@@ -523,6 +641,8 @@ class Handler(BaseHTTPRequestHandler):
                 missing = [k for k in ("slug", "id", "status") if k not in body]
                 if missing:
                     return self._json({"error": f"缺参数：{', '.join(missing)}"}, 400)
+                if self._deny(body["slug"]):
+                    return
                 valid = ("todo", "doing", "done", "blocked", "wontfix")  # 与 tasks.py 汇总口径一致
                 if body["status"] not in valid:
                     return self._json({"ok": False, "error": f"非法状态：{body['status']}",
@@ -534,6 +654,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "task": t})
 
             if p == "/api/init":
+                if self._deny_admin("新建项目"):
+                    return
                 url = (body.get("url") or "").strip()
                 if not url:
                     return self._json({"ok": False, "error": "请填写官网地址"}, 400)
@@ -542,7 +664,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "slug": cfg["slug"]})
 
             if p == "/api/run":
-                job = J.start(body["slug"], body["action"], body.get("params") or {})
+                slug = body.get("slug")
+                if not slug:
+                    return self._json({"ok": False, "error": "缺 slug"}, 400)
+                if self._deny(slug):
+                    return
+                job = J.start(slug, body["action"], body.get("params") or {})
                 return self._json({"ok": True, "job": job})
 
             if p.startswith("/api/sample/"):
@@ -576,6 +703,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.startswith("/api/job/") and p.endswith("/stop"):
                 jid = p[len("/api/job/"):-len("/stop")]
+                job = J.get(jid)
+                if job and self._deny(job.get("slug")):
+                    return
                 return self._json({"ok": J.stop(jid)})
 
             if p.startswith("/api/config/"):
@@ -594,8 +724,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.startswith("/api/asset/"):
                 slug = p[len("/api/asset/"):]
+                rel = str(body.get("path") or "")
+                if not rel:
+                    return self._json({"ok": False, "error": "缺 path"}, 400)
                 base = (G.project_dir(slug) / "assets").resolve()
-                target = (base / body["path"]).resolve()
+                target = (base / rel).resolve()
                 try:
                     target.relative_to(base)
                 except ValueError:
@@ -632,6 +765,8 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/keys":
                 import publish as P
                 import sample as S
+                if self._deny_admin("密钥配置"):
+                    return
                 allowed = set()
                 for spec in S.PROVIDERS.values():
                     allowed.add(spec["key_env"])
@@ -696,6 +831,8 @@ class Handler(BaseHTTPRequestHandler):
                 items = body.get("items")
                 if not slug or not isinstance(items, list) or not items:
                     return self._json({"ok": False, "error": "缺 slug / items"}, 400)
+                if self._deny(slug):
+                    return
                 cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
                 qs = cfg.setdefault("questions", [])
                 existing = {q.get("text", "").strip() for q in qs}
@@ -725,10 +862,24 @@ class Handler(BaseHTTPRequestHandler):
 
             if p == "/api/sample-import":
                 import sample as S
-                path = G.project_dir(body["slug"]) / "samples" / body["file"]
+                slug = str(body.get("slug") or "")
+                name = str(body.get("file") or "").strip()
+                if not slug or not name:
+                    return self._json({"ok": False, "error": "缺 slug / file"}, 400)
+                if self._deny(slug):
+                    return
+                # name 直接拼进路径，必须挡住分隔符——否则可以写到 work/ 之外
+                # （界面传来的永远是 samples/ 下的 .md 文件名）
+                if ("/" in name or "\\" in name or ".." in name or name.startswith(".")
+                        or not name.endswith(".md") or len(name) <= 3):
+                    return self._json({"ok": False, "error": "file 必须是文件名形式的 .md"}, 400)
+                path = G.project_dir(slug) / "samples" / name
                 if body.get("text") is not None:
-                    path.write_text(body["text"], "utf-8")
-                S.sample_import(body["slug"], str(path))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(str(body["text"]), "utf-8")
+                elif not path.is_file():
+                    return self._json({"ok": False, "error": f"采样表不存在：{name}"}, 404)
+                S.sample_import(slug, str(path))
                 return self._json({"ok": True})
 
             return self._send(404, b"not found", "text/plain")
@@ -779,16 +930,19 @@ def run(port: int = 8765, open_browser: bool = True,
         host: str | None = None, token: str | None = None):
     host = host or os.environ.get("GEOLOOK_HOST") or "127.0.0.1"
     token = token or os.environ.get("GEOLOOK_TOKEN") or None
-    if host not in ("127.0.0.1", "localhost") and not token:
+    scoped = parse_scoped_tokens(os.environ.get("GEOLOOK_PROJECT_TOKENS"))
+    if host not in ("127.0.0.1", "localhost") and not token and not scoped:
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
               "先设置访问令牌再启动：export GEOLOOK_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
+    Handler.SCOPES = scoped
     J.reap_orphans()  # 回收上次服务留下的 running 僵尸记录，恢复并发保护
     threading.Thread(target=_monitor_loop, daemon=True).start()
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
-    G.info(f"看板已启动：{url}（Ctrl+C 退出）"
-           + ("，访问需令牌（GEOLOOK_TOKEN）" if token else ""))
+    auth_note = ("，访问需令牌（GEOLOOK_TOKEN）" if token
+                 else f"，访问需项目令牌（{len(scoped)} 个）" if scoped else "")
+    G.info(f"看板已启动：{url}（Ctrl+C 退出）{auth_note}")
     if not (UI_DIST / "index.html").is_file():
         G.info("未找到前端构建产物，页面会打不开。构建：npm --prefix frontend run build")
     if open_browser:
