@@ -11,9 +11,11 @@
   import PageHead from '../components/PageHead.svelte'
   import PendingDialog from '../components/PendingDialog.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
+  import PublishConfigDialog from '../components/PublishConfigDialog.svelte'
 
   let pendingOpen = $state(false)
   let publishRel = $state(null)
+  let configTarget = $state(null)
 
   const D = $derived(project.data || {})
   const slug = $derived(D.slug || '')
@@ -79,7 +81,7 @@
             <span class="chan-state" class:ok={!x.missing.length}>
               {x.missing.length ? t('Missing {l}').replace('{l}', x.missing.join(', ')) : t('Ready')}
             </span>
-            <button class="btn {x.missing.length ? 'btn-secondary' : 'btn-ghost'} chan-btn" onclick={() => window.editPub(i)}>{t('Configure')}</button>
+            <button class="btn {x.missing.length ? 'btn-secondary' : 'btn-ghost'} chan-btn" onclick={() => (configTarget = x)}>{t('Configure')}</button>
           </div>
         {/each}
       </div>
@@ -136,6 +138,14 @@
 
 {#if publishRel}
   <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
+{/if}
+
+{#if configTarget}
+  <PublishConfigDialog
+    publisher={configTarget}
+    onclose={() => (configTarget = null)}
+    onchanged={() => { configTarget = null; api('/api/publish/' + slug).then((r) => { if (r && !r.error) { pub = r; window.PUB = pub } }) }}
+  />
 {/if}
 
 <style>

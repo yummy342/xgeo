@@ -809,4 +809,29 @@ export const zh = {
   '<b>Diagnosis</b> (question bank / gap diagnosis) follows a fixed priority: <b>suspected negative</b> (negative cue words near the brand; needs human review) &gt; <b>rival-dominated</b> (you at 0% while some rival is ≥50%) &gt; <b>absent</b> (0%) &gt; <b>ranked low</b> (median rank &gt;3) &gt; normal. Hover a tag to see the basis.': '<b>诊断</b>列（问题库/差距诊断）按固定优先级分型：<b>疑似负面</b>（品牌附近命中负面线索词，需人工复核）&gt; <b>竞品主导</b>（你 0% 且某对手出现率 ≥50%）&gt; <b>完全缺席</b>（0%）&gt; <b>排名靠后</b>（位次中位 &gt;3）&gt; 表现正常。悬停标签可看依据。',
   '<b>Suspected negative</b> is only a cue word (avoid / not recommended / complaint / scam and the like) landing within roughly a hundred characters of the brand name. It is never auto-concluded — the call is made by a human in the sample replay. A false positive is cheaper than a miss.': '<b>疑似负面</b>只是线索词（避雷/不推荐/投诉/scam 等）在品牌名 ±百余字符窗口内命中，不做自动定性——定性靠样本回放人工复核，误报比漏报便宜。',
   '<b>Brand mention distribution / strongest rival engine</b>: counts you and the configured competitors (aliases merged) appearing in answers, over the unprompted sample count for that scope; repeated mentions in one sample count once. <b>Unconfigured brands are excluded</b> — the fuller the competitor list and aliases, the truer the distribution.': '<b>品牌提及分布 / 竞品最强引擎</b>：统计回答中出现的你与已配置竞品（别名并入），分母为对应范围的无提示样本数，同一样本提多次只算一次。<b>未配置的品牌不计入</b>——竞品清单和别名越全，分布越真实。',
+
+  // ---- 拓词选题弹窗 ----
+  'Mine topics · from real search demand': '拓词选题 · 来自真实搜索需求',
+  'Roots: brand + competitors + category. Sources: Baidu autocomplete (CN) + Google Suggest (global). Tick to add; nothing is added automatically.': '词根：品牌 + 竞品 + 品类；来源：百度下拉（国内）+ Google 补全（海外）。勾选后入库，不自动加题。',
+  'LLM rephrased': 'LLM 转写',
+  'Template rephrased': '模板转写',
+  'No keyword mining data yet': '还没有拓词数据',
+  'All candidates are already in the bank — mine again to look for new terms.': '候选都已入库——重新拓词看看有没有新词。',
+  'Mine again': '重新拓词',
+  'Add to question bank': '加入问题库',
+  'Tick the questions to add first': '先勾选要入库的题',
+  'Added {n} questions': '已加入 {n} 题',
+
+  // ---- 采样表编辑 ----
+  'The sampling sheet does not exist': '采样表不存在',
+  'Paste each answer into an ```answer block; a question left blank is skipped, not counted as "not mentioned".': '把答案粘进 ```answer 块；留空的题会被跳过，不会算成「未提及」。',
+  'Save and import': '保存并导入',
+  'Imported': '已导入',
+
+  // ---- 发布渠道配置弹窗 ----
+  'How to get these credentials': '怎么拿到这些配置',
+  'Open the signup page ↗': '打开申请页 ↗',
+  ' (configured — leave blank to keep)': '（已配置，留空保持不变）',
+  'Required': '必填',
+  'Leave blank to keep': '留空保持不变',
 }

@@ -6,7 +6,24 @@
   import { ui } from '../lib/stores/ui.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { pct } from '../lib/format.js'
+  import { post } from '../lib/api.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
+  import { loadProject } from '../lib/stores/project.svelte.js'
   import { go } from '../lib/router.svelte.js'
+  import ExpandDialog from '../components/ExpandDialog.svelte'
+
+  let mining = $state(false)
+
+  // 单个候选题入库（旧的 expAddIdx）
+  async function addOne(term) {
+    const r = await post('/api/questions-add', {
+      slug: D.slug,
+      items: [{ text: term.question, group: term.group, market: term.market }],
+    })
+    if (!r.ok) { toast(r.error || t('Save failed'), 'err'); return }
+    toast(t('Added {n} questions').replace('{n}', String(r.added)))
+    await loadProject(D.slug, true)
+  }
   import PageHead from '../components/PageHead.svelte'
 
   const D = $derived(project.data || {})
@@ -165,7 +182,7 @@
           <div class="mining-t">{t('Rival keywords · users are actively looking for alternatives')}</div>
           <div class="mining-s">{t('Real autocomplete terms from rival word roots — the alternative/comparison phrasings users already search. The sharpest attack topics.')}</div>
         </div>
-        <button class="btn btn-ghost" onclick={() => (D.expand ? window.expandModal() : window.runAction('expand'))}>
+        <button class="btn btn-ghost" onclick={() => (D.expand ? (mining = true) : window.runAction('expand'))}>
           {D.expand ? t('Mine topics') : t('Start mining')}
         </button>
       </div>
@@ -179,7 +196,7 @@
           {#if term.in_bank}
             <span class="muted inbank">{t('In the bank')}</span>
           {:else}
-            <button class="btn btn-ghost sm" onclick={() => window.expAddIdx(i)}>{t('Add')}</button>
+            <button class="btn btn-ghost sm" onclick={() => addOne(term)}>{t('Add')}</button>
           {/if}
         </div>
       {:else}
@@ -193,6 +210,10 @@
     </div>
   {/if}
 </div>
+
+{#if mining}
+  <ExpandDialog onclose={() => (mining = false)} />
+{/if}
 
 <style>
   .ctabs { margin-top: 18px; }

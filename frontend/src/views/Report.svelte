@@ -7,6 +7,9 @@
   import { pct } from '../lib/format.js'
   import { onePager } from '../lib/onepager.js'
   import PageHead from '../components/PageHead.svelte'
+  import SheetEditor from '../components/SheetEditor.svelte'
+
+  let sheetName = $state(null)
 
   const a = $derived(project.data?.analytics || {})
   const h = $derived(a.health || { subs: {} })
@@ -106,7 +109,7 @@
   <div class="row">
     <button class="btn btn-secondary" onclick={() => window.runAction('sample-sheet')}>{t('Export sampling sheet')}</button>
     {#each sheets.slice(0, 4) as s (s)}
-      <button class="btn btn-ghost sm" onclick={() => window.editSheet(s)}>{s}</button>
+      <button class="btn btn-ghost sm" onclick={() => (sheetName = s)}>{s}</button>
     {/each}
   </div>
 
@@ -141,6 +144,10 @@
     {t('off Claude\'s schedule capability, then send deliverables/ to the recipient.')}
   </p>
 </div>
+
+{#if sheetName}
+  <SheetEditor name={sheetName} onclose={() => (sheetName = null)} />
+{/if}
 
 <style>
   .rpt-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 24px; }

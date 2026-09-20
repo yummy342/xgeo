@@ -39,13 +39,13 @@ KEEP = {
     # saveFact / delFact 都不再需要。
     # 样本复核已搬进 components/SampleDialog.svelte，sampleModal / saveSample /
     # delSample / SMP / loadSamples 这套旧刷新链随之不再需要。
-    # showMethod 已搬进 components/MethodDialog.svelte
-    "expandModal", "expAddIdx", "expAdd",
+    # showMethod → MethodDialog.svelte；expandModal/expAddIdx/expAdd →
+    # ExpandDialog.svelte（单条入库由 Competitors 自己调 API）。
     # pendPubModal / pubModal / doPublishSel 已迁到 components/PendingDialog.svelte
     # 与 PublishDialog.svelte。
     # onePager 已搬到 lib/onepager.js（往新窗口写独立 HTML，不是弹窗）
-    "editSheet", "importSheet",
-    "editPub", "savePub",
+    # editSheet / importSheet → components/SheetEditor.svelte
+    # editPub / savePub → components/PublishConfigDialog.svelte
     # editKey / saveKey / editConfig / saveCfg / switchProject / switchModal
     # 已迁到 components/KeyDialog.svelte、BrandConfigDialog.svelte、
     # SwitchBrandDialog.svelte 与 Settings.svelte 内部。
