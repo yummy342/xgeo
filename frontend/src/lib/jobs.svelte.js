@@ -29,7 +29,12 @@ export function statusLabel(status) {
 
 /** 接回一个已经在跑的任务（刷新后用）：日志从头拉一遍，然后继续轮询。 */
 export async function resumeJob(jobId) {
-  if (!jobId || jobs.running === jobId) return
+  // 已经接过、或已经处理过这个任务，就直接返回。任务结束时 watchJob 会把
+  // jobs.running 置回 null，而 App 的 $effect 依赖它 —— 少了这道闸就会无限
+  // 重跑（每轮一个请求 + 一条 toast，日志缓冲被反复清空）。
+  // 用 lastJob 而不是「曾经接过」的标记：那种标记只写不复位，切到别的项目
+  // 再切回来时会把「A 的任务还在跑」挡在门外 —— 界面显示空闲，实际在跑。
+  if (!jobId || jobs.running === jobId || jobs.lastJob === jobId) return
   jobs.offset = 0
   jobLog.text = ''
   jobs.lastJob = jobId

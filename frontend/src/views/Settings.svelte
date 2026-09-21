@@ -6,6 +6,7 @@
   import { api } from '../lib/api.js'
   import { go } from '../lib/router.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
 import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from '../lib/jobs.svelte.js'
   import { loadProject } from '../lib/stores/project.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
@@ -61,6 +62,9 @@ import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from 
   $effect(() => {
     void project.data?.slug
     api('/api/keys').then((r) => {
+      // 失败静默成空数组的话，密钥面板显示「Recommended: 0/0 ready」，
+      // 读起来是「全都配好了」，恰好把最需要用户注意的状态说反了。
+      if (r && r.error) { toast.error(r.error); keys = []; return }
       keys = Array.isArray(r) ? r : []
     })
     api('/api/projects').then((r) => {
@@ -72,6 +76,9 @@ import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from 
     void project.data?.slug
     if (!slug) return
     api('/api/config/' + slug).then((r) => {
+      // api() 把失败折成 {error}，直接当配置对象用的话 mon 取空对象，
+      // 四个周期复跑档位会全部落成「Off」—— 项目其实开着 7 天复跑。
+      if (r && r.error) { toast.error(r.error); cfg = null; return }
       cfg = r || null
     })
   })
@@ -244,6 +251,7 @@ import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from 
     entry={openKey}
     onclose={() => (openKey = null)}
     onchanged={() => { openKey = null; api('/api/keys').then((r) => { keys = Array.isArray(r) ? r : [] }) }}
+
   />
 {/if}
 

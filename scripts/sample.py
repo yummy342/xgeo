@@ -342,7 +342,19 @@ def _usage_of(data: dict) -> dict | None:
     i, o = u.get("prompt_tokens", u.get("input_tokens")), u.get("completion_tokens", u.get("output_tokens"))
     if i is None and o is None:
         return None
-    return {"in": int(i or 0), "out": int(o or 0)}
+
+    def _n(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return None      # 中转把用量回成字符串或小数文本时别炸
+
+    a, b = _n(i), _n(o)
+    if a is None or b is None:
+        # 认不出来就不记账。抛出去会被 ask() 的 except 收成「调用失败」，
+        # 一次成功的采样连答案一起丢掉。
+        return None
+    return {"in": a, "out": b}
 
 
 def _refs_from(data: dict) -> list[dict]:
@@ -475,6 +487,8 @@ def entities_of(cfg: dict) -> tuple[list[str], dict[str, list[str]]]:
 _LATIN = re.compile(r"[A-Za-z0-9]")
 _NEG_RE = re.compile(r"不是|并非|不属于|不同于|not |isn't|aren't", re.IGNORECASE)
 _SENT_END = "。！？!?\n"
+# 否定判定的分句边界：逗号/分号也要算，否则「甲不是 X，乙才是」里的乙会被误否
+_CLAUSE_END = "，,；;。！？!?\n"
 
 # 负面语境线索：只在品牌名附近窗口内找，命中≠负面定性，只标「疑似负面」进人工复核。
 # 词表故意保守——误报会浪费复核时间，漏报还有样本回放兜底。
@@ -502,18 +516,16 @@ def _alias_spans(text: str, alias: str) -> list[tuple[int, int]]:
     return [m.span() for m in re.finditer(re.escape(alias), text)]
 
 
-def _sentence_at(text: str, pos: int) -> str:
-    start = max([text.rfind(c, 0, pos) for c in _SENT_END] + [-1]) + 1
-    ends = [text.find(c, pos) + 1 for c in _SENT_END if text.find(c, pos) != -1]
-    return text[start:min(ends) if ends else len(text)]
-
-
 def _entity_hit(text: str, aliases: list[str]) -> tuple[int, bool]:
     """返回 (首个有效命中位置, 是否有命中因否定语境被丢弃待人工确认)。"""
     hits = sorted((s, e) for a in aliases if a for s, e in _alias_spans(text, a))
     valid, negated = [], False
     for s, e in hits:
-        if _NEG_RE.search(_sentence_at(text, s)):
+        # 看命中点前的**最近一个分句**。定长窗口会把逗号另一侧的否定带过来
+        # （「Dify 不是最便宜的，AIGCLINK 才是最好的」里 AIGCLINK 被误否），
+        # 整句级又会把同句其他实体的否定一起算上 —— 两种都取最后一个分隔符之后。
+        _head = text[max(0, s - 30):s]
+        if _NEG_RE.search(_head[max(_head.rfind(c) for c in _CLAUSE_END) + 1:]):
             negated = True  # 「不是 X」里的命中不算提及，但要人工确认
         else:
             valid.append(s)
@@ -532,15 +544,19 @@ def brand_in_question(question: str, cfg: dict) -> bool:
     """
     b = cfg["brand"]
     names = [b["name"]] + list(b.get("aliases", []) or [])
+    ql = question.lower()
     host = urlparse(b.get("site", "")).netloc.lower().removeprefix("www.")
-    if host and host in question.lower():
+    if host and host in ql:
         return True
-    return any(n and n.lower() in question.lower() for n in names)
+    # 走 _alias_spans 的边界规则，而不是裸子串：品牌名撞上常见词根时
+    # （Meta 配 "how to set metadata"、AI、X）裸子串会把普通问题误判成点名题，
+    # 该样本被从可见性分母里摘走，mention_rate 变成在缩小的样本上算。
+    return any(_alias_spans(ql, n.lower()) for n in names if n)
 
 
 def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dict:
+    names, alias = entities_of(cfg)   # 先它：brand.name 缺失时它给的是可读的报错
     brand = cfg["brand"]["name"]
-    names, alias = entities_of(cfg)
     positions, needs_review = {}, False
     for n in names:
         pos, negated = _entity_hit(answer, alias[n])
@@ -549,7 +565,10 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     present = {n: p >= 0 for n, p in positions.items()}
     ordered = [n for n, p in sorted(positions.items(), key=lambda x: x[1]) if p >= 0]
 
-    urls = [u for u in URL_RE.findall(answer)]
+    # 尾随标点要剥掉：「详见 https://a.com/x,」会把逗号并进域名，于是
+    # cited_domains 里同时出现 a.com 和 a.com. —— 去重失效、top_cited_domains
+    # 榜单混入假域名，官网只以行内链接出现时 own_domain_cited 还会判 False。
+    urls = [u.rstrip(".,;:!?*_|>") for u in URL_RE.findall(answer)]
     for c in citations or []:
         if c.get("url"):
             urls.append(c["url"])
@@ -594,13 +613,27 @@ def dedup_rows(rows: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
+def _bucket_key(rec: dict) -> str:
+    """聚合桶 = (平台, 终端)。
+
+    网页端回传与 API 采样是两拨人，文件头的口径写明「API 结果 ≠ 网页端结果，
+    绝不混算」，但聚合原来只按 platform 分桶，terminal 全仓没有任何消费点 ——
+    同一平台的网页样本和 API 样本直接相加，mention_rate 是混合人群的比例。
+    非 API 终端单独成桶（key 加 __web 后缀），market/label 仍按原平台查。
+    """
+    plat = rec["platform"]
+    return plat if (rec.get("terminal") or "api") == "api" else f"{plat}__web"
+
+
 def aggregate(rows: list[dict], cfg: dict) -> dict:
     by_platform: dict[str, list[dict]] = {}
     for r in rows:
-        by_platform.setdefault(r["platform"], []).append(r)
+        by_platform.setdefault(_bucket_key(r), []).append(r)
 
     out = {}
-    for plat, all_rs in by_platform.items():
+    for key, all_rs in by_platform.items():
+        plat = key[:-len("__web")] if key.endswith("__web") else key
+        is_web = key != plat
         # 点名品牌的问题（品牌验证类）不能算进可见性——答案必然复述品牌名。
         # 它们单独统计成「品牌认知」：AI 到底知不知道这个品牌、说得对不对。
         probe = [r for r in all_rs if r.get("brand_in_question")
@@ -619,9 +652,9 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
                 comp[c] = comp.get(c, 0) + 1
             for d in r["analysis"]["cited_domains"]:
                 dom[d] = dom.get(d, 0) + 1
-        out[plat] = {
+        out[key] = {
             "market": market,
-            "label": label_of(plat),
+            "label": label_of(plat) + ("（网页端）" if is_web else ""),
             "samples": n,
             "mention_rate": round(len(mentioned) / n, 3) if n else None,
             "top1_rate": round(sum(1 for r in mentioned if r["analysis"]["brand_rank"] == 1) / n, 3) if n else None,
@@ -630,6 +663,10 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
             "own_domain_cite_rate": (round(sum(1 for r in rs if r["analysis"]["own_domain_cited"]) / n, 3)
                                      if n and G.has_site(cfg) else None),
             "competitor_mentions": dict(sorted(comp.items(), key=lambda x: -x[1])),
+            # 全量另存一份：[:15] 只够展示，但 verify 判「目标域名有没有被引用」
+            # 和 report 算信源覆盖都拿它当全量用 —— 截断会把真被引用过的域名
+            # 判成没引用，那条工单永远无法闭环。
+            "cited_domains_all": dict(sorted(dom.items(), key=lambda x: -x[1])),
             "top_cited_domains": dict(sorted(dom.items(), key=lambda x: -x[1])[:15]),
             # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网
             "probe": {
@@ -725,17 +762,54 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
     # 推理型模型单次可达 90s，串行跑几十题会拖到一小时以上。
     rows, done, total = [], 0, len(jobs)
     lock = threading.Lock()
-    fh = path.open("a", encoding="utf-8")  # 增量落盘：中途挂掉也不丢已采样本
+
+    def _append(rec: dict):
+        """增量落盘：中途挂掉也不丢已采样本。
+
+        每次重新 open，而不是全程握着一个句柄 —— 手动导入和人工复核走的是
+        「读全量 + os.replace 整文件替换」，替换会换掉 inode，握着旧句柄继续写
+        就是写进已被 unlink 的文件，之后采的样本全部静默消失（Windows 上更直接：
+        os.replace 抛 WinError 5）。持项目锁则挡住「读全量」那一段读到半截。
+        """
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        with G.project_lock(slug):
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
 
     def worker(plat_jobs):
         nonlocal done
         out = []
         for job in plat_jobs:
-            rec = one(job)
+            try:
+                rec = one(job)
+            except Exception as e:  # noqa: BLE001
+                # 一题崩掉不该带走整个平台：异常冒到 fut.result() 会被收成一句
+                # 「某平台采样中断」，该平台剩下的题全不采 —— 而 one() 里已经
+                # 付过费，钱花了、结果丢。落一条 ok=False 的记录继续跑。
+                plat = job[0] if job else ""
+                q = job[1] if len(job) > 1 else {}
+                rec = {
+                    "date": G.today(), "ts": G.now_iso(),
+                    "platform": plat,
+                    "platform_name": (PROVIDERS.get(plat) or {}).get("name", plat),
+                    "market": market_of(plat) if plat else None,
+                    "terminal": "api", "sample_mode": "api",
+                    "question_id": (q or {}).get("id"),
+                    "question": (q or {}).get("text", ""),
+                    "round": job[2] if len(job) > 2 else None,
+                    "brand_in_question": False,
+                    "ok": False, "error": f"{type(e).__name__}: {e}",
+                    "analysis": {
+                        "brand_mentioned": False, "brand_rank": 0, "candidates": [],
+                        "competitors_mentioned": [], "cited_domains": [],
+                        "own_domain_cited": False, "answer_chars": 0,
+                        "needs_review": False, "negative_cues": [],
+                    },
+                    "needs_review": False,
+                }
             with lock:
                 done += 1
-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fh.flush()
+                _append(rec)
                 flag = "✓" if rec["analysis"]["brand_mentioned"] else ("✗" if not rec["ok"] else "·")
                 print(f"[geo] {done:3d}/{total} {flag} [{rec['platform']}] {rec['question'][:32]}",
                       file=sys.stderr, flush=True)
@@ -752,7 +826,6 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
                 rows.extend(fut.result())
             except Exception as e:  # noqa: BLE001
                 G.info(f"某平台采样中断：{type(e).__name__}: {e}")
-    fh.close()
 
     all_rows = dedup_rows(G.read_jsonl(path))
     ok_rows = [r for r in all_rows if r.get("ok")]

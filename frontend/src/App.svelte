@@ -5,7 +5,6 @@
   import Engines from './views/Engines.svelte'
   import Facts from './views/Facts.svelte'
   import Gaps from './views/Gaps.svelte'
-  import Modal from './components/Modal.svelte'
   import Onboard from './views/Onboard.svelte'
   import Overview from './views/Overview.svelte'
   import Plan from './views/Plan.svelte'
@@ -20,6 +19,7 @@
   import Verify from './views/Verify.svelte'
   import Workbench from './views/Workbench.svelte'
   import { onMount } from 'svelte'
+  import { t } from './lib/i18n/index.svelte.js'
   import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
   import {
     project, projects, loadActions, loadProjects, loadProject, clearProject,
@@ -75,12 +75,14 @@
 <div id="shell">
   <Sidebar />
   <main id="main">
-    {#if projects.error}
+    {#if projects.error || project.error}
       <div class="page narrow">
-        <h3>无法连接服务</h3>
-        <p class="soft" style="font-size:13.5px">{projects.error}</p>
+        <h3>{t('Cannot reach the service')}</h3>
+        <!-- project.error 之前只写不读：指标接口挂了的时候页面走「还没有采样
+             数据」分支，用户会去重跑一轮采样（真金白银），而不是去看日志。 -->
+        <p class="soft" style="font-size:13.5px">{projects.error || project.error}</p>
         <div class="row" style="margin-top:14px">
-          <button class="btn btn-primary" onclick={() => location.reload()}>重试</button>
+          <button class="btn btn-primary" onclick={() => location.reload()}>{t('Retry')}</button>
         </div>
       </div>
     {:else}
@@ -94,5 +96,4 @@
   </main>
 </div>
 
-<Modal />
 <Toast />

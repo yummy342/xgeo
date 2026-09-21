@@ -64,7 +64,9 @@ def cmd_init(a):
     name = a.name
     if not name and url:
         res = G.fetch(url)
-        if res["html"]:
+        # 只在 200 时用页面标题推断品牌名：404 页的 <title> 是站点的错误页标题，
+        # 拿它当品牌名会得到一个离谱的名字（而这个字段会进 facts.md 的「规范名」）。
+        if res["status"] == 200 and res["html"]:
             soup = G.parse_html(res["html"])
             title = soup.title.get_text(" ", strip=True) if soup.title else ""
             name = (title.split("|")[0].split("-")[0].split("_")[0].strip() or host)[:40]

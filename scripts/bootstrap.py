@@ -217,6 +217,54 @@ def competitors(brand: dict, market: str) -> list[dict]:
 
 # ---------------------------------------------------------------- 事实卡
 
+def _merge_bootstrap(cfg: dict, brand: dict, market: str) -> dict:
+    """把新推导的竞品与题库并进已有配置，而不是整体替换。
+
+    原来那两行是无条件覆盖，重跑一次 bootstrap 就会：① 丢掉用户手动入库的题
+    （/api/questions-add 写进去的）；② 把采样转正过的竞品 confirmed 标记重置；
+    ③ 新题库仍从 q001 起编号，而 analytics 按 qid 归档做前后对比 —— 同一个
+    qid 指向另一个问题，交付报告里会出现「这个问题在涨」的假趋势。
+    facts.md 那边反而有备份保护（facts.bootstrap-<日期>.md），这里没有。
+    """
+    old_comps = cfg.get("competitors") or []
+    names = {str(c.get("name", "")).strip().lower() for c in old_comps}
+    merged_comps = list(old_comps)
+    for c in competitors(brand, market) or []:
+        n = str(c.get("name", "")).strip().lower()
+        if n and n not in names:
+            names.add(n)
+            merged_comps.append(c)
+    cfg["competitors"] = merged_comps
+
+    old_qs = cfg.get("questions") or []
+    texts = {str(q.get("text", "")).strip() for q in old_qs}
+    used = {int(m.group(1)) for q in old_qs
+            if (m := re.match(r"q(\d+)$", str(q.get("id", ""))))}
+    series = {"cn": 1, "global": 101, "both": 901}
+    merged_qs = list(old_qs)
+    added = 0
+    for q in question_bank(brand, market) or []:
+        t = str(q.get("text", "")).strip()
+        if not t or t in texts:
+            continue
+        mk = q.get("market") if q.get("market") in series else "cn"
+        n = series[mk]
+        while n in used:      # 绝不复用已占用的 qid
+            n += 1
+        used.add(n)
+        merged_qs.append({**q, "id": f"q{n:03d}", "source": "bootstrap"})
+        texts.add(t)
+        added += 1
+    cfg["questions"] = merged_qs
+    G.info(f"  题库合并：保留 {len(old_qs)} 题，新增 {added} 题（已占用的 qid 不复用）")
+    return cfg
+
+
+def _cell(s) -> str:
+    """Markdown 表格单元格转义：竖线会破表，换行同理。"""
+    return re.sub(r"\s+", " ", str(s)).replace("|", "／").strip()
+
+
 def render_facts(slug: str, brand: dict) -> str:
     cfg = G.load_config(slug)
     site = cfg["brand"]["site"]
@@ -225,10 +273,12 @@ def render_facts(slug: str, brand: dict) -> str:
          "> 证据等级：`A 官方已证实` / `B 第三方可佐证` / `C 内部待授权` / `D 需补证` / `E 禁止使用`。",
          "> 标「待确认」的字段官网上找不到，**必须人工补齐或明确不对外说**。", "",
          "## 实体", "", "| 项 | 值 | 证据 |", "|---|---|---|",
-         f"| 规范名 | {brand.get('name','待确认')} | A 官网 |",
-         f"| 别名 | {'、'.join(brand.get('aliases') or []) or '待确认'} | A 官网 |",
-         f"| 官网 | {site} | A |",
-         f"| 行业 | {brand.get('industry','待确认')} | A 官网 |"]
+         # 值来自 LLM 从官网正文抽取，含竖线或换行就会破表 —— facts.md 是
+         # 品牌事实的唯一口径来源，表格错位会让下游读到错行的内容。
+         f"| 规范名 | {_cell(brand.get('name','待确认'))} | A 官网 |",
+         f"| 别名 | {_cell('、'.join(brand.get('aliases') or []) or '待确认')} | A 官网 |",
+         f"| 官网 | {_cell(site)} | A |",
+         f"| 行业 | {_cell(brand.get('industry','待确认'))} | A 官网 |"]
 
     # 待确认项要接在同一张表里，另起一段会被渲染成两张表
     for u in (brand.get("uncertain") or []):
@@ -248,7 +298,8 @@ def render_facts(slug: str, brand: dict) -> str:
     nums = brand.get("key_numbers") or []
     L += ["## 关键数字", "", "| 事实 | 数值 | 来源 | 证据 |", "|---|---|---|---|"]
     for n in nums:
-        L.append(f"| {n.get('fact','')} | {n.get('value','')} | {n.get('source','官网')} | A |")
+        L.append(f"| {_cell(n.get('fact',''))} | {_cell(n.get('value',''))} "
+                 f"| {_cell(n.get('source','官网'))} | A |")
     if not nums:
         L.append("| （官网未提取到可用数字，需人工补充） | 待确认 | — | D |")
     L.append("")
@@ -257,7 +308,8 @@ def render_facts(slug: str, brand: dict) -> str:
     if pr:
         L += ["## 定价", "", "| 版本 | 价格 | 含什么 |", "|---|---|---|"]
         for p in pr:
-            L.append(f"| {p.get('name','')} | {p.get('price','')} {p.get('currency','')} | {p.get('desc','')} |")
+            L.append(f"| {_cell(p.get('name',''))} | {_cell(p.get('price',''))} "
+                     f"{_cell(p.get('currency',''))} | {_cell(p.get('desc',''))} |")
         L.append("")
 
     L += ["## 适用与不适用", ""]
@@ -321,8 +373,7 @@ def run(slug: str, skip_llm: bool = False) -> dict:
                         "currency": p.get("currency", "CNY"), "desc": p.get("desc", "")}
                        for p in brand["pricing"]]
 
-    cfg["competitors"] = competitors(brand, market) or cfg.get("competitors", [])
-    cfg["questions"] = question_bank(brand, market) or cfg.get("questions", [])
+    cfg = _merge_bootstrap(cfg, brand, market)
     cfg["bootstrap"] = {"at": G.now_iso(), "source": "官网正文 + LLM 抽取",
                         "uncertain": brand.get("uncertain") or [],
                         "needs_review": True}

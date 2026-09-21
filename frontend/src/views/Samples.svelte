@@ -28,12 +28,18 @@
   // 是两回事。共用一个 key 会让中文字典撞车，所以措辞上分开。
   const MODE = { api: 'API', manual: 'Hand-collected', extension: 'Extension' }
 
+  let fetchSeq = 0
+
   async function fetchSamples() {
     if (!slug) return
+    const mine = ++fetchSeq
     const q = new URLSearchParams({
       date: filter.date, platform: filter.platform, flag: filter.flag, limit: '300',
     })
     const r = await api(`/api/samples/${slug}?${q}`)
+    // 连续改筛选时先发的可能后到：丢掉过期响应，否则下拉写着 09-20、
+    // 表格里是 09-16 的行，顶部计数也按错的结果算。
+    if (mine !== fetchSeq) return
     if (r && !r.error) {
       rows = r.rows || []
       total = r.total || 0
@@ -52,8 +58,11 @@
     fetchSamples()
   })
 
+  // 接口固定 limit=300 且没有翻页，这两个计数只覆盖当前这 300 条 —— 与全量
+  // total 并排显示时必须说明，否则读起来是「全库只有 12 条要复核」。
   const review = $derived(rows.filter((r) => r.needs_review).length)
   const edited = $derived(rows.filter((r) => r.manual_override).length)
+  const capped = $derived(rows.length >= 300)
 </script>
 
 <div class="page wide">
@@ -85,6 +94,7 @@
     </label>
     <span class="count">
       {t('{n} total').replace('{n}', String(total))}
+      {#if capped}<span class="muted"> {t('(counting the first 300)')}</span>{/if}
       {#if review} · <span class="hl">{t('{n} need review').replace('{n}', String(review))}</span>{/if}
       {#if edited} · {t('{n} reviewed by hand').replace('{n}', String(edited))}{/if}
     </span>

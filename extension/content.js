@@ -67,6 +67,14 @@
     "yuanbao.tencent.com": "https://yuanbao.tencent.com/chat/naQivTmsDa",
     "metaso.cn": "https://metaso.cn/",
     "wenxin.baidu.com": "https://wenxin.baidu.com/",
+    // 下面这几个在 sidepanel 的 HOST2PLAT 里（= 是采样目标），原来漏了这里，
+    // 于是自动模式「每题新开会话」对它们静默失效：所有题在同一个对话里连问，
+    // 上文污染后面每一题的答案。而它们恰好是 README 推荐的免登录沙箱站。
+    "google.com": "https://www.google.com/",
+    "chat.baidu.com": "https://chat.baidu.com/",
+    "yiyan.baidu.com": "https://yiyan.baidu.com/",
+    "n.cn": "https://n.cn/",
+    "bot.n.cn": "https://bot.n.cn/",
   };
 
   function visible(el) {
@@ -124,9 +132,11 @@
     return out;
   }
 
-  function extract() {
-    // 用户选中了文本 → 以选区为准（最可靠的降级路径，任何站都可用）
-    const sel = window.getSelection();
+  function extract(allowSelection) {
+    // 选区优先只对「手动提取」成立。自动跑队列时要求用户全程留在页面上，
+    // 随手一选就会把选中片段当成答案存成样本，而判「生成完成」用的是 DOM，
+    // 两边口径不同 —— 所以自动模式显式传 allowSelection:false。
+    const sel = allowSelection === false ? null : window.getSelection();
     if (sel && sel.toString().trim().length > 40) {
       const range = sel.getRangeAt(0);
       const scope = range.commonAncestorContainer.nodeType === 1
@@ -169,6 +179,11 @@
   function submit(text) {
     const f = fill(text);
     if (!f.ok) return f;
+    // 记下「发送那一刻」的答案文本。新答案还没渲染出来时 pickAnswerEl() 拿到的
+    // 仍是上一题的答案 —— 它稳定、够长，status 会在 3 秒内判「本题完成」，
+    // 于是上一题的答案被存成本题的。自动模式下这条是稳定复现，不是偶发。
+    const el0 = pickAnswerEl();
+    baselineText = el0 ? (el0.innerText || "") : "";
     const el = inputEl();
     for (const sel of SEND_SELECTORS) {
       const btn = [...document.querySelectorAll(sel)].filter(visible).pop();
@@ -185,12 +200,18 @@
   // 答案是否生成完：文本连续 stableMs 毫秒不再增长即认为收笔。
   // 同时检查风控线索——命中就报 blocked，由侧栏中止整轮。
   let watch = null;
+  let baselineText = null;   // 发送那一刻的答案文本
   function status(stableMs) {
-    const body = document.body ? document.body.innerText || "" : "";
-    if (BLOCK_CUES.test(body.slice(0, 4000))) return { state: "blocked", reason: "页面出现验证码/风控提示" };
     const el = pickAnswerEl();
     const text = el ? (el.innerText || "") : "";
+    // 风控线索只扫答案之外的部分：整页扫的话，问「AI 限流怎么办」这类问题时
+    // 答案正文里的 rate limit 会被当成风控命中，把整轮正常采样中止掉。
+    const body = document.body ? document.body.innerText || "" : "";
+    const pageText = text ? body.split(text).join("") : body;
+    if (BLOCK_CUES.test(pageText)) return { state: "blocked", reason: "页面出现验证码/风控提示" };
     const now = Date.now();
+    // 和发送时一字不差 → 新答案还没开始输出，拿到的是上一题的内容
+    if (baselineText !== null && text === baselineText) return { state: "waiting", len: text.length };
     if (!watch || watch.len !== text.length) watch = { len: text.length, at: now };
     if (text.length < 40) return { state: "waiting", len: text.length };
     return { state: now - watch.at >= (stableMs || 2500) ? "done" : "streaming", len: text.length };
@@ -198,7 +219,7 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg) return false;
-    if (msg.type === "xgeo-extract") sendResponse({ host: HOST, url: location.href, ...extract() });
+    if (msg.type === "xgeo-extract") sendResponse({ host: HOST, url: location.href, ...extract(msg.allowSelection) });
     else if (msg.type === "xgeo-fill") sendResponse(fill(String(msg.text || "")));
     else if (msg.type === "xgeo-submit") { watch = null; sendResponse(submit(String(msg.text || ""))); }
     else if (msg.type === "xgeo-status") sendResponse(status(msg.stableMs));

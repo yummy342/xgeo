@@ -278,6 +278,20 @@ def keywords_from_config(cfg: dict) -> list[str]:
                    and len(k) >= 2})[:40]
 
 
+def summarize_scores(results: list[dict], pages: list[dict]) -> tuple[float, dict]:
+    """均分与等级分布。两者同口径：只计能打开的页（status=200）。
+
+    抓不到的页（status=0/403/404）不参与内容质量评价 —— 它们的分数只反映
+    抓取失败。曾经 avg 排除它们、grade_distribution 却算进去，同一份报告里
+    出现「均分 72」与「D 级 18 页」互相矛盾，客户会去找不存在的坏页面。
+    """
+    ok = [r for r, p in zip(results, pages) if (p.get("status") or 0) == 200]
+    avg = round(sum(r["score"] for r in ok) / max(len(ok), 1), 1)
+    dist = {g: sum(1 for r in ok if r["grade"] == g) for g in "ABCD"}
+    dist["failed"] = len(results) - len(ok)   # 抓取失败单列，不混进 ABCD
+    return avg, dist
+
+
 def run(slug: str) -> dict:
     cfg = G.load_config(slug)
     pdir = G.project_dir(slug)
@@ -297,10 +311,7 @@ def run(slug: str) -> dict:
     kws = keywords_from_config(cfg)
 
     results = [score_page(p, kws) for p in pages]
-    # 均分分母只计能打开的页（含 0 分页）：和 grade_distribution 同口径，
-    # 抓不到的页本来就不该参与内容质量均分
-    ok = [r for r, p in zip(results, pages) if (p.get("status") or 0) == 200]
-    avg = round(sum(r["score"] for r in ok) / max(len(ok), 1), 1)
+    avg, grade_dist = summarize_scores(results, pages)
 
     # 语言覆盖：做双市场时，「有没有英文原生内容」是海外 GEO 的门票
     market = cfg.get("market", "cn")
@@ -338,7 +349,12 @@ def run(slug: str) -> dict:
         thin = "英文" if en_pages < zh_pages else "中文"
         lang_warn = True
         site_issues.append(f"P1 中英内容严重不对等（中文 {zh_pages} 页 / 英文 {en_pages} 页），{thin}侧是明显短板")
-    if site.get("ai_bots_blocked"):
+    if site.get("robots_fetched") is False:
+        # robots.txt 没抓到（超时 / 5xx / 被 WAF 拦 UA）与「站点没有 robots.txt」
+        # 在 robots_txt 上完全同形，结论却相反。少了这条，一次网络抖动就把
+        # 「被封禁」静默改写成「无封禁」，验收还会据此自动判 done。
+        site_issues.append("P1 robots.txt 本次没抓到（超时或被拦），AI 抓取器是否被封禁无法判定，需重跑 crawl")
+    elif site.get("ai_bots_blocked"):
         site_issues.append("P0 robots.txt 封禁了 " + "、".join(site["ai_bots_blocked"]) + "，这些引擎永远抓不到你")
     if site.get("ai_ua_blocked"):
         site_issues.append(
@@ -366,8 +382,12 @@ def run(slug: str) -> dict:
         t = (p.get("title") or "").strip()
         if t:
             by_title.setdefault(t, []).append(p["url"])
-        body_key = hashlib.md5(
-            re.sub(r"\s+", "", (p.get("text") or "")[:600]).encode()).hexdigest()
+        # 取正文中段而不是开头：main_text 在页头导航没剔干净时会带上全站共享的
+        # 菜单文字，按前 600 字符做哈希会让所有页面开头一模一样，报告里出现
+        # 「N 组页面正文完全一致」的全站误报，让客户去合并正常页面。
+        body = re.sub(r"\s+", "", p.get("text") or "")
+        mid = body[len(body) // 3:len(body) // 3 + 600]
+        body_key = hashlib.md5(mid.encode()).hexdigest()
         by_body.setdefault(body_key, []).append(p["url"])
     # 多语言站的不同语言版本标题几乎必不同，正文前段也不同，误报风险低
     dup_titles = [(t, us) for t, us in by_title.items() if len(us) > 1]
@@ -379,7 +399,7 @@ def run(slug: str) -> dict:
             "同题多 URL 会让检索在错误候选里二选一——合并或用 canonical 指向唯一版本")
     if dup_bodies:
         site_issues.append(
-            f"P1 {len(dup_bodies)} 组页面正文开头完全一致（近重复内容），例：{dup_bodies[0][0]}"
+            f"P1 {len(dup_bodies)} 组页面正文中段完全一致（近重复内容），例：{dup_bodies[0][0]}"
             f" 与 {dup_bodies[0][1]}——保留一个规范版本，其余 301 或 canonical")
 
     if multilingual and content_pages and hreflang_pages / content_pages < 0.3:
@@ -406,7 +426,7 @@ def run(slug: str) -> dict:
         site_issues.append(
             f"P1 llms.txt 指向的页面反而被 robots 封禁 AI 爬虫（{lch['robots_blocked'][0]['url']}），"
             "一边给索引一边拦抓取，互相矛盾")
-    grade_dist = {g: sum(1 for r in results if r["grade"] == g) for g in "ABCD"}
+    # grade_dist 由 summarize_scores 一并算出（与 avg 同口径）
 
     # 全站最常见的缺口 → 直接就是 P0 内容工程清单
     gap = {}

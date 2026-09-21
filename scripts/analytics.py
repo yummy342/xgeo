@@ -150,7 +150,11 @@ def engines(slug: str, rows_latest, metrics: dict | None) -> list[dict]:
         ranks = [r["analysis"]["brand_rank"] for r in up
                  if r["analysis"]["brand_mentioned"] and r["analysis"]["brand_rank"]]
         share, mine, total = _cite_share(up, own)
-        meta = (metrics or {}).get("platforms", {}).get(plat, {})
+        # 网页端样本单独成桶（key 带 __web 后缀），这里两个键都要查：
+        # 只查裸平台码的话，纯网页端平台（chatgpt / claude_web / metao 这些）
+        # 会取到空 meta，label 退化成裸码、top_sources 整片消失。
+        _plats = (metrics or {}).get("platforms", {})
+        meta = _plats.get(plat) or _plats.get(f"{plat}__web") or {}
         # 样本回放：优先取「无提示且被提及」的一条真实样本
         ex = next((r for r in up if r["analysis"]["brand_mentioned"]), up[0] if up else (rs[0] if rs else None))
         example = None
@@ -159,11 +163,16 @@ def engines(slug: str, rows_latest, metrics: dict | None) -> list[dict]:
             # 提及判定是大小写不敏感 + 含别名的，摘录定位也得是，否则
             # 答案里写 "xgeo" 时摘录会错切到开头、brand_pos 变 -1
             names = [cfg["brand"]["name"]] + list(cfg["brand"].get("aliases", []) or [])
-            hits = [ans.lower().find(n.lower()) for n in names if n]
-            i = min((h for h in hits if h >= 0), default=-1)
+            hits = [(ans.lower().find(n.lower()), n) for n in names if n]
+            hits = [h for h in hits if h[0] >= 0]
+            i, hit_name = min(hits) if hits else (-1, "")
             lo = max(0, (i if i >= 0 else 0) - 120)
+            # 一并返回实际命中的那个名字：命中的可能是别名，长度和 brand.name
+            # 不同，前端按 brand.length 切会把引文切错（页面标着 verbatim sample
+            # 却给出被改写、被截断的句子 —— 证据保真是这个产品的主卖点）。
             example = {"question": ex.get("question", ""), "date": ex.get("date", ""),
                        "excerpt": ans[lo:lo + 320], "brand_pos": (i - lo) if i >= 0 else -1,
+                       "hit_text": hit_name,
                        "mentioned": ex["analysis"]["brand_mentioned"],
                        "rank": ex["analysis"]["brand_rank"],
                        "n_cites": len(ex["analysis"].get("cited_domains") or []),
@@ -341,14 +350,25 @@ def question_groups(qs: list[dict]) -> list[dict]:
         probe = [q for q in rows if q.get("brand_probe")]
         real = [q for q in rows if not q.get("brand_probe")]
         sampled = [q for q in real if q.get("mention") is not None]
-        hit = [q for q in sampled if (q.get("mention") or 0) > 0]
+        # 样本加权，和平台级的 mention_rate 同口径（样本占比）。原来的分子是
+        # 「至少被提过一次的问题数」，是「问题命中比」—— 分组内各题采样数不等时
+        # 和别处的提及率不可比，而且它依赖 questions() 里已 round 到两位的
+        # mention，1/300 这种会被 round 成 0.0 当成没提及，分组率系统性偏低。
+        n_samples = sum(q.get("samples") or 0 for q in sampled)
+
+        def _mr(q):
+            v = q.get("mention_raw")
+            return v if v is not None else (q.get("mention") or 0)
+
         meta = next((m for m in GROUP_META if m[0] == name), (name, "其他", ""))
         out.append({
             "group": name, "kind": meta[1], "note": meta[2],
             "total": len(rows), "probe": len(probe),
             "sampled": len(sampled),
             # 未采样时是 None（未测），不要退化成 0——那会读成「全军覆没」
-            "mention_rate": round(len(hit) / len(sampled), 3) if sampled else None,
+            "mention_rate": (round(sum(_mr(q) * (q.get("samples") or 0)
+                                       for q in sampled) / n_samples, 3)
+                             if n_samples else None),
             "no_content": sum(1 for q in real if q.get("content") != "已成稿"),
             "lost": sum(1 for q in real if q.get("diagnosis") and
                         q["diagnosis"].get("type") in ("竞品主导", "完全缺席")),
@@ -388,6 +408,9 @@ def questions(slug: str, rows_latest, bp: dict | None) -> list[dict]:
                     "market": q.get("market", "cn"),
                     "brand_probe": probe,
                     "mention": round(m, 2) if m is not None else None,
+                    # 未 round 的原始比例：分组加权要用它。1/300 会被 round(2)
+                    # 压成 0.0，拿 round 后的值去加权，分组提及率系统性偏低。
+                    "mention_raw": m,
                     "samples": len(rs),
                     "diagnosis": None if probe else _diagnose(
                         m, _median(ranks),

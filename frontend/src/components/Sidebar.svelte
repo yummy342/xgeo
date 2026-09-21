@@ -31,10 +31,10 @@
 
   <button class="btn btn-secondary pick" onclick={() => (switching = true)}>
     <span class="pick-l">
-      <span class="pick-k">当前品牌</span>
+      <span class="pick-k">{t('Current brand')}</span>
       <span class="pick-v">{brandName}</span>
     </span>
-    <span class="pick-arrow">切换 ▾</span>
+    <span class="pick-arrow">{t('Switch')} ▾</span>
   </button>
 
   <nav>

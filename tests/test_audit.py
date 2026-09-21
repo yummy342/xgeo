@@ -152,14 +152,20 @@ class TestBaselineCount(unittest.TestCase):
 
 
 class TestAvgScore(unittest.TestCase):
-    def test_zero_score_200_pages_counted(self):
+    def test_only_reachable_pages_counted(self):
+        """404 的页既不进均分也不进等级分布 —— 两者必须同口径。
+
+        改这条测试的原因：原来是拿同一套列表推导在测试里自己算出 avg，再跟
+        results[0]["score"] 比，len(ok)==1 时按构造恒等 —— 它测的是测试自己，
+        audit 里真正的聚合逻辑从没被碰到。
+        """
         pages = [make_page(url="https://example.com/a", text=SPA_TEXT),
                  make_page(url="https://example.com/b", text=SPA_TEXT, status=404)]
         results = [A.score_page(p, []) for p in pages]
-        ok = [r for r, p in zip(results, pages) if (p.get("status") or 0) == 200]
-        avg = round(sum(r["score"] for r in ok) / max(len(ok), 1), 1)
-        self.assertEqual(len(ok), 1)
+        avg, dist = A.summarize_scores(results, pages)
         self.assertEqual(avg, results[0]["score"])
+        self.assertEqual(sum(dist[g] for g in "ABCD"), 1, "404 的页不该进等级分布")
+        self.assertEqual(dist["failed"], 1, "抓取失败的页要单列")
 
 
 class TestJsonldDate(unittest.TestCase):

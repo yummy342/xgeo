@@ -106,10 +106,16 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
     A = L.append
     A(f"# {b['name']} · GEO 执行报告 · {G.today()}")
     A("")
-    A(f"- 官网：{b['site']}")
+    no_site = bool(audit.get("no_site"))
+    A(f"- 官网：{b['site']}" if not no_site else "- 无自有网站（商品 / 线下品牌模式）")
     A(f"- 市场：{ {'cn':'国内','global':'海外','both':'国内+海外'}.get(cfg.get('market','cn'), cfg.get('market')) }")
-    A(f"- 本期抓取：{audit['page_count']} 页；站点均分 **{audit['avg_score']}**"
-      + (delta(audit["avg_score"], prev_a["avg_score"]) if prev_a else " （首期基线）"))
+    if no_site:
+        # 无站点项目的 audit.json 里 avg_score=None、page_count=0，照原样输出
+        # 就是报告正文里写「站点均分 **None**」，等于在客户交付物里编一个结论。
+        A("- 站点体检不适用：无自有网站，诊断走内容、阵地与品牌认知")
+    else:
+        A(f"- 本期抓取：{audit['page_count']} 页；站点均分 **{audit['avg_score']}**"
+          + (delta(audit["avg_score"], prev_a["avg_score"]) if prev_a else " （首期基线）"))
     A("")
 
     A("## 一、结论先行")
@@ -141,56 +147,66 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
               f"最弱：**{worst[1].get('label', worst[0])}**（{worst[1]['mention_rate']:.0%}）")
     A("")
 
-    A("## 二、站点技术底座")
-    A("")
-    s = audit.get("site", {})
-    A("| 检查项 | 结果 |")
-    A("|---|---|")
-    A(f"| sitemap.xml | {'有（' + str(s.get('sitemap_url_count', 0)) + ' 条 URL）' if s.get('has_sitemap') else '**无**'} |")
-    A(f"| llms.txt | {'有' if s.get('has_llms_txt') else '**无**'} |")
-    A(f"| robots 封禁 AI 抓取器 | {'、'.join(s.get('ai_bots_blocked') or []) or '无'} |")
-    probe = s.get("ai_ua_probe") or {}
-    if probe or s.get("ai_ua_blocked"):
-        bad = s.get("ai_ua_blocked") or []
-        A(f"| WAF/UA 差异探测 | {'**拒绝 ' + '、'.join(bad) + '**' if bad else f'实测放行 {len(probe)} 个 AI 爬虫 UA'} |")
-    A(f"| 页面可访问率 | {s.get('pages_ok', 0)}/{s.get('pages_crawled', 0)} |")
-    lc = audit.get("language_coverage") or {}
-    if lc:
-        lang_line = f"中文 {lc.get('zh_pages', 0)} 页 / 英文 {lc.get('en_pages', 0)} 页"
-        if lc.get("ja_pages", 0) > 0:
-            lang_line += f" / 日文 {lc['ja_pages']} 页"
-        A(f"| 有效内容页语言 | {lang_line} |")
-    A("")
-    if audit.get("site_issues"):
-        for i in audit["site_issues"]:
-            A(f"- {i}")
+    if no_site:
+        # 没有官网就没有站点技术底座可谈，也没有页面可体检。原样输出会印出
+        # 「sitemap.xml **无**」「llms.txt **无**」「ABCD 全 0 页」——对一个
+        # 根本没有官网的项目，这是在断言不存在的资产缺失。
+        A("## 二、站点与页面")
         A("")
+        A("本项目没有自有网站：站点技术底座与页面 GEO 体检都不适用，"
+          "诊断依据是内容、阵地与品牌认知三块，见后文。")
+        A("")
+    else:
+        A("## 二、站点技术底座")
+        A("")
+        s = audit.get("site", {})
+        A("| 检查项 | 结果 |")
+        A("|---|---|")
+        A(f"| sitemap.xml | {'有（' + str(s.get('sitemap_url_count', 0)) + ' 条 URL）' if s.get('has_sitemap') else '**无**'} |")
+        A(f"| llms.txt | {'有' if s.get('has_llms_txt') else '**无**'} |")
+        A(f"| robots 封禁 AI 抓取器 | {'、'.join(s.get('ai_bots_blocked') or []) or '无'} |")
+        probe = s.get("ai_ua_probe") or {}
+        if probe or s.get("ai_ua_blocked"):
+            bad = s.get("ai_ua_blocked") or []
+            A(f"| WAF/UA 差异探测 | {'**拒绝 ' + '、'.join(bad) + '**' if bad else f'实测放行 {len(probe)} 个 AI 爬虫 UA'} |")
+        A(f"| 页面可访问率 | {s.get('pages_ok', 0)}/{s.get('pages_crawled', 0)} |")
+        lc = audit.get("language_coverage") or {}
+        if lc:
+            lang_line = f"中文 {lc.get('zh_pages', 0)} 页 / 英文 {lc.get('en_pages', 0)} 页"
+            if lc.get("ja_pages", 0) > 0:
+                lang_line += f" / 日文 {lc['ja_pages']} 页"
+            A(f"| 有效内容页语言 | {lang_line} |")
+        A("")
+        if audit.get("site_issues"):
+            for i in audit["site_issues"]:
+                A(f"- {i}")
+            A("")
 
-    A("## 三、页面 GEO 体检")
-    A("")
-    gd = audit["grade_distribution"]
-    A("| 等级 | 页数 | 含义 |")
-    A("|---|---:|---|")
-    for g in "ABCD":
-        A(f"| {g} | {gd.get(g, 0)} | {GRADE_NOTE[g]} |")
-    A("")
-    A("最需要改造的页面（分数从低到高）：")
-    A("")
-    A("| 分数 | 词数 | 缺失抽取块 | 页面 |")
-    A("|---:|---:|---|---|")
-    for p in audit["pages"][:12]:
-        miss = "、".join([k for k, v in p["blocks"].items() if not v]) or "—"
-        label = cell(p["title"] or p["url"])[:40]
-        A(f"| {p['score']} | {p['word_count']} | {miss} | [{label}]({p['url']}) |")
-    A("")
-    A("全站抽取块缺口（GEO 最大的杠杆点）：")
-    A("")
-    A("| 抽取块 | 缺失页数 | 实测增益 |")
-    A("|---|---:|---|")
-    gain = {"数字事实": "+61.6%", "定义": "+57.3%", "对比": "+55.3%", "操作步骤": "+41.2%", "FAQ": "无显著增益，但利于问答召回"}
-    for g in audit["block_gap"]:
-        A(f"| {g['block']} | {g['missing_pages']}/{g['total']} | {gain.get(g['block'], '—')} |")
-    A("")
+        A("## 三、页面 GEO 体检")
+        A("")
+        gd = audit.get("grade_distribution") or {}
+        A("| 等级 | 页数 | 含义 |")
+        A("|---|---:|---|")
+        for g in "ABCD":
+            A(f"| {g} | {gd.get(g, 0)} | {GRADE_NOTE[g]} |")
+        A("")
+        A("最需要改造的页面（分数从低到高）：")
+        A("")
+        A("| 分数 | 词数 | 缺失抽取块 | 页面 |")
+        A("|---:|---:|---|---|")
+        for p in (audit.get("pages") or [])[:12]:
+            miss = "、".join([k for k, v in p["blocks"].items() if not v]) or "—"
+            label = cell(p["title"] or p["url"])[:40]
+            A(f"| {p['score']} | {p['word_count']} | {miss} | [{label}]({p['url']}) |")
+        A("")
+        A("全站抽取块缺口（GEO 最大的杠杆点）：")
+        A("")
+        A("| 抽取块 | 缺失页数 | 实测增益 |")
+        A("|---|---:|---|")
+        gain = {"数字事实": "+61.6%", "定义": "+57.3%", "对比": "+55.3%", "操作步骤": "+41.2%", "FAQ": "无显著增益，但利于问答召回"}
+        for g in (audit.get("block_gap") or []):
+            A(f"| {g['block']} | {g['missing_pages']}/{g['total']} | {gain.get(g['block'], '—')} |")
+        A("")
 
     A("## 四、AI 答案可见性")
     A("")
@@ -241,7 +257,9 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
             for m in rows.values():
                 for k, v in m["competitor_mentions"].items():
                     comp[k] = comp.get(k, 0) + v
-                for k, v in m["top_cited_domains"].items():
+                # 优先全量（top_cited_domains 是 [:15] 的展示截断，用它汇总会
+                # 系统性低估信源覆盖）。旧版 metrics 没有全量字段，退回截断版。
+                for k, v in (m.get("cited_domains_all") or m.get("top_cited_domains") or {}).items():
                     doms[k] = doms.get(k, 0) + v
             if comp:
                 A(f"{mk_name}竞品被提及次数：" + "、".join(f"{k} {v}" for k, v in sorted(comp.items(), key=lambda x: -x[1])[:10]))
@@ -388,9 +406,10 @@ def run(slug: str) -> Path:
     md = build_markdown(cfg, audit, metrics, pm, pa, todos)
 
     cards = [
-        ("站点均分", str(audit["avg_score"])),
+        ("站点均分", "不适用" if audit.get("no_site") else str(audit.get("avg_score"))),
         ("抓取页数", str(audit["page_count"])),
-        ("待改造页(C/D)", str(audit["grade_distribution"].get("C", 0) + audit["grade_distribution"].get("D", 0))),
+        ("待改造页(C/D)", str((audit.get("grade_distribution") or {}).get("C", 0)
+                              + (audit.get("grade_distribution") or {}).get("D", 0))),
         ("P0 待办", str(sum(1 for t in todos if t["priority"] == "P0"))),
     ]
     cards += market_avg_cards(metrics)
@@ -404,8 +423,9 @@ def run(slug: str) -> Path:
 
     # 归档本期 audit，供下期算 delta
     G.write_json(pdir / "history" / f"audit-{G.today()}.json",
-                 {"avg_score": audit["avg_score"], "grade_distribution": audit["grade_distribution"],
-                  "page_count": audit["page_count"], "date": G.today()})
+                 {"avg_score": audit.get("avg_score"),
+                  "grade_distribution": audit.get("grade_distribution") or {},
+                  "page_count": audit.get("page_count"), "date": G.today()})
 
     G.info(f"报告已生成 → {outdir/'report.html'}")
     return outdir / "report.html"

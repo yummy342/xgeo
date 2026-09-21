@@ -6,6 +6,15 @@ let QUEUE = { questions: [], platforms: [], groups: [] };
 let SEL = null;            // 选中的题
 let LAST = null;           // 最近一次提取结果
 let SAMPLES = [];          // 已采集未上传
+
+// 看板侧字符串进 innerHTML 前必须转义：题目文本来自 geo.json，而它由
+// bootstrap / expand 的 LLM 生成（expand 还会从百度/Google 联想词改写），
+// 含 HTML 就在扩展源里执行 —— 那个源有 chrome.storage、chrome.tabs 和
+// 打本地看板的 fetch 权限。预览框用的是 textContent，说明本来就该转，
+// 只是列表渲染这几处漏了。
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 let GROUPS = [];           // 选中的意图分组（空 = 全部）
 
 // 站点 → 平台码。识别不了的站让用户在下拉里自己选（下拉来自服务端平台清单）。
@@ -15,8 +24,7 @@ const HOST2PLAT = {
   "doubao.com": "doubao_app",
   "google.com": "google_aio",
   "chat.baidu.com": "baidu", "yiyan.baidu.com": "baidu", "wenxin.baidu.com": "baidu",
-  "metaso.cn": "metaso", "n.cn": "nano_ai",
-  "n.cn": "nano_ai", "bot.n.cn": "nano_ai",
+  "metaso.cn": "metaso", "n.cn": "nano_ai", "bot.n.cn": "nano_ai",
 };
 
 const store = {
@@ -26,6 +34,16 @@ const store = {
 
 function serverUrl() { return $("#server").value.trim().replace(/\/$/, "") || "http://127.0.0.1:8765"; }
 function slug() { return $("#slug").value; }
+
+// 清掉「上一次提取」的全部痕迹。换题、换平台、换项目都要调 ——
+// 不然保存按钮还是可点的，会把上一题的答案记到当前题（或当前平台）名下。
+function resetExtract() {
+  LAST = null;
+  $("#save").disabled = true;
+  $("#preview").hidden = true;
+  $("#preview").textContent = "";
+  $("#exmeta").textContent = "";
+}
 
 async function apiGet(path) {
   const r = await fetch(serverUrl() + path);
@@ -73,7 +91,10 @@ async function detectPlatform() {
   }
   const known = QUEUE.platforms.find(p => p.code === code);
   $("#plat").textContent = known ? known.label : (code || "未识别");
-  if (known) $("#platSel").value = code;
+  // 未识别时必须清空下拉，不能静默停在第一项：在 kimi / perplexity / glm 这类
+  // 页面采样时，下拉里默认是「纳米AI搜索（360）」，而该平台码是已知的，
+  // 保存不会被拦 —— 答案就这样记到另一个引擎名下直接入库了。
+  $("#platSel").value = known ? code : "";
 }
 
 function currentPlatform() {
@@ -93,14 +114,17 @@ async function renderQueue() {
     return `<div class="small" style="color:var(--t600);margin:8px 0 2px">${g}
         <span style="color:var(--t500)">· 待采 ${left}/${list.length}</span></div>` +
       list.map(q => `
-        <div class="q ${SEL && SEL.id === q.id ? "sel" : ""}" data-id="${q.id}">
-          <span class="id">${q.id}</span>${q.text}
+        <div class="q ${SEL && SEL.id === q.id ? "sel" : ""}" data-id="${esc(q.id)}">
+          <span class="id">${esc(q.id)}</span>${esc(q.text)}
           ${doneSet.has(collectedKey(p, q.id)) ? '<span class="done">✓ 已采</span>' : ""}
         </div>`).join("");
   }).join("");
   $("#qlist").innerHTML = sections || '<div class="muted" style="padding:8px">先点「载入队列」</div>';
   document.querySelectorAll(".q").forEach(el => el.onclick = () => {
     SEL = QUEUE.questions.find(x => x.id === el.dataset.id);
+    // 换题必须把上一题的提取结果丢掉：LAST 留着上一题的答案、保存按钮仍可点，
+    // 直接点「保存本题」就把 Q1 的答案存成了 Q2 的（预览框里明明还是 Q1 的正文）。
+    resetExtract();
     renderQueue();
   });
   $("#qmeta").textContent = QUEUE.questions.length
@@ -110,7 +134,7 @@ async function renderQueue() {
 async function loadProjects() {
   try {
     const ps = await apiGet("/api/projects");
-    $("#slug").innerHTML = ps.map(p => `<option value="${p.slug}">${p.name}</option>`).join("");
+    $("#slug").innerHTML = ps.map(p => `<option value="${esc(p.slug)}">${esc(p.name)}</option>`).join("");
     const saved = await store.get("slug");
     if (saved && ps.some(p => p.slug === saved)) $("#slug").value = saved;
   } catch (e) {
@@ -121,7 +145,7 @@ async function loadProjects() {
 function renderGroups() {
   $("#groups").innerHTML = (QUEUE.groups || []).map(g => `
     <span class="chip ${GROUPS.includes(g.name) ? "on" : ""} ${g.buyer ? "buyer" : ""}"
-      data-g="${g.name}" title="${g.buyer ? "买家意图组——离成交最近" : "需求教育/探测组"}">${g.name}<span class="n">${g.count}</span></span>`).join("");
+      data-g="${esc(g.name)}" title="${g.buyer ? "买家意图组——离成交最近" : "需求教育/探测组"}">${esc(g.name)}<span class="n">${esc(g.count)}</span></span>`).join("");
   document.querySelectorAll(".chip").forEach(el => el.onclick = async () => {
     const g = el.dataset.g;
     GROUPS = GROUPS.includes(g) ? GROUPS.filter(x => x !== g) : GROUPS.concat(g);
@@ -139,7 +163,7 @@ async function loadQueue() {
     if (!GROUPS.length && QUEUE.selected && QUEUE.selected.length) GROUPS = QUEUE.selected;
     await store.set("slug", slug());
     $("#platSel").innerHTML = QUEUE.platforms
-      .map(p => `<option value="${p.code}">${p.label}</option>`).join("");
+      .map(p => `<option value="${esc(p.code)}">${esc(p.label)}</option>`).join("");
     await detectPlatform();
     renderGroups();
     SEL = QUEUE.questions[0] || null;
@@ -157,7 +181,8 @@ async function sendToTab(msg) {
 }
 
 $("#load").onclick = loadQueue;
-$("#platSel").onchange = renderQueue;
+// 换平台也要清：A 平台提取的答案记到 B 平台名下，比存错题更隐蔽。
+$("#platSel").onchange = () => { resetExtract(); renderQueue(); };
 $("#pickbuyer").onclick = async () => {
   GROUPS = (QUEUE.groups || []).filter(g => g.buyer).map(g => g.name);
   await store.set("groups", GROUPS); loadQueue();
@@ -251,6 +276,7 @@ async function autoRun() {
   if (!todo.length) { alog("这个引擎的队列已采完"); return; }
   if (!confirm(`将在当前标签页自动提问 ${todo.length} 题（每题间隔 ${ivl / 1000}s）。\n请全程留在页面上；随时可点「中止」。`)) return;
 
+  let newChatWarned = false;   // 「这个站没有新会话入口」只问一次
   RUN = { tabId: tab.id, plat, total: todo.length, i: 0, fails: 0 };
   $("#auto").hidden = true; $("#abort").hidden = false;
   alog(`开始：${todo.length} 题 · ${plat}${GROUPS.length ? " · " + GROUPS.join("/") : ""}`);
@@ -258,11 +284,37 @@ async function autoRun() {
   for (const q of todo) {
     if (!RUN) break;
     RUN.i++;
+    // 每轮校验标签页没被导到别的引擎：sendMessage 打到新站的 content script 上
+    // 照常工作，plat 还是启动时捕获的旧平台码，于是整批样本的平台标签与来源页
+    // 互相矛盾。README 承诺的「标签页导航走即停」原来只在导航到名单外的站时生效。
+    try {
+      const cur = await chrome.tabs.get(RUN.tabId);
+      const host = cur && cur.url ? new URL(cur.url).hostname.replace(/^www\./, "") : "";
+      if (host && HOST2PLAT[host] && HOST2PLAT[host] !== plat) {
+        alog(`标签页已切到 ${host}，本轮停止（否则样本会记错平台）`, "okline");
+        break;
+      }
+    } catch (e) { /* 拿不到标签页信息就当没变，交给后面的提交失败兜底 */ }
     // 每题新开会话：连续追问会让上文污染后面的答案
     try {
       const nc = await chrome.tabs.sendMessage(RUN.tabId, { type: "xgeo-newchat" });
-      if (nc && nc.url) { await chrome.tabs.update(RUN.tabId, { url: nc.url }); await sleep(3500); }
-    } catch (e) { /* 站点不在映射表，就地继续 */ }
+      if (nc && nc.url) {
+        await chrome.tabs.update(RUN.tabId, { url: nc.url });
+        await sleep(3500);
+      } else if (!newChatWarned) {
+        // 站点不在新会话映射表里时原来静默就地继续 —— 所有题在同一个对话里
+        // 连着问，上文污染后面每一题的答案，而这正是采样纪律的头一条。
+        newChatWarned = true;
+        if (!confirm("当前站点没有新会话入口：所有题会在同一个对话里连着问，"
+                   + "上文会污染后面每一题的答案。\n\n仍要继续吗？")) break;
+      }
+    } catch (e) {
+      if (!newChatWarned) {
+        newChatWarned = true;
+        if (!confirm("取新会话入口失败：" + e.message
+                   + "\n\n继续的话所有题会在同一对话里连着问。仍要继续吗？")) break;
+      }
+    }
     if (!RUN) break;
 
     let sent;
@@ -281,7 +333,7 @@ async function autoRun() {
     if (st.state !== "done") { RUN.fails++; alog(`[${RUN.i}] 超时未拿到答案`); if (RUN.fails >= 2) break; continue; }
 
     let ex;
-    try { ex = await chrome.tabs.sendMessage(RUN.tabId, { type: "xgeo-extract" }); }
+    try { ex = await chrome.tabs.sendMessage(RUN.tabId, { type: "xgeo-extract", allowSelection: false }); }
     catch (e) { ex = { ok: false, error: "提取失败" }; }
     if (!ex || !ex.ok) { RUN.fails++; alog(`[${RUN.i}] ${ex && ex.error}`); if (RUN.fails >= 2) break; continue; }
 
@@ -345,12 +397,24 @@ $("#session").onchange = async () => {
   refreshDiscipline();
 };
 
+async function loadSampleBuffer() {
+  SAMPLES = await store.get("samples:" + slug(), []);
+  $("#count").textContent = SAMPLES.length;
+}
+
 (async () => {
   await loadProjects();
   $("#session").value = await store.get("session", "sandbox");
   GROUPS = await store.get("groups", []);
-  SAMPLES = await store.get("samples:" + slug(), []);
-  $("#count").textContent = SAMPLES.length;
+  await loadSampleBuffer();
+  // 切换项目必须重读该项目的缓冲：不重读的话，A 项目采的样本会以 B 的 slug
+  // 上传（B 的指标被 A 的答案污染），紧接着还把 B 的槽位清空。
+  $("#slug").onchange = async () => {
+    await store.set("slug", slug());
+    resetExtract();
+    await loadSampleBuffer();
+    renderQueue();
+  };
   await refreshDiscipline();
   chrome.tabs.onActivated.addListener(() => { refreshDiscipline(); detectPlatform(); });
   chrome.tabs.onUpdated.addListener((_, info) => { if (info.status === "complete") { refreshDiscipline(); detectPlatform(); } });

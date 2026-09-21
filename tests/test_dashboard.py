@@ -262,6 +262,110 @@ class TestAuthorization(unittest.TestCase):
             self._req("POST", "/api/sample-import", self.ADMIN, {"file": "a.md"})[0], 400)
 
 
+class TestHostGuard(unittest.TestCase):
+    """默认档（不设令牌）下只接受本机 Host。
+
+    挡的是 DNS rebinding：浏览器里任何一个网页都能用 evil.com（解析到
+    127.0.0.1）发起同源请求读写全部接口，包括 /api/keys 和发布接口。
+    只测 _host_ok() 内部逻辑不够 —— 它在 do_GET/do_POST 里那一行被删掉，
+    单测照样全绿，所以这里打真 HTTP。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # 类级共享一个 server：四个用例各起一个的话，套件里会多出四次
+        # bind/listen/close，Windows 上更容易撞到连接层偶发。
+        cls.tmp = TemporaryDirectory()
+        work = Path(cls.tmp.name) / "work"
+        (work / "alpha").mkdir(parents=True)
+        (work / "alpha" / "geo.json").write_text(
+            json.dumps({"brand": {"name": "alpha"}, "questions": []}), "utf-8")
+        cls.workdir = work
+        cls.patches = [mock.patch.object(D.G, "WORK", work),
+                       mock.patch.object(D.Handler, "TOKEN", None),
+                       mock.patch.object(D.Handler, "SCOPES", {}),
+                       mock.patch.object(D.Handler, "log_message", lambda *a, **k: None)]
+        for p in cls.patches:
+            p.start()
+        cls.srv = D.ThreadingHTTPServer(("127.0.0.1", 0), D.Handler)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        # 先 shutdown 再 close。顺序反过来的话，serve_forever 线程会去 select
+        # 一个已经关掉的套接字，冒出 OSError(WinError 10038) 的噪音刷进测试输出。
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        for p in cls.patches:
+            p.stop()
+        cls.tmp.cleanup()
+
+    def _req(self, method, path, host=None, origin=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            headers = {}
+            if host is not None:
+                headers["Host"] = host
+            if origin is not None:
+                headers["Origin"] = origin
+            payload = None
+            if body is not None:
+                payload = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=payload, headers=headers)
+            r = conn.getresponse()
+            return r.status, r.read()
+        finally:
+            conn.close()
+
+    def test_local_host_allowed(self):
+        self.assertEqual(self._req("GET", "/api/projects")[0], 200)
+
+    def test_foreign_host_rejected(self):
+        # 默认 Host 是 127.0.0.1:port，显式改掉就是 DNS rebinding 的形态
+        for h in ("evil.com", "evil.com:8765", "attacker.local"):
+            self.assertEqual(self._req("GET", "/api/projects", host=h)[0], 403, h)
+
+    def test_foreign_origin_rejected(self):
+        # Host 是本机、但带外站 Origin —— 那是从别的页面打过来的 CSRF
+        status, _ = self._req("POST", "/api/config/alpha", origin="https://evil.com",
+                              body={"brand": {"name": "x"}})
+        self.assertEqual(status, 403)
+
+    def test_token_mode_skips_host_check(self):
+        """配了令牌就不限 Host：鉴权已经挡住未认证请求，而且这时用户可能
+        故意绑 0.0.0.0 从别的机器访问。这里应落到 401（鉴权拦），不是 403。"""
+        with mock.patch.object(D.Handler, "TOKEN", "secret"):
+            self.assertEqual(self._req("GET", "/api/projects", host="evil.com")[0], 401)
+
+
+class TestConfigShapeGuard(unittest.TestCase):
+    """geo.json 的结构校验。
+
+    save_config 只备份不校验，一次畸形写就能把看板打崩：list_projects()
+    走 cfg.get("brand", {}).get("name", ...)，brand 被写成字符串就抛
+    AttributeError，/api/projects 整体 500 —— 所有项目的列表都打不开。
+    """
+
+    def test_rejects_malformed_shapes(self):
+        for body, why in (
+            ({"brand": "x"}, "brand 被写成字符串"),
+            ({"brand": {"name": 123}}, "brand.name 不是字符串"),
+            ({"questions": "q"}, "questions 不是数组"),
+            ({"competitors": {}}, "competitors 不是数组"),
+            ({"market": []}, "market 不是字符串"),
+            ({}, "空对象"),
+        ):
+            self.assertIsNotNone(D.config_shape_error(body), why)
+
+    def test_accepts_valid_shapes(self):
+        for body in ({"brand": {"name": "x"}}, {"market": "cn"},
+                     {"questions": [], "competitors": []},
+                     {"brand": {"name": "x", "aliases": []}, "market": "both"}):
+            self.assertIsNone(D.config_shape_error(body), body)
+
+
 class TestAssetsAreNotExecutable(unittest.TestCase):
     """assets/ 是可写目录：写进去的 html 若按 text/html 发回来，
     写接口就等于拿到了同源脚本执行权（存储型 XSS）。"""

@@ -6,6 +6,7 @@
   import { api } from '../lib/api.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
 
   // 迁自 ui.html:2317 vPublishing。
   //
@@ -22,6 +23,10 @@
 
   let pub = $state(null)
 
+  // 发布记录里的 url 是渠道响应直接落库的：webhook 端点可以回 `javascript:...`，
+  // 绑到 href 上点一下就执行。只放行 http(s)，其余当纯文本显示。
+  const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '')
+
   const pubs = $derived((pub && pub.publishers) || [])
   const recs = $derived(((pub && pub.records) || []).slice().reverse())
   const pend = $derived(contentPub.filter((f) => !(f.published || []).length))
@@ -31,7 +36,10 @@
     void project.data?.slug
     if (!slug) return
     api('/api/publish/' + slug).then((r) => {
-      pub = (r && !r.error) ? r : null
+      // 失败不能静默成空态：页面会显示「Channels ready 0/0 · 还没有发布记录」，
+      // 把「接口挂了」讲成「你还没发过文章」，用户既不知道出了事也没有重试入口。
+      if (r && r.error) { toast.error(r.error); pub = null; return }
+      pub = r || null
     })
   })
 
@@ -114,8 +122,12 @@
                 {/if}
               </td>
               <td class="url-cell">
-                {#if r.url}
-                  <a href={r.url} target="_blank" class="url">{r.url}</a>
+                {#if safeUrl(r.url)}
+                  <a href={safeUrl(r.url)} target="_blank" rel="noreferrer" class="url">{r.url}</a>
+                {:else if r.url}
+                  <!-- 非 http(s) 的 url 只当文本显示：webhook 端点返回的 url 是
+                       直接落库的，`javascript:...` 绑到 href 上点一下就执行。 -->
+                  <span class="url">{r.url}</span>
                 {:else}
                   <span class="muted">{r.note || r.error || '—'}</span>
                 {/if}

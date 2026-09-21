@@ -146,10 +146,6 @@ class TestJsonIO(unittest.TestCase):
             finally:
                 G.WORK = orig_work
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestNoSiteMode(unittest.TestCase):
     """无自有网站项目（电商商品/线下品牌/小程序）的判定与降级。"""
 
@@ -177,3 +173,9 @@ class TestNoSiteMode(unittest.TestCase):
         import tasks as T
         cfg = {"brand": {"name": "商品", "site": ""}, "market": "cn"}
         self.assertEqual(T.from_audit({"no_site": True}, cfg, iter(["T-001"])), [])
+
+
+if __name__ == "__main__":
+    # 必须放在文件末尾：写在中间的话，单跑本文件时 unittest.main() 会在后面那些
+    # 类定义之前收集用例 —— 它们静默不执行，而输出照样是 OK。
+    unittest.main()

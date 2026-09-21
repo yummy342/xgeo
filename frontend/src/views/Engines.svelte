@@ -6,6 +6,7 @@
   import { pct } from '../lib/format.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
 
   // 迁自 ui.html:1223 vEngines。
@@ -33,10 +34,13 @@
     if (!ex) return null
     const raw = ex.excerpt || ''
     if (ex.brand_pos >= 0) {
+      // 用后端返回的 hit_text（实际命中的那个名字）算长度：命中的可能是别名，
+      // 按 brand.length 切会吞掉或多留几个字符，而这段是标着 verbatim 的引文。
+      const hit = ex.hit_text || brand
       return {
         before: raw.slice(0, ex.brand_pos),
-        hit: brand,
-        after: raw.slice(ex.brand_pos + brand.length),
+        hit,
+        after: raw.slice(ex.brand_pos + hit.length),
       }
     }
     return { before: raw, hit: '', after: '' }
@@ -52,6 +56,8 @@
   $effect(() => {
     void project.data?.slug
     api('/api/keys').then((r) => {
+      // 失败静默成空数组 → 「未覆盖引擎」那几行整片消失，看起来像是全覆盖了。
+      if (r && r.error) { toast.error(r.error); keys = []; return }
       keys = Array.isArray(r) ? r : []
     })
   })

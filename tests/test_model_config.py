@@ -96,7 +96,10 @@ class TestPickLLM(unittest.TestCase):
                             ("expand", expand._convert_llm),
                             ("generate", generate.draft)):
             src = inspect.getsource(fn)
-            self.assertIn("pick_llm", src, f"{modname} 未使用统一候选链 pick_llm")
+            # 匹配「调用」而不是「出现」：注释、import 行、或者一句
+            # `# 这里本来该用 pick_llm` 都能骗过原来那条 assertIn。
+            self.assertRegex(src, r"pick_llm\s*\(",
+                             f"{modname} 未调用统一候选链 pick_llm")
 
 
 class TestWriteEnv(unittest.TestCase):

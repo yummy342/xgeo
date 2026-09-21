@@ -57,11 +57,13 @@
     // 竞品：同名保留原对象（别名等字段不丢），新名字补一个默认结构
     const old = {}
     for (const c of (cfg.competitors || [])) old[c.name] = c
+    // market 必须先赋值：新竞品的 market 是从它推出来的。写在 map 之后的话，
+    // 新增的竞品会被打上切换前的市场标签，后端按竞品自身 market 分表，
+    // 海外竞品表里就看不到刚加的那个，且没有任何提示。
+    next.market = market
     next.competitors = split(comps).map((n) => old[n] || {
       name: n, aliases: [], market: next.market === 'global' ? 'global' : 'cn',
     })
-
-    next.market = market
     if (next.bootstrap) next.bootstrap.needs_review = false
 
     await requestPost('/api/config/' + slug, next)

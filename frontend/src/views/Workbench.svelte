@@ -143,12 +143,17 @@
     await loadProject(slug, true)
   }
 
-  async function toggleDist(chId, on) {
+  async function toggleDist(chId, on, ev) {
     const r = await post('/api/distribution/' + slug, { qid: q.id, channel: chId, on })
     if (r.ok) {
       if (project.data) project.data.distribution = r.distribution
       toast(on ? t('Marked as planted ✓') : t('Mark removed'))
     } else {
+      // 失败要把勾撤回去：checked={distDone(...)} 不是双向绑定，表达式值一直是
+      // false，Svelte 只在「值变了」时才写 DOM —— 用户手动勾上的那个勾会留在
+      // 界面上，看起来已铺，库里没有。
+      const el = ev && ev.currentTarget
+      if (el) el.checked = !on
       toast(t('Failed: {e}').replace('{e}', r.error || ''), 'err')
     }
   }
@@ -267,7 +272,7 @@
           </div>
           {#each fitChs as c (c.id)}
             <label class="row dist-row">
-              <input type="checkbox" class="dist-ch" checked={distDone(c.id)} onchange={(e) => toggleDist(c.id, e.currentTarget.checked)}>
+              <input type="checkbox" class="dist-ch" checked={distDone(c.id)} onchange={(e) => toggleDist(c.id, e.currentTarget.checked, e)}>
               <span class="dist-name" class:done={distDone(c.id)}>{c.name.split('（')[0]}</span>
               <span class="tag {c.priority === 'P0' ? 'tag-accent' : 'tag-dim'} pri">{c.priority}</span>
               <span class="tag tag-outline pri" role="button" tabindex="0"
@@ -293,7 +298,10 @@
       <div id="wbpick" class="pick-list">
         {#each pickList as item (item.id)}
           <div class="row pick-row" onclick={() => go('workbench', { wq: item.id })}>
-            <span class="pick-q">{@html item.text + demandTag(item.id)}</span>
+            <!-- item.text 必须走自动转义：题目来自 bootstrap / expand 的 LLM 生成
+                 和 /api/questions-add，含 HTML 就在看板源里执行。demandTag 内部
+                 自己 esc，单独给它 {@html}。 -->
+            <span class="pick-q">{item.text}{@html demandTag(item.id)}</span>
             {@html diagTag(item.diagnosis)}
             <span class="pick-state" class:done={item.content === '已成稿'}>{item.content}</span>
             <span class="muted pick-mkt">{item.market === 'cn' ? t('CN market') : item.market === 'global' ? t('Global market') : t('Both markets')}</span>

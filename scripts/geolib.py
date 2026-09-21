@@ -116,19 +116,39 @@ def project_lock(slug: str):
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             else:
-                fd.write("x")
-                fd.flush()
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                _win_lock(fd)
             yield
         finally:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             else:
-                try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except OSError:
-                    pass
+                _win_unlock(fd)
+
+
+def _win_lock(fd):
+    """Windows 侧的加锁。msvcrt 没有 flock 那种无限等待。
+
+    LK_LOCK 大约 10 秒后抛 OSError，而长任务（大采样表导入要几十秒）持锁时
+    等待方拿到的是裸 traceback 而不是排队 —— 改成自己轮询 LK_NBLCK。
+    锁区间固定为首字节 [0,1)，解锁必须用同一区间。
+    """
+    fd.write("x")        # 让锁范围落在文件内（open("w") 会把文件截成 0 字节）
+    fd.flush()
+    fd.seek(0)
+    while True:
+        try:
+            msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError:
+            time.sleep(0.05)
+
+
+def _win_unlock(fd):
+    try:
+        fd.seek(0)       # 必须和加锁同一区间：seek 位置不对等于根本没解锁
+        msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
 
 
 def load_config(slug: str) -> dict:
@@ -291,12 +311,17 @@ def fetch(url: str, timeout: int = 12, retries: int = 1, ua: str | None = None) 
                         "elapsed": round(time.time() - t0, 2),
                         "error": f"跳过非网页内容（{ctype.split(';')[0]}）"}
             chunks, size = [], 0
-            for chunk in r.iter_content(65536):
-                chunks.append(chunk)
-                size += len(chunk)
-                if size >= MAX_BYTES:
-                    break
-            r.close()
+            try:
+                for chunk in r.iter_content(65536):
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size >= MAX_BYTES:
+                        break
+            finally:
+                # 中途断流（ChunkedEncodingError、读超时）时也要归还连接：
+                # 同函数其他分支都显式 close，只有这条异常路径漏了。批量抓取时
+                # 同一 host 反复断流会攒下不还池的连接，连接池复用被破坏。
+                r.close()
             raw = b"".join(chunks)
             enc = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
             if not enc:
@@ -310,7 +335,10 @@ def fetch(url: str, timeout: int = 12, retries: int = 1, ua: str | None = None) 
                 "content_type": ctype,
                 "x_robots_tag": xrobots,
                 "elapsed": round(time.time() - t0, 2),
-                "error": None,
+                # error 是文档化的失败通道，HTTP 错误却让它空着的话调用方只能
+                # 靠 status 分辨，已有两处踩到：crawl 把 500/404 的错误页当快照
+                # 存进 evidence/，geo init 用 404 页的 <title> 推断品牌名。
+                "error": f"HTTP {r.status_code}" if r.status_code >= 400 else None,
                 "ua_fallback": ua_idx > 0,
             }
         except Exception as e:  # noqa: BLE001
@@ -321,12 +349,30 @@ def fetch(url: str, timeout: int = 12, retries: int = 1, ua: str | None = None) 
             "x_robots_tag": "", "elapsed": 0, "error": last}
 
 
-def fetch_text(url: str, timeout: int = 8) -> str:
+def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000) -> str:
+    """站点级小文件（robots.txt / llms.txt / sitemap）的读取。
+
+    带体积上限：大站的 sitemap 常有几十 MB，不带 stream 会把整个 body 读进
+    内存，apparent_encoding 还要对全量字节跑一遍编码探测。
+    """
     try:
-        r = requests.get(url, timeout=timeout, headers={"User-Agent": UA})
-        if r.status_code == 200:
-            r.encoding = r.apparent_encoding or r.encoding
-            return r.text
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": UA}, stream=True)
+        try:
+            if r.status_code != 200:
+                return ""
+            raw = b""
+            for chunk in r.iter_content(65536):
+                raw += chunk
+                if len(raw) >= max_bytes:
+                    break
+        finally:
+            r.close()
+        # header 声明的 charset 优先，没有就找正文里的声明，最后退回 utf-8。
+        enc = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
+        if not enc:
+            m = re.search(rb'charset=["\']?([\w\-]+)', raw[:4000], re.I)
+            enc = m.group(1).decode("ascii", "ignore") if m else "utf-8"
+        return raw.decode(enc, "replace")
     except Exception:  # noqa: BLE001
         pass
     return ""
@@ -383,7 +429,12 @@ def robots_decision(groups: list[dict], ua: str, path: str) -> tuple[bool, str |
             if a == "*":
                 if wildcard is None:
                     wildcard = g
-            elif a and (a in ua_l or ua_l in a) and len(a) > spec_len:
+            elif a == ua_l and len(a) > spec_len:
+                # RFC 9309 要求产品名整体匹配（大小写不敏感）。原来是双向子串：
+                # User-agent: Baiduspider-image 的组会命中 Baiduspider，又因为
+                # 名字更长而抢先，于是「只封图片爬虫」被读成「整站封禁」——
+                # 客户报告里出现错误的 P0，而且那条工单永远无法闭环。
+                # 需要覆盖派生爬虫时，在 crawl.AI_BOTS 里显式列出。
                 specific, spec_len = g, len(a)
     g = specific or wildcard
     if not g:

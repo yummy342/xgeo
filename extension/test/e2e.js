@@ -10,7 +10,8 @@ const CFT = os.homedir() + "/Library/Caches/ms-playwright/chromium-1228/chrome-m
   "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
 const FIXTURE = "http://localhost:8614/test/fixture.html";
 const DASH = "http://127.0.0.1:8765";
-const ok = (c, m) => console.log((c ? "  ✓ " : "  ✗ ") + m);
+let fails = 0;
+const ok = (c, m) => { if (!c) fails++; console.log((c ? "  ✓ " : "  ✗ ") + m); };
 
 (async () => {
   // 1. 复制扩展并把 fixture 域名加进 matches（只影响测试副本，不改仓库代码）
@@ -108,4 +109,8 @@ const ok = (c, m) => console.log((c ? "  ✓ " : "  ✗ ") + m);
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(profile, { recursive: true, force: true });
   console.log("\n沙箱与扩展副本已清除");
+  // 断言失败必须进退出码：原来只打印不打分，全红也退出 0 —— 这套扩展唯一的
+  // 自动化验证因此长期处于「没有能失败的测试」状态。
+  if (fails) console.error(`\n${fails} 项断言失败`);
+  process.exitCode = fails ? 1 : 0;
 })().catch(e => { console.error("测试失败：", e.message); process.exit(1); });

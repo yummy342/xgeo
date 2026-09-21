@@ -48,10 +48,16 @@ def optimization_plan(slug: str) -> str:
          "---", "", "## 一、当前处在什么位置", ""]
 
     score = audit.get("avg_score")
-    gd = audit.get("grade_distribution", {})
+    gd = audit.get("grade_distribution") or {}
     ab = (gd.get("A", 0) + gd.get("B", 0))
-    L += [f"- 站点均分 **{score}**（满分 100，70 分以上算「基本可用」）",
-          f"- 抓取 {audit.get('page_count')} 页，其中可直接被引用或基本可用的 **{ab}** 页", ""]
+    # 无站点项目（商品、线下品牌）没有官网可体检。原本输出「站点均分 None」
+    # 「抓取 0 页」，第①层还会判「无 sitemap／无 llms.txt → 先修门票问题」——
+    # 等于让一个没有官网的客户去修不存在的 sitemap。
+    L += (["- 无自有网站：站点技术底座与页面体检不适用，本方案聚焦内容、阵地与品牌认知"]
+          if audit.get("no_site") else
+          [f"- 站点均分 **{score}**（满分 100，70 分以上算「基本可用」）",
+           f"- 抓取 {audit.get('page_count')} 页，其中可直接被引用或基本可用的 **{ab}** 页"])
+    L.append("")
 
     if metrics:
         for m_, name in (("cn", "国内"), ("global", "海外")):
@@ -75,23 +81,31 @@ def optimization_plan(slug: str) -> str:
 
     site = audit.get("site", {})
     gate = []
-    if site.get("ai_bots_blocked"):
-        gate.append("robots 封禁了 AI 抓取器")
-    if site.get("ai_ua_blocked"):
-        gate.append(f"WAF/CDN 对 {'、'.join(site['ai_ua_blocked'])} 的 UA 拒绝访问（浏览器里看不出来）")
-    if not site.get("has_sitemap"):
-        gate.append("无 sitemap")
-    if not site.get("has_llms_txt"):
-        gate.append("无 llms.txt")
-    elif (site.get("llms_txt_check") or {}).get("broken"):
-        gate.append("llms.txt 里有失效链接")
+    # 无站点项目不做这层判断：没有官网时 site 是空 dict，「没有 sitemap」
+    # 「没有 llms.txt」会全部命中，交付物上就成了「你的 sitemap 要修」。
+    if not audit.get("no_site"):
+        if site.get("ai_bots_blocked"):
+            gate.append("robots 封禁了 AI 抓取器")
+        if site.get("ai_ua_blocked"):
+            gate.append(f"WAF/CDN 对 {'、'.join(site['ai_ua_blocked'])} 的 UA 拒绝访问（浏览器里看不出来）")
+        if not site.get("has_sitemap"):
+            gate.append("无 sitemap")
+        if not site.get("has_llms_txt"):
+            gate.append("无 llms.txt")
+        elif (site.get("llms_txt_check") or {}).get("broken"):
+            gate.append("llms.txt 里有失效链接")
     spa = sum(1 for p in audit.get("pages", [])
-              if "SPA_SHELL" in p.get("issue_codes", [])
-              or (p.get("issue_codes") is None and p.get("word_count", 0) < 120))
+              # (or []) 不能省：issue_codes 显式为 null 时 `in None` 直接抛
+              # TypeError，三份交付物全出不来，后面那个 None 兜底分支也走不到。
+              if "SPA_SHELL" in (p.get("issue_codes") or [])
+              or (p.get("word_count", 0) < 120 and not p.get("issue_codes")))
     if spa:
         gate.append(f"{spa} 个页面静态 HTML 无正文")
-    L.append(f"| ① 能不能被抓到 | {'／'.join(gate) if gate else '技术底座基本干净'} "
-             f"| {'先修门票问题，这些不解决后面全白做' if gate else '维持现状即可'} |")
+    if audit.get("no_site"):
+        L.append("| ① 能不能被抓到 | 无自有网站，本层不适用 | — |")
+    else:
+        L.append(f"| ① 能不能被抓到 | {'／'.join(gate) if gate else '技术底座基本干净'} "
+                 f"| {'先修门票问题，这些不解决后面全白做' if gate else '维持现状即可'} |")
 
     own = None
     if metrics:

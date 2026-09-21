@@ -31,6 +31,7 @@
 
   let tree = $state([])
   let treeLoaded = $state(false)
+  let treeSeq = 0        // 资产树请求序号：快切项目时用来丢掉过期响应
   let cur = $state(null)
   let text = $state('')
   let loadingText = $state(false)
@@ -46,9 +47,14 @@
   })
 
   $effect(() => {
-    void project.data?.slug
-    if (!slug) return
-    api('/api/assets/' + slug).then((r) => {
+    const s = project.data?.slug
+    if (!s) return
+    // 请求序号：快切项目时 A 的慢响应会盖掉 B 的树，点进去是别的项目的路径
+    // （404 + 编辑器被清空），深链判断也会对着错的树做。同文件 open() 已用这个写法。
+    const mine = ++treeSeq
+    treeLoaded = false
+    api('/api/assets/' + s).then((r) => {
+      if (mine !== treeSeq) return
       tree = Array.isArray(r) ? r : []
       treeLoaded = true
     })

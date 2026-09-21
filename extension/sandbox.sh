@@ -48,10 +48,15 @@ done
 # 优先用 Chrome for Testing（playwright/puppeteer 装的）：它保留了 --load-extension，
 # 扩展可以随启动自动装载，完全不需要 --init 手动装一次。
 # 日常 Chrome 137 起移除了该开关，只能走「模板 Profile + 手动装一次」的兜底路径。
-CFT=""
+CFT=""; _best_n=-1
 for p in "$HOME/Library/Caches/ms-playwright"/chromium-*/chrome-mac*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
          "$HOME/.cache/puppeteer/chrome"/*/chrome-mac*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"; do
-  [ -x "$p" ] && CFT="$p"    # glob 升序，循环结束时留下的是最新版本
+  [ -x "$p" ] || continue
+  # 按构建号「数值」取最大：glob 是字典序，chromium-1228 会排在 chromium-999 前面，
+  # 直接取循环最后一个会选到更旧的构建，用户拿到的是莫名其妙的失败。
+  n=$(printf '%s' "$p" | sed -n 's|.*/chromium-\([0-9][0-9]*\)/.*|\1|p')
+  [ -n "$n" ] || n=0
+  if [ "$n" -gt "$_best_n" ]; then _best_n="$n"; CFT="$p"; fi
 done
 
 CHROME=""

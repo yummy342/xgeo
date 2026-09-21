@@ -79,8 +79,13 @@ def suggest_baidu(q: str, timeout: int = 6) -> list[str]:
     """百度下拉。公开 JSONP 端点，oe=utf-8 直接拿 UTF-8。"""
     url = f"https://suggestion.baidu.com/su?wd={quote(q)}&ie=utf-8&oe=utf-8"
     r = requests.get(url, headers=UA, timeout=timeout)
+    r.raise_for_status()      # 429/403 抛出来，让上层的重试与「请求失败」日志吃到
     m = re.search(r"s:(\[.*?\])", r.text)
-    return json.loads(m.group(1)) if m else []
+    if not m:
+        # 解析不出来 ≠ 真的没有候选词。静默返回 [] 的话整轮拓词可以「成功」
+        # 结束并写出 terms: []，日志只报「0 条候选」，看不出是被限流还是确实没词。
+        raise ValueError("百度下拉响应无法解析（可能被限流或返回了拦截页）")
+    return json.loads(m.group(1))
 
 
 def suggest_google(q: str, hl: str = "en", timeout: int = 6) -> list[str]:
@@ -88,7 +93,11 @@ def suggest_google(q: str, hl: str = "en", timeout: int = 6) -> list[str]:
     url = (f"https://suggestqueries.google.com/complete/search"
            f"?client=firefox&hl={hl}&q={quote(q)}")
     r = requests.get(url, headers=UA, timeout=timeout)
+    r.raise_for_status()      # 429/403 抛出来，让上层的重试与「请求失败」日志吃到
     data = json.loads(r.text)
+    if not isinstance(data, list):
+        # 返回体不是预期的数组（拦截页 / 限流页），不能当成「确实没有候选词」
+        raise ValueError("Google 自动补全返回体不是数组（可能被限流）")
     return [s for s in (data[1] if len(data) > 1 else []) if isinstance(s, str)]
 
 

@@ -100,7 +100,12 @@ def md2html(md: str) -> str:
     out, in_code, in_list = [], False, False
 
     def inline(s):
-        s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # 双引号必须一起转：链接目标会拼进 href="..."，不转的话
+        # `[x](https://a.com/?q=1" onmouseover="alert(1))` 能往 <a> 注入属性，
+        # 而这段 HTML 会发到 WordPress 正文、公众号草稿和 webhook 接收端。
+        # report.py 那条链走 html.escape（含引号），只有发布这条链漏了。
+        s = (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+              .replace('"', "&quot;"))
         s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
         s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
         return s
@@ -247,11 +252,16 @@ def _oauth1_header(method: str, url: str, ck: str, cs: str, tk: str, ts: str) ->
     return "OAuth " + ", ".join(f'{q(k)}="{q(v)}"' for k, v in sorted(p.items()))
 
 
-def _latest_public_url(recs: list, fname: str) -> str:
+def _latest_public_url(recs: list, rel: str) -> str:
     """该文件最近一次长文渠道（GitHub/WordPress/Webhook）发布成功的 URL——
-    社交渠道引流的默认回链：先发长文，再发社交。"""
+    社交渠道引流的默认回链：先发长文，再发社交。
+
+    按完整相对路径匹配，不能按 basename：assets/outlines/q001.md 与
+    assets/drafts/q001.md 同名，先发大纲再发初稿时推文会链到另一份文档。
+    """
     for r in reversed(recs or []):
-        if r.get("ok") and r.get("url") and r.get("path", "").endswith(fname) \
+        p = str(r.get("path", ""))
+        if r.get("ok") and r.get("url") and (p == rel or p.endswith("/" + rel)) \
                 and r.get("platform") in ("github", "wordpress", "webhook"):
             return r["url"]
     return ""
@@ -275,7 +285,7 @@ def _x_trim(s: str, budget: int) -> str:
 
 def _pub_x(cfg, text, title, fname):
     link = (cfg.get("link_url") or "").strip() \
-        or _latest_public_url(cfg.get("_records") or [], fname)
+        or _latest_public_url(cfg.get("_records") or [], cfg.get("_rel") or fname)
     # 摘要：正文第一段非标题文本
     para = next((ln.strip() for ln in text.splitlines()
                  if ln.strip() and not ln.startswith("#")), "")
@@ -351,6 +361,19 @@ def _title_of(text: str, fname: str) -> str:
     return m.group(1).strip() if m else fname.rsplit(".", 1)[0]
 
 
+_SECRET_RX = re.compile(r"(access_token|token|key|secret|password|api_key)=[^&\s\"']+", re.I)
+
+
+def _scrub(s: str) -> str:
+    """给异常串脱敏。
+
+    requests 的连接错误会把完整 URL 塞进消息里，而公众号的 access_token 只能
+    拼在 query 上（微信不支持 header 传），于是 token 会经 /api/publish 的 500
+    出口直接显示在界面上、留在服务端日志里。webhook 的 URL 常带密钥，同理。
+    """
+    return _SECRET_RX.sub(r"\1=***", s or "")
+
+
 def records(slug: str) -> list[dict]:
     return G.read_json(G.project_dir(slug) / "publish.json", []) or []
 
@@ -363,19 +386,33 @@ def publish(slug: str, code: str, rel: str, title: str = "") -> dict:
         return {"ok": False, "error": "缺凭证：" + "、".join(miss)}
     try:
         text, fname = _read_source(slug, rel)
-    except (ValueError, FileNotFoundError):
-        return {"ok": False, "error": f"文件不可用：{rel}"}
+    except (ValueError, FileNotFoundError, OSError) as e:
+        # OSError 也要接住：rel 指向目录（IsADirectoryError）或权限不足时会裸抛到
+        # /api/publish 的 500，用户看到的是英文异常名而不是「文件不可用」。
+        return {"ok": False, "error": f"文件不可用：{rel}（{type(e).__name__}）"}
     title = title or _title_of(text, fname)
     # 发布记录随 cfg 传入（不用模块级全局：看板是多线程服务，
     # 并发发布不同项目时全局会互相污染回链归属）
     cfg = dict(_cfg(slug, code))
     cfg["_records"] = records(slug)
-    res = _IMPL[code](cfg, text, title, fname)
+    cfg["_rel"] = rel          # 回链按完整相对路径匹配，不用 basename
+    try:
+        res = _IMPL[code](cfg, text, title, fname)
+    except Exception as e:  # noqa: BLE001
+        # 外发动作必须留痕。裸抛的话 publish.json 里既没有成功也没有失败记录，
+        # 用户无从判断「到底发出去没有」，而再点一次就是重复帖 —— 各渠道都没有
+        # 幂等键。最典型的情形恰恰是「回调超时，但服务端其实已经收下」。
+        G.info(f"发布失败（{code}）：{type(e).__name__}: {_scrub(str(e))}")
+        res = {"ok": False, "error": f"{type(e).__name__}: {_scrub(str(e))}",
+               "note": "状态未知：可能已经发出，先去渠道后台确认，再决定要不要重发"}
     entry = {"at": G.now_iso(), "platform": code, "platform_name": PUBLISHERS[code]["name"],
              "path": rel, "title": title, "ok": res.get("ok", False),
              "url": res.get("url", ""), "note": res.get("note", ""),
-             "error": res.get("error", "")}
-    rows = records(slug)
-    rows.append(entry)
-    G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
+             "error": _scrub(str(res.get("error", "")))}
+    # 读-改-写必须持锁：ThreadingHTTPServer 下两个标签页并发发布会后写覆盖先写，
+    # 丢一条记录 —— 回链选择和看板的「已发布」标记都跟着错。
+    with G.project_lock(slug):
+        rows = records(slug)
+        rows.append(entry)
+        G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
     return {**res, "record": entry}

@@ -63,7 +63,11 @@ def _overview_md(cfg, audit, metrics, data, verify_report, notes=None) -> str:
     L = [f"# {b['name']} · GEO 服务交付 · {G.today()}", "",
          f"- 服务范围：**{mk}** AI 搜索可见性",
          f"- 官网：{b['site']}",
-         f"- 本期抓取：{audit.get('page_count')} 页，站点均分 **{audit.get('avg_score')}**",
+         # 无站点项目（商品/线下品牌）没有官网可体检：不写「0 页 / None 分」，
+         # 那是在客户交付物里断言一个不存在的检查项。
+         ("- 无自有网站：站点体检不适用，诊断依据是内容、阵地与品牌认知"
+          if audit.get("no_site")
+          else f"- 本期抓取：{audit.get('page_count')} 页，站点均分 **{audit.get('avg_score')}**"),
          ""]
     if metrics:
         L.append(f"- AI 答案采样：{metrics.get('sample_count')} 条（{metrics.get('date')}），"
@@ -202,6 +206,10 @@ def run(slug: str) -> Path:
             reports = sorted((pdir / "reports").glob("2*"))
         except Exception as e:  # noqa: BLE001
             G.info(f"补跑诊断报告失败：{e}")
+            # 只打日志的话，交付包会静默少掉 01-诊断报告：客户拿到一个缺件的
+            # 交付包，而 README 里什么都没写。这里必须留下痕。
+            notes.append(f"诊断报告补跑失败（{type(e).__name__}: {e}），"
+                         f"本期交付包可能不含 01-诊断报告")
     if reports:
         latest = reports[-1]
         if audit_date and latest.name != audit_date:
@@ -279,6 +287,19 @@ def run(slug: str) -> Path:
 
     # 05 初稿风险清单：编造内容进客户交付包是最严重的事故，必须显式列出
     lint = G.read_json(pdir / "assets" / "drafts" / "_lint.json", None)
+    # _lint.json 是快照：pick 会把人工选定稿覆盖进 drafts/<qid>.md 而不重跑
+    # lint，所以「清单里没有这个文件」不等于「这个文件没问题」。而 assets/ 是
+    # 无条件整目录进交付包的，客户按 05 逐条核实的前提是 05 覆盖了全部初稿 ——
+    # 缺检的必须显式列出来，否则就是「未筛查的初稿混在交付包里」。
+    drafts_dir = pdir / "assets" / "drafts"
+    if drafts_dir.exists():
+        covered = set((lint or {}).get("files", {}).keys())
+        unchecked = sorted(f.name for f in drafts_dir.glob("*.md") if f.name not in covered)
+        if unchecked:
+            notes.append(
+                f"以下 AI 初稿未经风险检查（{len(unchecked)} 份）："
+                f"{'、'.join(unchecked[:5])}{' 等' if len(unchecked) > 5 else ''}"
+                f" —— 发布前需逐条人工核实事实")
     if lint and lint.get("total_issues"):
         lm = [f"# AI 初稿风险清单 · {G.today()}", "",
               f"本期共生成 {len(lint['files'])} 份 AI 初稿，自动检查出 **{lint['total_issues']} 项**需人工核实的内容，"
@@ -374,7 +395,7 @@ def run(slug: str) -> Path:
     # index + README
     ov = _overview_md(cfg, audit, metrics, data, None if unverified else vrep, notes)
     (out / "index.md").write_text(ov, "utf-8")
-    cards = [("站点均分", str(audit.get("avg_score"))),
+    cards = [("站点均分", "不适用" if audit.get("no_site") else str(audit.get("avg_score"))),
              ("抓取页数", str(audit.get("page_count"))),
              ("工单总数", str(data["summary"]["total"])),
              ("P0 待办", str(sum(1 for t in data["tasks"]

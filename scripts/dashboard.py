@@ -336,6 +336,30 @@ def scope_of(token: str | None, scoped: dict[str, set[str]],
     return None if hit == token else scoped[hit]
 
 
+def config_shape_error(body: dict) -> str | None:
+    """geo.json 的结构校验。
+
+    save_config 只备份不校验，一次畸形写就能让看板全线崩掉：
+    list_projects() 走 cfg.get("brand", {}).get("name", ...)，brand 被写成
+    字符串就抛 AttributeError，/api/projects 整体 500——所有项目的列表都打不开。
+    """
+    if not isinstance(body, dict) or not body:
+        return "请求体必须是对象"
+    brand = body.get("brand")
+    if brand is not None:
+        if not isinstance(brand, dict):
+            return "brand 必须是对象"
+        if brand.get("name") is not None and not isinstance(brand["name"], str):
+            return "brand.name 必须是字符串"
+    for k in ("questions", "competitors"):
+        v = body.get(k)
+        if v is not None and not isinstance(v, list):
+            return f"{k} 必须是数组"
+    if body.get("market") is not None and not isinstance(body["market"], str):
+        return "market 必须是字符串"
+    return None
+
+
 # 项目标识出现在路径里的路由前缀。集中列在这里而不是散在各个分支里——
 # 授权漏检一次就是跨租户读数据，靠人逐个分支去记得加检查迟早会漏。
 SLUG_PREFIXES = (
@@ -379,6 +403,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):  # 静音访问日志
         pass
+
+    def _host_ok(self) -> bool:
+        """默认档（不设令牌）下只接受本机 Host。
+
+        那时浏览器里任何一个网页都能用 evil.com（DNS rebinding 解析到
+        127.0.0.1）发起同源请求，读写全部接口——包括 /api/keys 和发布接口。
+        校验 Host 是这类本地服务的通用挡法；顺带拒掉带外站 Origin 的请求
+        （那是从别的页面打过来的 CSRF，Host 会是 127.0.0.1 拦不住）。
+
+        配了令牌就不再限 Host：鉴权已经挡住未认证请求，而且这时用户可能
+        故意绑 0.0.0.0 从别的机器访问。
+        """
+        if Handler.TOKEN or Handler.SCOPES:
+            return True
+        h = (self.headers.get("Host") or "").strip().lower()
+        h = h[1:h.index("]")] if h.startswith("[") and "]" in h else h.split(":")[0]
+        if h not in ("127.0.0.1", "localhost", "::1"):
+            self._json({"error": "只接受本机访问：Host 不是本机地址"}, 403)
+            return False
+        org = self.headers.get("Origin")
+        # chrome-extension:// 必须放行：采样助手插件的侧栏 POST 回传会带这个源，
+        # 它不是「别的网站」。请求已经过了 Host 校验，确实打在本机上。
+        if org and not org.startswith("chrome-extension://") \
+                and (urlparse(org).hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
+            self._json({"error": "已拒绝跨站请求"}, 403)
+            return False
+        return True
 
     def _auth(self) -> bool:
         """True=放行；False=已自行响应（401 或换 cookie 的 302）。"""
@@ -461,6 +512,10 @@ class Handler(BaseHTTPRequestHandler):
     MAX_BODY = 8 * 1024 * 1024   # 请求体上限：接口全在本机，8MB 够贴一篇长文
 
     def _body(self) -> dict:
+        if (self.headers.get("Transfer-Encoding") or "").strip().lower() == "chunked":
+            # 分块体不读走的话字节留在 socket 里，会被当成下一个请求行解析
+            self.close_connection = True
+            raise ValueError("不支持 chunked 请求体")
         n = int(self.headers.get("Content-Length", 0))
         if n > Handler.MAX_BODY:
             # 不设上限的话，一个声明了超大 Content-Length 的请求就能把内存吃满。
@@ -471,7 +526,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ GET
     def do_GET(self):
+        if not self._host_ok():
+            self.close_connection = True
+            return
         if not self._auth():
+            self.close_connection = True
             return
         u = urlparse(self.path)
         p, q = unquote(u.path), parse_qs(u.query)
@@ -617,6 +676,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "running": J.running_for(slug) if slug else None})
             if p.startswith("/api/job/"):
                 jid = p[len("/api/job/"):]
+                if not J.is_valid_id(jid):
+                    return self._json({"error": "非法任务标识"}, 400)
                 job = J.get(jid)
                 if not job:
                     return self._json({"error": "job not found"}, 404)
@@ -663,10 +724,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ POST
     def do_POST(self):
+        # 早退路径也要掐连接：请求体还没读，留着会被当成下一个请求行解析，
+        # keep-alive 下表现为同一条连接上的下一个正常请求莫名 400。
+        if not self._host_ok():
+            self.close_connection = True
+            return
         if not self._auth():
+            self.close_connection = True
             return
         p = unquote(urlparse(self.path).path)
         if self._deny(path_slug(p)):
+            self.close_connection = True
             return
         try:
             body = self._body()
@@ -737,6 +805,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.startswith("/api/job/") and p.endswith("/stop"):
                 jid = p[len("/api/job/"):-len("/stop")]
+                if not J.is_valid_id(jid):
+                    return self._json({"error": "非法任务标识"}, 400)
                 job = J.get(jid)
                 if job and self._deny(job.get("slug")):
                     return
@@ -744,9 +814,15 @@ class Handler(BaseHTTPRequestHandler):
 
             if p.startswith("/api/config/"):
                 slug = p[len("/api/config/"):]
-                cur = G.read_json(G.project_dir(slug) / "geo.json", {})
-                cur.update(body)          # 整体覆盖字段，前端传完整对象
-                G.save_config(slug, cur)
+                bad = config_shape_error(body)
+                if bad:
+                    return self._json({"ok": False, "error": bad}, 400)
+                # 读-改-写必须持锁：bootstrap / autopilot 末端也整体写这份
+                # geo.json，不持锁就是后写者赢，问题库这类人工投入会静默消失。
+                with G.project_lock(slug):
+                    cur = G.read_json(G.project_dir(slug) / "geo.json", {})
+                    cur.update(body)      # 整体覆盖字段，前端传完整对象
+                    G.save_config(slug, cur)
                 return self._json({"ok": True})
 
             if p.startswith("/api/facts/"):
@@ -828,11 +904,12 @@ class Handler(BaseHTTPRequestHandler):
                 if code not in P.PUBLISHERS:
                     return self._json({"ok": False, "error": f"未知渠道 {code}"}, 400)
                 keys = {k for k, _ in P.PUBLISHERS[code]["cfg"]}
-                cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
-                pub = cfg.setdefault("publishing", {})
-                pub[code] = {k: str(v or "").strip() for k, v in (body.get("cfg") or {}).items()
-                             if k in keys}
-                G.save_config(slug, cfg)
+                with G.project_lock(slug):
+                    cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
+                    pub = cfg.setdefault("publishing", {})
+                    pub[code] = {k: str(v or "").strip() for k, v in (body.get("cfg") or {}).items()
+                                 if k in keys}
+                    G.save_config(slug, cfg)
                 return self._json({"ok": True})
 
             if p.startswith("/api/publish/"):
@@ -867,30 +944,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "缺 slug / items"}, 400)
                 if self._deny(slug):
                     return
-                cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
-                qs = cfg.setdefault("questions", [])
-                existing = {q.get("text", "").strip() for q in qs}
-                series = {"cn": 1, "global": 101, "both": 901}
-                used = {int(m.group(1)) for q in qs
-                        if (m := re.match(r"q(\d+)$", str(q.get("id", ""))))}
-                added = []
-                for it in items:
-                    text = str(it.get("text") or "").strip()
-                    mk = it.get("market") if it.get("market") in series else "cn"
-                    grp = str(it.get("group") or "场景").strip() or "场景"
-                    if not text or text in existing:
-                        continue
-                    n = series[mk]
-                    while n in used:
-                        n += 1
-                    used.add(n)
-                    q = {"id": f"q{n:03d}", "group": grp, "market": mk, "text": text,
-                         "source": "expand"}
-                    qs.append(q)
-                    existing.add(text)
-                    added.append(q)
-                if added:
-                    G.save_config(slug, cfg)
+                # 整个「读 → 算未占用 id → 追加 → 写」都在锁里：不持锁时
+                # 两个并发的添加请求会算出同一批 qid，后写者覆盖先写者。
+                with G.project_lock(slug):
+                    cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
+                    qs = cfg.setdefault("questions", [])
+                    existing = {q.get("text", "").strip() for q in qs}
+                    series = {"cn": 1, "global": 101, "both": 901}
+                    used = {int(m.group(1)) for q in qs
+                            if (m := re.match(r"q(\d+)$", str(q.get("id", ""))))}
+                    added = []
+                    for it in items:
+                        text = str(it.get("text") or "").strip()
+                        mk = it.get("market") if it.get("market") in series else "cn"
+                        grp = str(it.get("group") or "场景").strip() or "场景"
+                        if not text or text in existing:
+                            continue
+                        n = series[mk]
+                        while n in used:
+                            n += 1
+                        used.add(n)
+                        q = {"id": f"q{n:03d}", "group": grp, "market": mk, "text": text,
+                             "source": "expand"}
+                        qs.append(q)
+                        existing.add(text)
+                        added.append(q)
+                    if added:
+                        G.save_config(slug, cfg)
                 return self._json({"ok": True, "added": len(added),
                                    "ids": [q["id"] for q in added]})
 
@@ -971,6 +1051,7 @@ def run(port: int = 8765, open_browser: bool = True,
     Handler.TOKEN = token
     Handler.SCOPES = scoped
     J.reap_orphans()  # 回收上次服务留下的 running 僵尸记录，恢复并发保护
+    J.prune_jobs()    # 清过期任务记录：列表接口每次要读所有 json，攒多了会越来越慢
     threading.Thread(target=_monitor_loop, daemon=True).start()
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"

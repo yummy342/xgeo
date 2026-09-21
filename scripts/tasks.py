@@ -294,11 +294,24 @@ def from_metrics(metrics: dict, cfg: dict, seq) -> list[dict]:
                           "母品牌/关联站挂子产品入口", "市场", "M",
                           {"type": "auto", "check": f"metrics.own_cite_gte:{mk}:0.1",
                            "desc": f"{mk_name}引用官网率 ≥ 10%"}, market=mk))
-        # 品牌认知错误 → P0
+        # 品牌认知错误 → P0：点名问了、AI 也确实提到了品牌，却一条官网引用都没有。
+        # 这比「完全不提及」更糟——AI 知道你是谁，却找不到可引用的官方内容。
+        # （原来这里只有一句 continue，这个 P0 从来没产出过。）
         for plat, m in rows.items():
             pr = m.get("probe") or {}
-            if pr.get("samples") and (pr.get("own_domain_cite_rate") or 0) == 0:
+            if not (pr.get("samples") and (pr.get("own_domain_cite_rate") or 0) == 0):
                 continue
+            lm = m.get("label") or plat
+            out.append(_t(next(seq), "P0", "品牌认知",
+                          f"{lm} 点名提问时引不到官网",
+                          f"{lm} 的点名样本里 AI 提到了品牌，却一条官网引用都没有"
+                          f"（{pr['samples']} 条点名样本，引用官网率 0）。"
+                          f"AI 知道你是谁，但检索不到可引用的官方内容",
+                          "把官网关键页做成可抽取结构（定义 / 数字事实 / 对比），"
+                          "并提交各引擎收录",
+                          "市场", "M",
+                          {"type": "auto", "check": f"metrics.probe_own_cite_gte:{plat}:0.1",
+                           "desc": f"{lm} 点名样本引用官网率 ≥ 10%"}, market=mk))
     return out
 
 
@@ -395,23 +408,26 @@ def build(slug: str) -> dict:
         t["window"] = win.get(t["priority"], "90天")
         t["risk"] = risk_of(t)
 
-    # 保留已有工单的状态与证据（重跑 plan 不该清空进度）
-    old = {t["id"]: t for t in (G.read_json(pdir / "tasks.json", {}) or {}).get("tasks", [])}
-    old_by_title = {t["title"]: t for t in old.values()}
-    for t in tasks:
-        prev = old.get(t["id"]) if old.get(t["id"], {}).get("title") == t["title"] else old_by_title.get(t["title"])
-        if prev:
-            t.update({"status": prev.get("status", "todo"), "evidence": prev.get("evidence", []),
-                      "assets": prev.get("assets", []), "closed_at": prev.get("closed_at")})
+    # 保留已有工单的状态与证据（重跑 plan 不该清空进度）。
+    # 读-改-写必须持锁：界面上「标记完成」走 T.set_status（持锁），而这里是
+    # 用上面读到的旧快照整体覆盖 —— 不持锁时用户刚点的状态和备注会被抹掉。
+    with G.project_lock(slug):
+        old = {t["id"]: t for t in (G.read_json(pdir / "tasks.json", {}) or {}).get("tasks", [])}
+        old_by_title = {t["title"]: t for t in old.values()}
+        for t in tasks:
+            prev = old.get(t["id"]) if old.get(t["id"], {}).get("title") == t["title"] else old_by_title.get(t["title"])
+            if prev:
+                t.update({"status": prev.get("status", "todo"), "evidence": prev.get("evidence", []),
+                          "assets": prev.get("assets", []), "closed_at": prev.get("closed_at")})
 
-    data = {
-        "slug": slug, "generated_at": G.now_iso(), "market": cfg.get("market", "cn"),
-        "baseline": {"avg_score": audit.get("avg_score"), "pages": audit.get("page_count"),
-                     "metrics_date": metrics.get("date") if metrics else None},
-        "summary": summarize(tasks),
-        "tasks": tasks,
-    }
-    G.write_json(pdir / "tasks.json", data)
+        data = {
+            "slug": slug, "generated_at": G.now_iso(), "market": cfg.get("market", "cn"),
+            "baseline": {"avg_score": audit.get("avg_score"), "pages": audit.get("page_count"),
+                         "metrics_date": metrics.get("date") if metrics else None},
+            "summary": summarize(tasks),
+            "tasks": tasks,
+        }
+        G.write_json(pdir / "tasks.json", data)
     G.info(f"生成 {len(tasks)} 条工单 → {pdir/'tasks.json'}")
     return data
 

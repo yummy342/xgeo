@@ -95,5 +95,38 @@ class TestMarketAvgCards(unittest.TestCase):
         self.assertEqual(R.market_avg_cards(None), [])
 
 
+NO_SITE_AUDIT = {
+    "no_site": True, "page_count": 0, "avg_score": None,
+    "site": {}, "site_issues": [], "language_coverage": {},
+    "grade_distribution": {}, "pages": [], "block_gap": [],
+}
+
+
+class TestNoSiteReport(unittest.TestCase):
+    """无站点项目（商品 / 线下品牌）的报告不能出现站点体检的结论。
+
+    audit 的 no_site 分支写的是 avg_score=None、site={}，照原样渲染就是正文里
+    「站点均分 **None**」、技术底座表里「sitemap.xml **无**」—— 对一个根本没有
+    官网的项目，那是在客户交付物里断言资产缺失。
+    """
+
+    def test_score_never_rendered_as_none(self):
+        m = R.build_markdown(CFG, NO_SITE_AUDIT, None, None, None, [])
+        self.assertNotIn("None", m)
+        self.assertIn("站点体检不适用", m)
+
+    def test_site_assets_not_claimed_missing(self):
+        m = R.build_markdown(CFG, NO_SITE_AUDIT, None, None, None, [])
+        self.assertNotIn("sitemap.xml", m)
+        self.assertNotIn("llms.txt", m)
+
+    def test_normal_site_still_reports_them(self):
+        # 反向断言：有站点时这两项必须还在。少了它，上面两条会被「整节被删掉」
+        # 这种改法骗过。
+        m = R.build_markdown(CFG, AUDIT, None, None, None, [])
+        self.assertIn("sitemap.xml", m)
+        self.assertIn("llms.txt", m)
+
+
 if __name__ == "__main__":
     unittest.main()

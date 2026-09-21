@@ -25,6 +25,19 @@ PRIORITY = [
 ]
 
 
+def _same_site_url(root: str, u: str) -> bool:
+    """sitemap 里的 loc 是否属于本站（含子域），且是 http(s)。"""
+    try:
+        p = urlparse(u)
+        base = urlparse(root).netloc.lower().removeprefix("www.")
+    except Exception:  # noqa: BLE001
+        return False
+    if p.scheme not in ("http", "https") or not p.netloc:
+        return False
+    host = p.netloc.lower().removeprefix("www.")
+    return bool(base) and (host == base or host.endswith("." + base))
+
+
 def discover_sitemap(root: str, limit: int = 300) -> list[str]:
     urls: list[str] = []
     seen_maps = set()
@@ -43,7 +56,12 @@ def discover_sitemap(root: str, limit: int = 300) -> list[str]:
         xml = G.fetch_text(sm)
         if not xml:
             continue
-        locs = re.findall(r"<loc>\s*([^<]+?)\s*</loc>", xml)
+        # 只留同站 http(s) 的 loc：sitemap 托管在 CDN、多站 sitemap index、
+        # 或站点被挂马时，loc 会指到别的域名。放进去等于把外站页面算进本项目
+        # 的评分与语言统计（凭空造出「没有中文内容」这类 P0），还会拿本工具
+        # 去并发抓第三方站，report 也会渲染成 <a href="javascript:...">。
+        locs = [u for u in re.findall(r"<loc>\s*([^<]+?)\s*</loc>", xml)
+                if _same_site_url(root, u)]
         if "<sitemapindex" in xml:
             queue.extend(locs[:20])
         else:
@@ -141,8 +159,12 @@ def analyze_page(url: str, res: dict) -> dict:
 
 
 # 关注的 AI 抓取器（robots 判定用产品名做 UA 匹配）
+# 不含 Google-Extended：那个 token 只控制 Gemini/Vertex 的训练用途，不影响
+# Search 与 AI Overviews 的抓取收录（Google 官方口径）。当成抓取器封禁来报，
+# 会给出「这些引擎永远抓不到你」的错误 P0，而工单只有客户撤销训练用途的自主
+# 选择后才可能闭环 —— 等于给客户派一个本不该做的活。
 AI_BOTS = ["GPTBot", "OAI-SearchBot", "ClaudeBot", "Claude-SearchBot", "PerplexityBot",
-           "Bytespider", "Baiduspider", "Sogou web spider", "YisouSpider", "Google-Extended"]
+           "Bytespider", "Baiduspider", "Sogou web spider", "YisouSpider"]
 
 # UA 差异探测用的真实 UA 串（各家公开文档口径）：robots 放行 ≠ WAF/CDN 放行，
 # 普通浏览器 200 而 AI 爬虫 403 的站，在引擎侧等于不存在，且站长自己看不出来
@@ -285,7 +307,16 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
 
     G.info(f"抓取 {root}（上限 {limit} 页）")
 
-    robots_txt = G.fetch_text(G.normalize_url(root, "/robots.txt"))
+    # 用 G.fetch 而不是 fetch_text：要区分「站点没有 robots.txt」和「这次没抓
+    # 到」。两者的结论正相反 —— 前者是「无封禁」，后者根本不能下结论，一次
+    # 网络抖动就能把「被封禁」静默改写成「已修好」。
+    robots_res = G.fetch(G.normalize_url(root, "/robots.txt"))
+    # 三种状态要分开：200 = 有；404 = 站点确实没有（等同「无封禁」，走原有分支）；
+    # 其余（网络失败 / 5xx / 403）才是「这次没抓到」—— 那种情况不能下任何结论。
+    # 把 404 也算进「没抓到」会造出一条重跑 crawl 永远清不掉的假问题。
+    rstatus = robots_res["status"]
+    robots_reachable = rstatus in (200, 404)
+    robots_txt = robots_res["html"] if rstatus == 200 else ""
     llms_txt = G.fetch_text(G.normalize_url(root, "/llms.txt"))
     sitemap_urls = discover_sitemap(root)
 
@@ -296,12 +327,31 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     candidates = rank(seeds + sitemap_urls + link_urls, root)[:limit]
 
     def crawl_one(i: int, u: str) -> dict:
-        res = home if u.rstrip("/") == root else G.fetch(u)
-        if res["status"] and res["html"]:
-            (outdir / "html" / f"{i:03d}.html").write_text(res["html"], "utf-8")
-        page = analyze_page(u, res)
-        page["snapshot"] = f"evidence/html/{i:03d}.html"
-        return page
+        try:
+            res = home if u.rstrip("/") == root else G.fetch(u)
+            # 只在 200 时落快照：404/500 的错误页存下来没有价值，还会被
+            # 人工核查时当成真实页面内容。
+            if res["status"] == 200 and res["html"]:
+                (outdir / "html" / f"{i:03d}.html").write_text(res["html"], "utf-8")
+            page = analyze_page(u, res)
+            page["snapshot"] = f"evidence/html/{i:03d}.html"
+            return page
+        except Exception as e:  # noqa: BLE001
+            # 一页的解析/落盘异常不能带走整轮：异常经 pool.map 冒到 run()，
+            # pages.jsonl 和 site.json 都不写，verify 的「重抓 → 体检」整条断掉，
+            # 已经抓到的页也全丢。落一条 status=0 的记录继续跑。
+            G.info(f"  [{i}] 处理失败：{type(e).__name__}: {e}")
+            return {
+                "url": u, "final_url": u, "status": 0, "ua_fallback": False,
+                "error": f"处理失败：{type(e).__name__}: {e}",
+                "title": "", "meta_description": "", "meta_robots": "",
+                "x_robots_tag": "", "hreflang_count": 0, "canonical": "",
+                "lang": "", "h1": [], "h2": [], "h3_count": 0, "para_count": 0,
+                "li_count": 0, "table_count": 0, "img_count": 0,
+                "external_links": 0, "jsonld_types": [], "jsonld_raw": [],
+                "word_count": 0, "language": "", "cjk_ratio": 0.0,
+                "text": "", "fetched_at": G.now_iso(), "snapshot": "",
+            }
 
     # 按 host 分组：组内串行保持礼貌延迟，组间并发（不同站点互不打扰）。
     # 多 host 来源：sitemap/内链里可能混着 chat./docs. 这类子域。
@@ -341,6 +391,7 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
         "root": root,
         "crawled_at": G.now_iso(),
         "has_robots": bool(robots_txt),
+        "robots_fetched": robots_reachable,
         "has_llms_txt": bool(llms_txt),
         "has_sitemap": bool(sitemap_urls),
         "sitemap_url_count": len(sitemap_urls),

@@ -55,11 +55,18 @@ class TestRebuild(unittest.TestCase):
             _project(d)
             out = Path(d) / "x" / "delivery" / G.today()
             out.mkdir(parents=True)
-            (out / "04-验收表.html").write_text("旧", "utf-8")  # 上次条件生成的残留
+            # 用唯一标记而不是「旧」：那份验收表的正文里本来就有「不展示旧验收结果」
+            # 这句话，拿「旧」当残留判据会永远命中。
+            (out / "04-验收表.html").write_text("STALE-MARKER-04", "utf-8")  # 上次条件生成的残留
             (out / "假文件.txt").write_text("旧", "utf-8")
             with mock.patch.object(G, "WORK", Path(d)):
                 DL.run("x")
             self.assertFalse((out / "假文件.txt").exists())
+            # 04-验收表.html 是条件产物，本场景（未验收）会重新生成它，
+            # 所以要断言的是「上次那份残留被整目录重建清掉了」，不是「它不存在」。
+            # 原来这条只查了随手造的假文件，注释里点名的那份反而没断言。
+            self.assertNotIn("STALE-MARKER-04", (out / "04-验收表.html").read_text("utf-8"),
+                             "上次生成的 04-验收表 没有被清掉")
 
 
 class TestUnverified(unittest.TestCase):

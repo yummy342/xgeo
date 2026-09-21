@@ -224,6 +224,11 @@ def build(slug: str) -> dict:
 
     def covered(ch, mk):
         if ch["id"] in ("official", "official_en"):
+            if not G.has_site(cfg):
+                # 无自有网站的项目（商品、线下品牌）没有官网这一档。返回 None
+                # 而不是 False：False 会进分母，把覆盖率永久拉低一档，还会让
+                # 「官网」出现在 0–30 天的路线图里。
+                return None
             own = cfg["brand"]["site"].split("//")[-1].split("/")[0].removeprefix("www.")
             return any(d == own or d.endswith("." + own) for d in cited[mk])
         return any(any(c == dom or c.endswith("." + dom) for c in cited[mk])
@@ -251,12 +256,15 @@ def build(slug: str) -> dict:
     def rate(items, ok):
         return round(sum(1 for x in items if ok(x)) / len(items), 3) if items else 0
 
+    # covered is None = 本项目不适用（无自有网站时的那两档官网阵地），不进分母：
+    # 它恒为未覆盖，会让覆盖率永久低一档。
+    applicable = [c for c in channels if c["covered"] is not None]
     coverage = {
-        "channel_total": len(channels),
-        "channel_covered": sum(1 for c in channels if c["covered"]),
-        "channel_rate": rate(channels, lambda c: c["covered"]),
-        "p0p1_total": sum(1 for c in channels if c["priority"] in ("P0", "P1")),
-        "p0p1_covered": sum(1 for c in channels if c["priority"] in ("P0", "P1") and c["covered"]),
+        "channel_total": len(applicable),
+        "channel_covered": sum(1 for c in applicable if c["covered"]),
+        "channel_rate": rate(applicable, lambda c: c["covered"]),
+        "p0p1_total": sum(1 for c in applicable if c["priority"] in ("P0", "P1")),
+        "p0p1_covered": sum(1 for c in applicable if c["priority"] in ("P0", "P1") and c["covered"]),
         "content_total": len(contents),
         "content_done": sum(1 for c in contents if c["status"] == "已成稿"),
         "content_rate": rate(contents, lambda c: c["status"] == "已成稿"),
@@ -265,13 +273,13 @@ def build(slug: str) -> dict:
 
     roadmap = [
         {"window": "0–30 天", "focus": "地基",
-         "items": [c["name"] for c in channels if c["priority"] == "P0"] +
+         "items": [c["name"] for c in applicable if c["priority"] == "P0"] +
                   ["承接品牌验证与价格类问题的页面"]},
         {"window": "30–60 天", "focus": "高杠杆渠道 + 内容矩阵",
-         "items": [c["name"] for c in channels if c["priority"] == "P1"][:6] +
+         "items": [c["name"] for c in applicable if c["priority"] == "P1"][:6] +
                   ["推荐/比较/替代类内容各 1–2 篇"]},
         {"window": "60–90 天", "focus": "扩量与闭环",
-         "items": [c["name"] for c in channels if c["priority"] == "P2"][:5] +
+         "items": [c["name"] for c in applicable if c["priority"] == "P2"][:5] +
                   ["场景/风险类内容补齐", "监测跑满 6 期并复盘"]},
     ]
 

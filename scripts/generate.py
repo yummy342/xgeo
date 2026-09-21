@@ -298,14 +298,17 @@ def gen_outlines(slug: str) -> list[dict]:
         # 英文要求里刻意不给 list_density / must_have_blocks：
         # 那两条会把「列表和 FAQ 块」变成硬指标，跟 RULES_GEO 的「不要为被引用而加结构块」
         # 直接冲突。规则打架时模型选更具体的那条（见「写作提示词改造记录」第三节）。
+        # H2 指标跟骨架长度走，不能写死 8：榜单型骨架只有 6 节，而 RULES_FORMAT
+        # 又硬性要求「小节数量按骨架来，不要增删」—— 模型只能二选一。真实产物
+        # 里已经把「逐个点评」拆成三节来凑 8，并在文末自陈这个冲突。
         req = ({
             "min_words": 1400 if typ in ("对比型", "榜单型") else 1200,
-            "min_h2": 8, "list_density": None, "must_have_blocks": [],
+            "min_h2": len(secs), "list_density": None, "must_have_blocks": [],
             "evidence": "Every number carries a source and a verification date; "
                         "anything unverifiable is marked “unconfirmed”",
         } if en else {
             "min_words": 1200 if typ in ("对比型", "榜单型") else 1000,
-            "min_h2": 8, "list_density": ">=0.35",
+            "min_h2": len(secs), "list_density": ">=0.35",
             "must_have_blocks": ["定义", "数字事实", "对比", "操作步骤", "FAQ"],
             "evidence": "每个数字带来源和核验日期；无法核实的标『待确认』",
         })
@@ -742,6 +745,12 @@ def variants(slug: str, qid: str | None = None, n: int = 3,
             G.info(f"  {vname} 生成失败（LLM 无返回），后续版本跳过")
             break
         f = d / f"{vid}.md"
+        # 已被 pick 选定的版本不静默覆盖：_index.json 里的 picked 仍指向它，
+        # 覆盖之后索引与实际内容分叉，而 drafts/<qid>.md 里留的还是旧文本。
+        # 旧内容先另存一份，让这次覆盖有痕可查。
+        if f.exists() and _is_picked(slug, qid, vid):
+            f.with_suffix(".prev.md").write_text(f.read_text("utf-8"), "utf-8")
+            G.info(f"  {vname} 是已选定版本，旧文另存为 {vid}.prev.md")
         f.write_text(text, "utf-8")
         made.append({"id": vid, "name": vname, "path": str(f.relative_to(G.project_dir(slug)))})
 
@@ -790,6 +799,17 @@ def _write_variant_index(slug: str, qid: str, outline: dict,
     p.write_text(json.dumps(doc, ensure_ascii=False, indent=1), "utf-8")
 
 
+def _is_picked(slug: str, qid: str, vid: str) -> bool:
+    """该版本是不是当前被 pick 选定的那一个。"""
+    p = _variant_dir(slug, qid) / "_index.json"
+    if not p.exists():
+        return False
+    try:
+        return (json.loads(p.read_text("utf-8")).get("picked") or {}).get("id") == vid
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def pick(slug: str, qid: str, variant_id: str) -> dict:
     """人工选定哪个版本。选中的复制成正式初稿并留痕。
 
@@ -797,6 +817,15 @@ def pick(slug: str, qid: str, variant_id: str) -> dict:
     pick 之后才进发布流程 —— 发布链条上只认 assets/drafts/<qid>.md，
     而它只能由 pick 写出来。
     """
+    # qid / variant 是直接拼进文件路径的，而 geo.py 把 CLI 参数原样透传过来。
+    # 不校验的话 `--qid ../../x` 能读到项目外任意 .md，并把它写到 assets/ 之外。
+    if not re.fullmatch(r"q\d{3}[-\w]*", qid or ""):
+        G.info(f"非法的问题标识：{qid!r}")
+        return {"ok": False, "error": "bad_qid"}
+    if not re.fullmatch(r"[a-z0-9_-]{1,16}", variant_id or ""):
+        G.info(f"非法的版本标识：{variant_id!r}")
+        return {"ok": False, "error": "bad_variant"}
+
     d = _variant_dir(slug, qid)
     src = d / f"{variant_id}.md"
     if not src.exists():
@@ -822,6 +851,14 @@ def pick(slug: str, qid: str, variant_id: str) -> dict:
         except Exception as e:  # noqa: BLE001
             G.info(f"  索引更新失败（不影响选定）：{e}")
 
+    # 选定稿要重新过一遍编造检查：_lint.json 是快照，pick 换掉正文之后清单
+    # 描述的还是上一批文本，而交付包是无条件收 assets/ 全目录的。
+    try:
+        rep = lint_all(slug)
+        G.info(f"  初稿风险检查已刷新：{rep.get('total_issues', 0)} 项")
+    except Exception as e:  # noqa: BLE001
+        G.info(f"  风险检查刷新失败（不影响本次选定）：{e}")
+
     G.info(f"已选定 {qid} 的版本 {variant_id} → assets/drafts/{qid}.md")
     G.info("下一步：人工核实事实，然后走发布流程")
     return {"ok": True, "qid": qid, "variant": variant_id, "draft": str(dst)}
@@ -830,10 +867,19 @@ def pick(slug: str, qid: str, variant_id: str) -> dict:
 # ---------------------------------------------------------------- 初稿风险检查
 
 FAKE_HINTS = [
-    (r"工具\s*[A-Z一二三四五六七八九十]\b", "出现「工具A/工具一」这类占位竞品名"),
+    # 尾锚用 (?![A-Za-z0-9]) 而不是 \b：CJK 在 Python re 里算 \w，而「工具A是核心」
+    # 正是中文句子的默认写法 —— A 后面没有词边界，\b 版本会把这类占位竞品名
+    # 全部漏报（实测只命中「工具A 的」「工具A、工具B」这种带分隔符的）。
+    (r"工具\s*[A-Z一二三四五六七八九十](?![A-Za-z0-9])", "出现「工具A/工具一」这类占位竞品名"),
     (r"某某|XX公司|xxx公司|示例公司", "出现占位公司名"),
     (r"(?i)\b(acme|foobar|example corp|competitor [a-z])\b", "出现占位英文品牌名"),
 ]
+
+
+def _norm_num(s: str) -> str:
+    """数字归一化：去空格与千分位逗号，全角符号转半角，便于等值比较。"""
+    return (str(s).strip().replace(",", "").replace(" ", "")
+            .replace("％", "%").replace("　", ""))
 
 
 def lint_draft(slug: str, path: Path) -> list[dict]:
@@ -856,14 +902,25 @@ def lint_draft(slug: str, path: Path) -> list[dict]:
 
     # 事实卡里没有的数字，且没标「待确认/待补」→ 需人工核
     known_values = {n["value"] for n in f.get("numbers", [])}
-    for m in _re.finditer(r"[^\n|]*?(\d[\d,\.]*\s*(?:%|％|万|亿|倍|元|美元|港币|HK\$|\$|人|家|天|小时|分钟))[^\n|]*", text):
-        seg, val = m.group(0), m.group(1)
-        if any(val in v or v in val for v in known_values):
+    known_norm = {_norm_num(v) for v in known_values}
+    # 逐个数字 token 扫，不要拿「整行」当匹配单位：`[^\n|]*` 尾部贪婪会吃掉整行，
+    # finditer 因此每行只产出一个匹配 —— 实测「价格是 199 元、299 元和 399 元」
+    # 只报 199 元，同一行里其余编造数字全部漏报。
+    for m in _re.finditer(
+            r"\d[\d,\.]*\s*(?:%|％|万|亿|倍|元|美元|港币|HK\$|\$|人|家|天|小时|分钟)", text):
+        val = m.group(0).strip()
+        # 等值比较，不用双向子串：双向子串会把编造数字认成已核实
+        # （实测 "200 元" in "1200 元" 为 True），而夸大数据正是最常见的编造形态。
+        if _norm_num(val) in known_norm:
             continue
-        if "待确认" in seg or "待补" in seg:
+        # 「待确认」只看数字附近，不看整行：按整行判的话，行内任何位置出现
+        # 「待补」都会把这一行的所有数字一起放过。
+        ctx = text[max(0, m.start() - 40):m.end() + 40]
+        if "待确认" in ctx or "待补" in ctx:
             continue
-        issues.append({"level": "中", "type": "未核实数字", "detail": f"`{val}` 不在事实卡里且未标注待确认",
-                       "excerpt": seg.strip()[:90]})
+        issues.append({"level": "中", "type": "未核实数字",
+                       "detail": f"`{val}` 不在事实卡里且未标注待确认",
+                       "excerpt": ctx.replace("\n", " ").strip()[:90]})
 
     year = G.today()[:4]
     for m in _re.finditer(r"20\d{2}\s*年", text):
@@ -1171,7 +1228,12 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
         d = adir / "attribution"
         d.mkdir(parents=True, exist_ok=True)
         for name, body in gen_attribution(slug).items():
-            (d / name).write_text(body, "utf-8")
+            # .sh 走 write_bytes：Windows 上 write_text 会把 \n 翻成 \r\n，
+            # 首行变成 "#!/bin/sh\r"，拷到服务器执行报 bad interpreter。
+            if name.endswith(".sh"):
+                (d / name).write_bytes(body.encode("utf-8"))
+            else:
+                (d / name).write_text(body, "utf-8")
             made.append(f"assets/attribution/{name}")
 
     outlines = []
@@ -1216,12 +1278,21 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
         d = adir / "drafts"
         d.mkdir(parents=True, exist_ok=True)
         for o in outlines[:draft_limit]:
-            G.info(f"起草 {o['question_id']} · {o['target_question'][:30]}…")
+            qid_o = o["question_id"]
+            dst = d / f"{qid_o}.md"
+            # pick 选定的人工稿也落在同一个路径上。无条件覆盖会把它冲掉，而且
+            # 没有任何备份 —— 发布/交付链只认这个文件，_index.json 里的 picked
+            # 却还指向已被替换的文本。
+            if dst.exists() and "由 pick" in dst.read_text("utf-8")[:200]:
+                G.info(f"  跳过 {qid_o}：已有人工选定稿（要重生成先删掉它）")
+                made.append(f"assets/drafts/{qid_o}.md")
+                continue
+            G.info(f"起草 {qid_o} · {o['target_question'][:30]}…")
             text = draft(slug, o)
             if text:
-                (d / f"{o['question_id']}.md").write_text(
+                dst.write_text(
                     f"<!-- 初稿，需人工核实所有事实后再发布 · {G.today()} -->\n\n" + text, "utf-8")
-                made.append(f"assets/drafts/{o['question_id']}.md")
+                made.append(f"assets/drafts/{qid_o}.md")
             else:
                 G.info("  没有可用的 LLM API Key，跳过起草")
                 break

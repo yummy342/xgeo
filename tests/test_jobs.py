@@ -47,11 +47,11 @@ class JobsTest(unittest.TestCase):
         return job
 
     def test_reap_orphans_dead_pid(self):
-        self._write_job("deadjob12345", pid=999999)
+        self._write_job("deadbeef0001", pid=999999)
         with mock.patch.object(J.os, "kill", side_effect=ProcessLookupError):
             n = J.reap_orphans()
         self.assertEqual(n, 1)
-        j = J.get("deadjob12345")
+        j = J.get("deadbeef0001")
         self.assertEqual(j["status"], "interrupted")
         self.assertTrue(j["finished_at"])
 
@@ -59,24 +59,24 @@ class JobsTest(unittest.TestCase):
         """POSIX 上死 pid 抛 ProcessLookupError，Windows 上抛的是普通 OSError
         (WinError 87)。只 catch 前者的写法在 Windows 上会让记录原地留在 running，
         并发保护永久挡住这个项目——看板连启动都会被这条炸掉。"""
-        self._write_job("winjob1234567", pid=999999)
+        self._write_job("deadbeef0002", pid=999999)
         with mock.patch.object(J.os, "kill", side_effect=OSError(22, "Invalid argument")):
             n = J.reap_orphans()
         self.assertEqual(n, 1)
-        self.assertEqual(J.get("winjob1234567")["status"], "interrupted")
+        self.assertEqual(J.get("deadbeef0002")["status"], "interrupted")
 
     def test_reap_orphans_live_pid_untouched(self):
-        self._write_job("livejob12345", pid=os.getpid())
+        self._write_job("deadbeef0003", pid=os.getpid())
         n = J.reap_orphans()
         self.assertEqual(n, 0)
-        self.assertEqual(J.get("livejob12345")["status"], "running")
+        self.assertEqual(J.get("deadbeef0003")["status"], "running")
 
     def test_reap_orphans_skips_non_running(self):
-        self._write_job("donejob123456", status="done", pid=999999)
+        self._write_job("deadbeef0004", status="done", pid=999999)
         with mock.patch.object(J.os, "kill", side_effect=ProcessLookupError):
             n = J.reap_orphans()
         self.assertEqual(n, 0)
-        self.assertEqual(J.get("donejob123456")["status"], "done")
+        self.assertEqual(J.get("deadbeef0004")["status"], "done")
 
     def test_start_popen_failure_marks_failed(self):
         with mock.patch.object(J.subprocess, "Popen", side_effect=OSError("boom")):
@@ -106,20 +106,20 @@ class JobsTest(unittest.TestCase):
 
         杀进程本身用真的子进程验（见 test_terminate_tree_kills_a_real_process），
         这里只验 stop 的流程：读 pid、杀、回写状态。"""
-        self._write_job("orphan1234567", pid=31337)
+        self._write_job("deadbeef0005", pid=31337)
         with mock.patch.object(J, "_terminate_tree", return_value=True) as k:
-            ok = J.stop("orphan1234567")
+            ok = J.stop("deadbeef0005")
         self.assertTrue(ok)
         k.assert_called_once_with(31337)
-        j = J.get("orphan1234567")
+        j = J.get("deadbeef0005")
         self.assertEqual(j["status"], "stopped")
         self.assertTrue(j["finished_at"])
 
     def test_stop_returns_false_when_kill_fails(self):
-        self._write_job("orphan7654321", pid=31337)
+        self._write_job("deadbeef0006", pid=31337)
         with mock.patch.object(J, "_terminate_tree", return_value=False):
-            self.assertFalse(J.stop("orphan7654321"))
-        self.assertEqual(J.get("orphan7654321")["status"], "running")
+            self.assertFalse(J.stop("deadbeef0006"))
+        self.assertEqual(J.get("deadbeef0006")["status"], "running")
 
     def test_terminate_tree_kills_a_real_process(self):
         """真起一个子进程再杀，两个平台都要过。
@@ -137,17 +137,17 @@ class JobsTest(unittest.TestCase):
                 proc.wait(timeout=15)
 
     def test_reap_skips_young_job_without_pid(self):
-        self._write_job("youngjob12345")  # 刚落盘、还没来得及补 pid
+        self._write_job("deadbeef0007")  # 刚落盘、还没来得及补 pid
         self.assertEqual(J.reap_orphans(), 0)
-        self.assertEqual(J.get("youngjob12345")["status"], "running")
+        self.assertEqual(J.get("deadbeef0007")["status"], "running")
 
     def test_reap_old_job_without_pid(self):
-        p = J.JOBS_DIR / "oldjob1234567.json"
-        self._write_job("oldjob1234567")
+        p = J.JOBS_DIR / "deadbeef0008.json"
+        self._write_job("deadbeef0008")
         old = 1700000000  # 2023 年，远超 60s 窗口
         os.utime(p, (old, old))
         self.assertEqual(J.reap_orphans(), 1)
-        self.assertEqual(J.get("oldjob1234567")["status"], "interrupted")
+        self.assertEqual(J.get("deadbeef0008")["status"], "interrupted")
 
     def test_start_is_not_a_check_then_set_race(self):
         """两个请求同时进来，只许起一个任务。
@@ -238,12 +238,44 @@ class JobsTest(unittest.TestCase):
         self.assertEqual(j["exit_code"], 15)
 
     def test_stop_unknown_job(self):
-        self.assertFalse(J.stop("nosuchjob000"))
+        self.assertFalse(J.stop("000000000000"))
 
     def test_get_corrupt_json_returns_none(self):
+        # id 必须是合法格式：否则 get() 会因为 id 校验返回 None，
+        # 这条测试就会因为错误的原因通过，json 容错那行根本没被跑到。
         J.JOBS_DIR.mkdir(parents=True, exist_ok=True)
-        (J.JOBS_DIR / "badjob123456.json").write_text("{not json", "utf-8")
-        self.assertIsNone(J.get("badjob123456"))
+        (J.JOBS_DIR / "bad000000001.json").write_text("{not json", "utf-8")
+        self.assertIsNone(J.get("bad000000001"))
+
+    def test_job_id_must_be_hex12(self):
+        """id 校验是安全边界：/api/job/<jid> 把用户输入直接拼进路径。
+
+        "../work/<slug>/geo" 这类 id 能读到 .jobs 之外的 geo.json（内含
+        发布渠道凭据），经 stop() 的兜底分支还能对任意 pid 发信号。
+        """
+        for bad in ("../work/x/geo", "a/b", "..", "abc", "A1B2C3D4E5F6",
+                    "deadbeef0001.json", "deadbeef00010", ""):
+            self.assertFalse(J.is_valid_id(bad), f"{bad!r} 不该被当成合法 id")
+            self.assertIsNone(J.get(bad), f"{bad!r} 不该读到任何 job")
+            self.assertFalse(J.stop(bad), f"{bad!r} 不该能停任何 job")
+        self.assertTrue(J.is_valid_id("deadbeef0001"))
+
+    def test_prune_keeps_running_and_recent(self):
+        """过期清理只删「已结束」且超过保留期的记录 —— 还在跑的绝不碰。"""
+        old_t = time.time() - 40 * 86400
+
+        def aged(job_id, **kw):
+            self._write_job(job_id, **kw)
+            os.utime(J.JOBS_DIR / f"{job_id}.json", (old_t, old_t))
+
+        aged("deadbeef0009", status="done")       # 过期 + 已结束 → 删
+        self._write_job("deadbeef000a", status="done")   # 新记录 → 留
+        aged("deadbeef000b", status="running")    # 过期但在跑 → 绝不删
+
+        self.assertEqual(J.prune_jobs(), 1)
+        self.assertIsNone(J.get("deadbeef0009"))
+        self.assertIsNotNone(J.get("deadbeef000a"))
+        self.assertIsNotNone(J.get("deadbeef000b"))
 
 
 if __name__ == "__main__":

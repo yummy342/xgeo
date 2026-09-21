@@ -55,7 +55,11 @@ def _cited_domains(metrics: dict, market: str | None = None) -> dict[str, int]:
     for m in (metrics or {}).get("platforms", {}).values():
         if market and m.get("market", "cn") != market:
             continue
-        for k, v in m.get("top_cited_domains", {}).items():
+        # 用全量：top_cited_domains 是 [:15] 的展示截断，拿它判「目标域名有没有
+        # 被引用」的话，排在第 15 名之外的域名会被判成没引用 —— 那条工单永远
+        # 无法闭环。旧版 metrics 没有全量字段，退回截断版，至少不比以前差。
+        doms = m.get("cited_domains_all") or m.get("top_cited_domains") or {}
+        for k, v in doms.items():
             out[k] = out.get(k, 0) + v
     return out
 
@@ -112,12 +116,25 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                 {"label": "llms.txt 失效链接", "cur": nbad, "target": 0, "op": "lte"}
         if expr == "pages.quotable":
             base = task.get("baseline_count", len(aff))
+            # 查不到的 URL 不能算「达标」。crawl 按深度/长度排序后截断到 limit，
+            # 站点新增浅层页时原来的深层 URL 会被挤出候选集；页面被删、改名、
+            # https/www 形态变化也会。那时「本次抓取里没有这页」和「这页已经
+            # 修好、连问题都不再出现」在数据上完全同形——判成已修复就是自动
+            # 验收假通过，客户记录上写上了，实际页面没动。
+            missing = [u for u in aff if u not in pages]
+            if missing:
+                return None, (f"{len(missing)}/{len(aff)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
             cur = sum(1 for u in aff
                       if "NO_QUOTABLE_PASSAGE" in (pages.get(u, {}).get("issue_codes") or []))
             return cur <= base * 0.5, f"无可引段落的页面 {cur}（基线 {base}，目标 ≤{int(base*0.5)}）", \
                 {"label": "无可引段落的页面", "cur": cur, "target": int(base * 0.5),
                  "op": "lte", "base": base}
         if expr == "pages.no_noindex":
+            missing = [u for u in aff if u not in pages]
+            if missing:
+                return None, (f"{len(missing)}/{len(aff)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
             bad = [u for u in aff if any(
                 c in (pages.get(u, {}).get("issue_codes") or [])
                 for c in ("NOINDEX", "XROBOTS_NOINDEX"))]
@@ -208,6 +225,23 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                 return None, f"{mk} 市场本期无采样数据", None
             return cur >= float(tgt), f"{mk} 引用官网率 {cur:.1%} / 目标 {float(tgt):.0%}", \
                 {"label": f"{mk} 引用官网率", "cur": round(cur, 3), "target": float(tgt),
+                 "op": "gte", "pct": True}
+
+        if expr.startswith("metrics.probe_own_cite_gte:"):
+            # 单平台的点名样本引用官网率。不能用市场级的 own_cite_gte 代替：
+            # 那条把「点名时引不到」和「不点名时引不到」混在一起算平均，
+            # 一个平台的品牌认知问题会被市场均值抹平。
+            _, plat, tgt = expr.split(":")
+            row = ((metrics or {}).get("platforms", {}) or {}).get(plat)
+            pr = (row or {}).get("probe") or {}
+            if not pr.get("samples"):
+                return None, f"{plat} 本期没有点名样本", None
+            cur = pr.get("own_domain_cite_rate")
+            if cur is None:
+                return None, f"{plat} 点名样本没有引用官网率数据", None
+            return cur >= float(tgt), \
+                f"{plat} 点名样本引用官网率 {cur:.1%} / 目标 {float(tgt):.0%}", \
+                {"label": f"{plat} 点名引用官网率", "cur": round(cur, 3), "target": float(tgt),
                  "op": "gte", "pct": True}
 
         if expr.startswith("external.any:"):

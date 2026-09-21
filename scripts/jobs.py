@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -59,6 +60,16 @@ _running: dict[str, str] = {}   # slug -> job_id
 _procs: dict[str, subprocess.Popen] = {}
 _stopping: set[str] = set()     # 收到过停止信号、还没收尾的 job
 
+# 任务 id 是 uuid4().hex[:12]。校验它是安全边界，不是格式洁癖：
+# /api/job/<jid> 把用户输入原样喂进 _job_path，不拦的话 jid="../work/<slug>/geo"
+# 会拼出 .jobs 之外的路径（读到 geo.json 里的渠道凭据），再经 stop() 的兜底
+# 分支对任意 pid 发 SIGTERM。
+_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+
+def is_valid_id(job_id: str) -> bool:
+    return bool(job_id) and _ID_RE.fullmatch(job_id) is not None
+
 
 def _job_path(job_id: str) -> Path:
     return JOBS_DIR / f"{job_id}.json"
@@ -74,6 +85,8 @@ def _write(job: dict):
 
 
 def get(job_id: str) -> dict | None:
+    if not is_valid_id(job_id):
+        return None
     p = _job_path(job_id)
     if not p.exists():
         return None
@@ -85,23 +98,43 @@ def get(job_id: str) -> dict | None:
 
 def tail(job_id: str, offset: int = 0) -> tuple[str, int]:
     """返回 (增量文本, 新 offset)。界面按 offset 轮询，不重复拉。"""
+    if not is_valid_id(job_id):
+        return "", offset
     p = _log_path(job_id)
     if not p.exists():
         return "", offset
-    data = p.read_bytes()
-    chunk = data[offset:]
-    return chunk.decode("utf-8", "replace"), len(data)
+    # 按 offset 只读增量：整份读进来再切片的话，轮询一个长任务的日志
+    # 每次都把整个文件过一遍内存，日志越大越慢。
+    with p.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        if offset >= size:          # 含日志被重建（offset 落在文件外）的情况
+            return "", size
+        f.seek(offset)
+        chunk = f.read()
+    return chunk.decode("utf-8", "replace"), size
 
 
 def _live_job(slug: str) -> str | None:
     """本项目正在跑的任务 id。调用方必须已持有 _lock。
 
-    状态以 job 文件为准（服务重启后 _running 是空的，只能看文件）。"""
+    状态以 job 文件为准：服务重启后 _running 是空的，只能看文件。
+    只看内存的话重启后并发保护会归零——reap_orphans 对 pid 存活的记录
+    走 continue、不重新登记，于是同一项目能起出两个管线进程，
+    同时写 audit.json / samples/*.jsonl。"""
     jid = _running.get(slug)
-    if not jid:
-        return None
-    j = get(jid)
-    return jid if j and j["status"] == "running" else None
+    if jid:
+        j = get(jid)
+        return jid if j and j["status"] == "running" else None
+    for f in sorted(JOBS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            j = json.loads(f.read_text("utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if j.get("slug") == slug and j.get("status") == "running":
+            _running[slug] = j["id"]   # 重新登记，之后走内存快路径
+            return j["id"]
+    return None
 
 
 def running_for(slug: str) -> str | None:
@@ -239,7 +272,31 @@ def _terminate_tree(pid: int) -> bool:
         return False
 
 
+def _kill_tree(pid: int) -> bool:
+    """SIGTERM 之后的兜底。子进程忽略 SIGTERM 时只发信号杀不掉，
+    stop() 却会报成功——界面显示「已停止」而它还在写文件。"""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+    if hasattr(signal, "SIGKILL"):   # Windows 没有 SIGKILL
+        try:
+            os.kill(pid, signal.SIGKILL)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    try:                             # Windows 上 os.kill 走 TerminateProcess，即最强手段
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def stop(job_id: str) -> bool:
+    if not is_valid_id(job_id):
+        return False
     with _lock:
         proc = _procs.get(job_id)
     if proc:
@@ -250,6 +307,17 @@ def stop(job_id: str) -> bool:
                 proc.terminate()
             except Exception:  # noqa: BLE001
                 pass
+        # 不在这里等：stop 跑在 HTTP 请求线程上，同步等 N 秒等于把界面卡住。
+        # 改成延迟强杀——给了体面退出的时间，超时还没走说明它忽略 SIGTERM，
+        # 而只发信号是杀不掉的：界面会显示「已停止」而它还在写文件，
+        # _running 也不释放，这个项目会被「已有任务在运行」永久挡住。
+        def _kill_if_alive():
+            if proc.poll() is None:   # 已经退了就别碰，pid 可能已被复用
+                _kill_tree(proc.pid)
+
+        killer = threading.Timer(5.0, _kill_if_alive)
+        killer.daemon = True
+        killer.start()
         return True
     # 服务重启后 _procs 是空的，按 job 文件里落的 pid 兜底杀整组
     job = get(job_id)
@@ -301,3 +369,31 @@ def reap_orphans() -> int:
     if reaped:
         G.info(f"回收了 {reaped} 个中断的任务记录")
     return reaped
+
+
+def prune_jobs(keep_days: int = 30) -> int:
+    """清掉过期的任务记录与日志。
+
+    任务 json 与 log 原来永不删除，而列表接口每次都要 stat + 读所有 json，
+    历史攒多了界面会一轮比一轮慢。只删「已结束且超过保留期」的，
+    还在跑的绝不碰。
+    """
+    if not JOBS_DIR.exists():
+        return 0
+    cutoff = time.time() - keep_days * 86400
+    removed = 0
+    for f in JOBS_DIR.glob("*.json"):
+        try:
+            if f.stat().st_mtime >= cutoff:
+                continue
+            job = json.loads(f.read_text("utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if job.get("status") == "running":
+            continue
+        _log_path(f.stem).unlink(missing_ok=True)
+        f.unlink(missing_ok=True)
+        removed += 1
+    if removed:
+        G.info(f"清理了 {removed} 条过期任务记录（保留 {keep_days} 天）")
+    return removed
