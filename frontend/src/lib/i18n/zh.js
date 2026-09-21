@@ -739,7 +739,8 @@ export const zh = {
   'Channel config': '渠道配置',
   'Publish to selected': '发布到已选渠道',
   'Pick at least one channel first': '先勾选至少一个渠道（没有可勾的先去设置配凭证）',
-  'Publish "{rel}" to {n} channels: {names}\n\nWeChat and WordPress only create drafts. Confirm?': '发布「{rel}」到 {n} 个渠道：{names}\n\n公众号/WordPress 只建草稿。确认？',
+  'Publish "{rel}" to {n} channels: {names}\n\nThese go public immediately. Confirm?': '发布「{rel}」到 {n} 个渠道：{names}\n\n这些会立即对外公开。确认？',
+  'Publish "{rel}" to {n} channels: {names}\n\nWeChat, WordPress and dev.to only create drafts — they go public after you confirm in their consoles. Confirm?': '发布「{rel}」到 {n} 个渠道：{names}\n\n公众号/WordPress/dev.to 只建草稿——要到各自后台确认后才对外。确认？',
   'Published to {n} channels': '已发布到 {n} 个渠道',
   '{ok}/{n} channels succeeded — see the dialog for details': '{ok}/{n} 个渠道成功，失败的看弹窗明细',
   'Draft publishing status': '成稿发布状态',
@@ -893,4 +894,8 @@ export const zh = {
   'Enter the site domain': '请填写官网域名',
   'No engine API key is configured yet.\n\nContinuing skips answer sampling and AI-derivation of the question bank and brand facts — it will only crawl and audit the site, and those two will need to be filled in by hand.\n\nConfigure at least one key first (DeepSeek or Zhipu GLM).\n\nContinue anyway?': '还没有配置任何引擎密钥。\n\n继续的话会跳过答案采样，以及问题库与品牌事实的 AI 推导——只抓取和体检官网，这两项要人工补。\n\n建议先配一个密钥（DeepSeek 或智谱 GLM）。\n\n仍要继续？',
   'No configured engine key for {markets}. Automatic sampling will be skipped for that market (you can add a key later, or use a manual sampling sheet).\n\nContinue anyway?': '{markets} 还没有可用的引擎密钥。该市场的自动采样会被跳过（之后可以补密钥，也可以走人工采样表）。\n\n仍要继续？',
+  'Draft': '草稿',
+  'Publish immediately, skip the draft step': '直接发布，跳过草稿环节',
+  'Channels that support it go public as soon as this returns — no console visit afterwards.': '支持的渠道在返回时即对外公开，之后不用再去渠道后台点确认。',
+  'Draft — confirm it in the channel console': '草稿——需到渠道后台确认发布',
 }

@@ -32,6 +32,18 @@
   const pend = $derived(contentPub.filter((f) => !(f.published || []).length))
   const ready = $derived(pubs.filter((x) => !x.missing.length).length)
 
+  // 「已发布」取渠道侧的可见性，不是我们自己的调用是否成功。
+  // dev.to 建草稿同样返回 ok:true —— 靠 ok 计数的话，稿子躺在 Drafts 里没公开，
+  // 这里照样显示已发布（三篇文章就是这么被漏掉的）。state 空值是 09-22 前的旧记录，
+  // 那时不分草稿与发布，按已发布处理，不制造假警报。
+  const stateOf = (f) => {
+    const rs = f.published || []
+    if (!rs.length) return 'none'
+    return rs.some((r) => (r.state || 'published') === 'published') ? 'published' : 'draft'
+  }
+  const pubCount = $derived(contentPub.filter((f) => stateOf(f) === 'published').length)
+  const draftCount = $derived(contentPub.filter((f) => stateOf(f) === 'draft').length)
+
   $effect(() => {
     void project.data?.slug
     if (!slug) return
@@ -64,7 +76,9 @@
     </div>
     <div class="card elev pk">
       <div class="pk-l">{t('Drafts / published')}</div>
-      <div class="pk-v">{contentPub.length}<span class="pk-u"> / {contentPub.length - pend.length} {t('sent')}</span></div>
+      <div class="pk-v">{contentPub.length}<span class="pk-u"> / {pubCount} {t('published')}</span>
+        {#if draftCount}<span class="pk-u draft-n"> · {draftCount} {t('Draft')}</span>{/if}
+      </div>
     </div>
     <div class="card elev pk clickable" onclick={() => (pendingOpen = true)} title={t('Open the pending list')}>
       <div class="pk-l">{t('Pending')}</div>
@@ -116,7 +130,11 @@
               <td class="ct-cell" title={r.path || ''}>{r.title || r.path || ''}</td>
               <td>
                 {#if r.ok}
-                  <span class="tag tag-accent res">{t('Success')}</span>
+                  {#if r.state === 'draft'}
+                    <span class="tag tag-dim res" title={r.note || ''}>{t('Draft')}</span>
+                  {:else}
+                    <span class="tag tag-accent res">{t('Success')}</span>
+                  {/if}
                 {:else}
                   <span class="tag tag-dim res" title={r.error || ''}>{t('Failed')}</span>
                 {/if}

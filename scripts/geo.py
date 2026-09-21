@@ -303,6 +303,9 @@ def cmd_cycle(a):
             G.info(f"采样跳过：{type(e).__name__}: {e}")
     G.info("=== 4/4 报告 ===")
     report.run(a.slug)
+    # 一期跑完立刻给对照：复测的全部意义就在这一步，
+    # 等用户自己记得回去翻页面，等于这一步没做。
+    _print_effect(a.slug)
 
 
 def cmd_expand(a):
@@ -377,7 +380,7 @@ def cmd_deliver(a):
 def cmd_publish(a):
     import publish
 
-    r = publish.publish(a.slug, a.platform, a.path, a.title or "")
+    r = publish.publish(a.slug, a.platform, a.path, a.title or "", publish_now=a.published)
     if r.get("ok"):
         G.info(f"已发布：{r.get('url') or r.get('note') or 'ok'}")
     else:
@@ -400,6 +403,39 @@ def cmd_task(a):
         print(json.dumps(t, ensure_ascii=False, indent=2))
 
 
+def _print_effect(slug: str) -> None:
+    """效果趋势。跟 trend 子命令共用 analytics.trend/question_delta，
+    这里只负责把它印出来——命令行看不到的指标，等于没有。
+
+    样本只有一期时不给结论：单期数字没有对照，说了也是噪音。
+    """
+    import analytics
+    tr = analytics.trend(slug)
+    if not tr:
+        print("\n  效果趋势   还没有采样数据")
+        return
+    print(f"\n  效果趋势（{len(tr)} 期）")
+    for p in tr[-6:]:
+        mn = f"{p['mention'] * 100:5.1f}%" if p["mention"] is not None else "    —"
+        ct = f"{p['cite'] * 100:5.1f}%" if p["cite"] is not None else "    —"
+        print(f"    {p['date']}   提及 {mn}   引用 {ct}   {p['samples']} 样本")
+    if len(tr) < 2:
+        print("    只有一期，等下一期才有对照")
+        return
+    b, n = tr[-2], tr[-1]
+    moved = []
+    if (n["mention"] or 0) > (b["mention"] or 0):
+        moved.append("提及率上升")
+    if (n["cite"] or 0) > (b["cite"] or 0):
+        moved.append("引用率上升")
+    up = [x for x in analytics.question_delta(slug) if (x["after"] or 0) > (x["before"] or 0)]
+    if moved or up:
+        tail = f"，{len(up)} 道题上升" if up else ""
+        print(f"    ↑ {b['date']} → {n['date']}：{'、'.join(moved) or '有题目上升'}{tail}")
+    else:
+        print(f"    · {b['date']} → {n['date']}：两期持平，提及率与引用率均未变化")
+
+
 def cmd_status(a):
     import sample as S
     import tasks
@@ -420,6 +456,7 @@ def cmd_status(a):
         # 一次都没记上（记账之前采的样本，或中转不回传 usage）——报「未记录」而不是 0，
         # 「不知道花了多少」和「没花钱」不是一回事
         print(f"  采样用量 未记录（{u['unknown']} 次调用未回传用量）")
+    _print_effect(a.slug)
     if not data.get("tasks"):
         print("  还没有工单，运行 plan 生成\n")
         return
@@ -638,6 +675,8 @@ def main():
     import publish as _pub  # 渠道清单以 publish.PUBLISHERS 为单一来源，不在 CLI 再抄一份
     s.add_argument("--platform", required=True, choices=sorted(_pub.PUBLISHERS))
     s.add_argument("--title")
+    s.add_argument("--published", action="store_true",
+                   help="直接对外发布；不加则只建草稿（目前作用于 dev.to）")
     s.set_defaults(func=cmd_publish)
 
     s = sub.add_parser("task", help="查看或更新单条工单状态")

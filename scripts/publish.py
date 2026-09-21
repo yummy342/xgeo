@@ -58,13 +58,13 @@ PUBLISHERS = {
         "name": "dev.to", "market": "global", "env": ["DEVTO_API_KEY"],
         "cfg": [("tags", "最多 4 个标签，逗号分隔，只能字母数字"),
                 ("canonical_url", "官网原文地址（可选）：避免重复内容，并把权重指回自有站点")],
-        "note": "Forem API 新建草稿文章，登录 dev.to 后台确认后再发布",
+        "note": "Forem API 发布文章；默认建草稿（去后台确认），加 --published 直接对外",
         "guide": {"url": 'https://dev.to/settings/extensions', "steps": [
             'dev.to → Settings → Extensions → DEV Community API Keys → Generate API Key',
             'DEVTO_API_KEY 填生成的 key（生成后只显示一次）',
             'tags 最多 4 个，只能字母数字（不能有连字符或空格）；留空则不自动带标签',
             'canonical_url 填官网原文地址——文章同时发在官网和 dev.to 时，这行告诉搜索引擎谁是原文',
-            '发布后是草稿，到 dev.to 后台（Posts → Drafts）确认再对外']},
+            '默认建草稿，到 dev.to 后台（Posts → Drafts）确认再对外；加 --published 则直接发布']},
     },
     "x": {
         "name": "X（推文引流）", "market": "global",
@@ -200,7 +200,8 @@ def _pub_devto(cfg, text, title, fname):
     """dev.to（Forem）建草稿。发布前到 dev.to 后台确认。
     canonical_url 不是可选项的细节：同一篇同时发在官网和 dev.to 时，它决定搜索引擎认谁是原文。"""
     tags = [t.strip() for t in (cfg.get("tags") or "").split(",") if t.strip()][:4]
-    art = {"title": title, "body_markdown": text, "published": False, "tags": tags}
+    now = bool(cfg.get("_publish_now"))
+    art = {"title": title, "body_markdown": text, "published": now, "tags": tags}
     if cfg.get("canonical_url"):
         art["canonical_url"] = cfg["canonical_url"]
     r = requests.post("https://dev.to/api/articles",
@@ -209,7 +210,8 @@ def _pub_devto(cfg, text, title, fname):
                       json={"article": art}, timeout=30)
     if r.status_code == 201:
         return {"ok": True, "url": r.json().get("url", ""),
-                "note": "已建为草稿，到 dev.to 后台确认发布"}
+                "note": "已直接发布" if now else "已建为草稿，到 dev.to 后台确认发布",
+                "state": "published" if now else "draft"}
     return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
 
 
@@ -338,6 +340,30 @@ def _pub_reddit(cfg, text, title, fname):
     return {"ok": False, "error": err[:200]}
 
 
+
+def _state_of(code: str, res: dict) -> str:
+    """这次发布之后，内容到底对外可见了没有。
+
+    渠道自己报了状态就用它的（dev.to 会区分草稿与直发）；没报就按渠道语义取默认。
+    调用失败时给空串——失败没有可见性可言，前端也不该拿它计数。
+    """
+    if not res.get("ok"):
+        return ""
+    return res.get("state") or DEFAULT_STATE.get(code, "")
+
+
+# 渠道的默认对外可见性。ok 只说调用没报错，state 才说内容有没有公开——
+# 两者混为一谈过：三篇文章在 dev.to 的 Drafts 里躺着，记录和界面都显示已发布。
+DEFAULT_STATE = {
+    "devto": "draft",         # 默认只建草稿，加 --published 直发
+    "wordpress": "draft",     # REST API 建的是草稿，要人工去后台确认
+    "wechat_draft": "draft",  # 同上，只建草稿
+    "github": "published",    # 提交进仓库即公开
+    "reddit": "published",
+    "x": "published",
+    "webhook": "published",
+}
+
 _IMPL = {"github": _pub_github, "wordpress": _pub_wordpress,
          "wechat_draft": _pub_wechat, "webhook": _pub_webhook,
          "devto": _pub_devto, "x": _pub_x, "reddit": _pub_reddit}
@@ -378,7 +404,7 @@ def records(slug: str) -> list[dict]:
     return G.read_json(G.project_dir(slug) / "publish.json", []) or []
 
 
-def publish(slug: str, code: str, rel: str, title: str = "") -> dict:
+def publish(slug: str, code: str, rel: str, title: str = "", publish_now: bool = False) -> dict:
     if code not in PUBLISHERS:
         return {"ok": False, "error": f"未知渠道 {code}"}
     miss = missing_env(code)
@@ -396,6 +422,9 @@ def publish(slug: str, code: str, rel: str, title: str = "") -> dict:
     cfg = dict(_cfg(slug, code))
     cfg["_records"] = records(slug)
     cfg["_rel"] = rel          # 回链按完整相对路径匹配，不用 basename
+    # 直发开关。默认 False 时 dev.to 只建草稿，等人工去后台点发布——那个步骤
+    # 漏过一次（两篇成稿在 Drafts 里躺了三天没人点），所以给 CLI 一条显式直发的路。
+    cfg["_publish_now"] = publish_now
     try:
         res = _IMPL[code](cfg, text, title, fname)
     except Exception as e:  # noqa: BLE001
@@ -405,8 +434,11 @@ def publish(slug: str, code: str, rel: str, title: str = "") -> dict:
         G.info(f"发布失败（{code}）：{type(e).__name__}: {_scrub(str(e))}")
         res = {"ok": False, "error": f"{type(e).__name__}: {_scrub(str(e))}",
                "note": "状态未知：可能已经发出，先去渠道后台确认，再决定要不要重发"}
+    # state 是「对外可见性」，跟 ok 分开：ok 只说这次调用没报错。
+    # 渠道自己报了就用它的（dev.to 会区分草稿与直发），没报就按渠道语义取默认值。
     entry = {"at": G.now_iso(), "platform": code, "platform_name": PUBLISHERS[code]["name"],
              "path": rel, "title": title, "ok": res.get("ok", False),
+             "state": _state_of(code, res),
              "url": res.get("url", ""), "note": res.get("note", ""),
              "error": _scrub(str(res.get("error", "")))}
     # 读-改-写必须持锁：ThreadingHTTPServer 下两个标签页并发发布会后写覆盖先写，

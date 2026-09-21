@@ -22,6 +22,10 @@
   let picked = $state([])
   let progress = $state([])
   let busy = $state(false)
+  // 直发。默认关着：外发是收不回来的动作，默认值应该是保守的那一侧。
+  // 但必须给出口——只建草稿的话，稿子会停在渠道后台等人去点，
+  // 而那个「人」不存在（三篇文章在 Drafts 里躺了三天）。
+  let direct = $state(false)
 
   const storeKey = $derived('pubSel:' + slug)
 
@@ -58,8 +62,10 @@
     try { localStorage.setItem(storeKey, JSON.stringify(picked)) } catch { /* 忽略 */ }
 
     const names = picked.map((c) => (pubs.find((x) => x.code === c) || {}).name || c)
-    if (!confirm(t('Publish "{rel}" to {n} channels: {names}\n\nWeChat and WordPress only create drafts. Confirm?')
-      .replace('{rel}', rel).replace('{n}', String(picked.length)).replace('{names}', names.join(', ')))) return
+    const ask = direct
+      ? t('Publish "{rel}" to {n} channels: {names}\n\nThese go public immediately. Confirm?')
+      : t('Publish "{rel}" to {n} channels: {names}\n\nWeChat, WordPress and dev.to only create drafts — they go public after you confirm in their consoles. Confirm?')
+    if (!confirm(ask.replace('{rel}', rel).replace('{n}', String(picked.length)).replace('{names}', names.join(', ')))) return
 
     busy = true
     progress = picked.map((c, i) => ({ name: names[i], state: 'doing', text: t('publishing…') }))
@@ -67,10 +73,13 @@
     let okN = 0
     const next = [...progress]
     for (let i = 0; i < picked.length; i++) {
-      const r = await post('/api/publish/' + slug, { platform: picked[i], path: rel })
+      const r = await post('/api/publish/' + slug, { platform: picked[i], path: rel, published: direct })
       if (r.ok) {
         okN++
-        next[i] = { name: names[i], state: 'ok', text: t('published'), url: r.url || '', note: r.note || '' }
+        // 调用成功 ≠ 对外可见。dev.to 没直发时只建草稿，回的是 ok:true，
+        // 这里必须按渠道报回的 state 显示，否则又把草稿说成已发布。
+        next[i] = { name: names[i], state: 'ok', draft: r.state === 'draft',
+                    text: t('published'), url: r.url || '', note: r.note || '' }
       } else {
         next[i] = { name: names[i], state: 'fail', text: r.error || '' }
       }
@@ -122,7 +131,7 @@
         {#each progress as p (p.name)}
           <div class="pline" class:ok={p.state === 'ok'} class:fail={p.state === 'fail'}>
             {#if p.state === 'ok'}
-              ✓ {p.name} {t('published')}
+              ✓ {p.name} {p.draft ? t('Draft — confirm it in the channel console') : t('published')}
               {#if p.url} <a href={p.url} target="_blank" class="plink">{p.url.slice(0, 50)}</a>{:else} {p.note}{/if}
             {:else if p.state === 'fail'}
               ✗ {p.name} {t('failed:')} {p.text}
@@ -133,6 +142,13 @@
         {/each}
       </div>
     {/if}
+
+    <label class="direct">
+      <input type="checkbox" class="chk" bind:checked={direct} />
+      <span>{t('Publish immediately, skip the draft step')}
+        <span class="muted note">{t('Channels that support it go public as soon as this returns — no console visit afterwards.')}</span>
+      </span>
+    </label>
 
     <div class="row actions">
       <button class="btn btn-ghost cfg" onclick={() => { onclose?.(); go('publishing') }}>{t('Channel config')}</button>
@@ -158,4 +174,6 @@
   .pline.fail { color: var(--accent); }
   .plink { color: var(--a300); }
   .actions { justify-content: flex-end; margin-top: 12px; gap: 9px; }
+  .direct { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px;
+            font-size: 12.5px; line-height: 1.5; cursor: pointer; }
 </style>

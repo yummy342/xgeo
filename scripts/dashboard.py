@@ -104,7 +104,9 @@ def project(slug: str) -> dict:
             if r.get("ok"):
                 pub_by_path.setdefault(r.get("path", ""), []).append(
                     {"platform": r.get("platform"), "platform_name": r.get("platform_name"),
-                     "url": r.get("url", ""), "at": r.get("at", "")})
+                     "url": r.get("url", ""), "at": r.get("at", ""),
+                     # 旧记录没有 state：那时不分草稿与发布，空值让前端按老办法显示
+                     "state": r.get("state", "")})
         for f in sorted(cdir.glob("*.md")):
             if f.name == "facts.md":
                 continue
@@ -917,7 +919,8 @@ class Handler(BaseHTTPRequestHandler):
                 import publish as P
                 slug = p[len("/api/publish/"):]
                 r = P.publish(slug, body.get("platform", ""), body.get("path", ""),
-                              body.get("title", ""))
+                              body.get("title", ""),
+                              publish_now=bool(body.get("published")))
                 return self._json(r, 200 if r.get("ok") else 400)
 
             if p.startswith("/api/distribution/"):
