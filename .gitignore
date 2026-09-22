@@ -1,0 +1,17 @@
+# 凭据：值只留在服务器上
+.env
+.env.bak-*
+*.pem
+
+# 运行时与缓存
+.venv/
+.jobs/
+__pycache__/
+*.pyc
+
+# 生成的项目数据：采样 / 证据 / 资产 / 工单 / 验收历史
+# 本地快照见 ~/xgeo-snapshots/xgeo-full-20260923.tar.gz
+work/
+
+# 时间戳改动备份，回滚已交给 git
+*.bak-*
