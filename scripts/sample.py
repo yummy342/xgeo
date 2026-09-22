@@ -92,6 +92,19 @@ PROVIDERS = {
         "search": False,
         "note": "OpenAI 兼容端点，不联网；海螺 AI 网页版需人工采",
     },
+    "ernie": {
+        # 百度千帆的 ERNIE 模型 API。**它不是 MANUAL_ONLY 里那个 baidu**——
+        # 那个指「百度 AI 搜索」联网产品（无公开 API，只能人工采），两者不是一件事，
+        # 所以这里新开一个引擎码而不是把 baidu 转正。千帆上也有 glm/deepseek，
+        # 但那些已经走百炼，不重复接。
+        "name": "文心ERNIE(千帆API)", "market": "cn",
+        "base": "https://qianfan.baidubce.com/v2",
+        "model": "ernie-5.1",
+        "model_env": "ERNIE_MODEL",
+        "key_env": "QIANFAN_KEY",
+        "search": False,
+        "note": "千帆 ERNIE 模型 API，不联网；文心一言网页版需人工采",
+    },
     # ---------------- 海外 ----------------
     "gemini": {
         "name": "Gemini", "market": "global",
