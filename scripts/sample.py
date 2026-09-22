@@ -27,20 +27,28 @@ import requests
 
 import geolib as G
 
+# 阿里云百炼 MaaS（新加坡区）的 OpenAI 兼容端点。2026-09-22 起国内三家引擎改走这里：
+# 本机没有智谱/月之暗面/DeepSeek 的官方 key，百炼转发的是同一家模型，测品牌认知口径不变。
+# 端点里的 workspace id 属于账号，换账号要连 URL 一起换。
+BAILIAN_BASE = ("https://ws-iey2cz9rzkqklxb5.ap-southeast-1.maas.aliyuncs.com"
+                "/compatible-mode/v1")
+
 # 平台注册表：code -> 配置。market 决定这个平台该问哪一套问题库。
 # 观测集合（2026-07 定）：国内 = 智谱GLM/豆包/DeepSeek/Kimi/MiniMax/纳米AI/百度AI；
 # 海外 = Gemini/ChatGPT/Claude/Grok/Perplexity。纳米AI、百度AI 无公开 API，走人工采样。
 PROVIDERS = {
     # ---------------- 国内 ----------------
+    # 换了端点要连 model 一起换：百炼上只有 5.x 一代（没有 glm-4-flash 这类旧轻量档），
+    # 模型名对不上会 404。换回官方端点时三处一起回退：
+    #   base  https://open.bigmodel.cn/api/paas/v4   key_env  ZHIPUAI_API_KEY    model  glm-4-flash
     "glm": {
         "name": "智谱GLM", "market": "cn",
-        "base": "https://open.bigmodel.cn/api/paas/v4",
-        # 采样默认用各家的轻量档：测的是「模型认不认识这个品牌」，不是推理质量，口径一致优先。
-        "model": "glm-4-flash",
+        "base": BAILIAN_BASE,
+        "model": "glm-5.3",
         "model_env": "GLM_MODEL",
-        "key_env": "ZHIPUAI_API_KEY",
+        "key_env": "BAILIAN_KEY",
         "search": False,
-        "note": "OpenAI 兼容端点，不联网；智谱清言网页版联网行为需人工采",
+        "note": "经百炼 MaaS 调智谱 GLM。不联网，测的是模型参数化知识里的品牌认知",
     },
     "doubao": {
         # 火山方舟。联网要在控制台开通「内容插件」（console.volcengine.com/common-buy/CC_content_plugin）。
@@ -56,21 +64,24 @@ PROVIDERS = {
     },
     "deepseek": {
         "name": "DeepSeek", "market": "cn",
-        "base": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash",
+        # 回退官方：base 改 https://api.deepseek.com/v1，key_env 改 DEEPSEEK_API_KEY
+        "base": BAILIAN_BASE,
+        "model": "deepseek-v4-pro",
         "model_env": "DEEPSEEK_MODEL",
-        "key_env": "DEEPSEEK_API_KEY",
+        "key_env": "BAILIAN_KEY",
         "search": False,
-        "note": "官方 API 不联网，测的是模型参数化知识里的品牌认知",
+        "note": "经百炼 MaaS 调 DeepSeek。不联网，测的是模型参数化知识里的品牌认知",
     },
     "kimi": {
         "name": "Kimi", "market": "cn",
-        "base": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2-0905-preview",
+        # 回退官方：base 改 https://api.moonshot.cn/v1，key_env 改 MOONSHOT_API_KEY
+        "base": BAILIAN_BASE,
+        "model": "kimi-k3",
         "model_env": "MOONSHOT_MODEL",
-        "key_env": "MOONSHOT_API_KEY",
+        "key_env": "BAILIAN_KEY",
+        "skip_temperature": True,   # kimi-k3 拒收 temperature，带就 400
         "search": False,
-        "note": "默认不联网；需要联网请在网页端采样",
+        "note": "经百炼 MaaS 调月之暗面 Kimi。默认不联网；需要联网请在网页端采样",
     },
     "minimax": {
         "name": "MiniMax", "market": "cn",
@@ -169,6 +180,18 @@ PROVIDERS = {
         "key_env": "OPENROUTER_API_KEY",
         "search": True,
         "note": "OpenRouter 转发的 sonar，国内直连可达不用挂代理。引用落点见 _refs_from()",
+    },
+    "openrouter-grok": {
+        # 上面那条 grok 是 api.x.ai 直连，定义没问题，但 xAI 官方 API 预付制——
+        # 账户没余额就整条不可用。这条走 OpenRouter，同一把 key 顺带把 Grok 带进来。
+        # 采样默认取轻量档：测的是「模型认不认识这个品牌」，不是推理质量，口径一致优先。
+        "name": "Grok(OpenRouter)", "market": "global",
+        "base": "https://openrouter.ai/api/v1",
+        "model": "x-ai/grok-4.3",
+        "model_env": "OPENROUTER_GROK_MODEL",
+        "key_env": "OPENROUTER_API_KEY",
+        "search": False,
+        "note": "OpenRouter 转发的 Grok，国内直连可达。不联网，测参数化知识里的品牌认知",
     },
 }
 
@@ -407,8 +430,12 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
     body = {
         "model": _p_model(p),
         "messages": [{"role": "user", "content": question}],
-        "temperature": 0.7,
     }
+    # kimi-k3 这类模型直接拒收 temperature（400 invalid_parameter_error）。
+    # 注册表标了 skip_temperature 就不带这个参数，而不是去猜一个「它能接受的值」——
+    # 采样测的是品牌认知，温度不参与口径，少一个参数不影响可比性。
+    if not p.get("skip_temperature"):
+        body["temperature"] = 0.7
     body.update(p.get("extra", {}))
     delays = (1, 3)  # 超时/429/5xx 指数退避重试 2 次；其他错误（4xx 等）不重试
     for attempt in range(len(delays) + 1):

@@ -69,7 +69,7 @@ class TestModelResolution(unittest.TestCase):
         with no_llm_env():
             res = S.ask("deepseek", "hi")
         self.assertFalse(res["ok"])
-        self.assertIn("DEEPSEEK_API_KEY", res["error"])
+        self.assertIn("BAILIAN_KEY", res["error"])
 
 
 class TestPickLLM(unittest.TestCase):
@@ -79,10 +79,13 @@ class TestPickLLM(unittest.TestCase):
 
     def test_chain_order_and_prefer(self):
         with no_llm_env():
-            with mock.patch.dict(os.environ, {"ZHIPUAI_API_KEY": "k",
+            # 中文三家（glm/kimi/deepseek）共用同一把 BAILIAN_KEY，所以只要它在，
+            # 链首的 deepseek 就是「第一个可用」——链序本身仍由后面的 prefer 验证。
+            with mock.patch.dict(os.environ, {"BAILIAN_KEY": "k",
                                               "OPENAI_API_KEY": "k"}):
-                self.assertEqual(S.pick_llm(), "glm")          # 链上第一个可用
-                self.assertEqual(S.pick_llm("openai"), "openai")  # 指定优先
+                self.assertEqual(S.pick_llm(), "deepseek")     # 链上第一个可用
+                self.assertEqual(S.pick_llm("glm"), "glm")     # 指定优先
+                self.assertEqual(S.pick_llm("openai"), "openai")
                 self.assertIsNone(S.pick_llm("claude"))        # 指定但没配 → None，不偷换
 
     def test_consumers_share_the_chain(self):

@@ -122,7 +122,7 @@ OK_PAYLOAD = {"choices": [{"message": {"content": "你好"}}], "model": "deepsee
 
 class TestAskRetry(unittest.TestCase):
     def setUp(self):
-        self._env = mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"})
+        self._env = mock.patch.dict(os.environ, {"BAILIAN_KEY": "test-key"})
         self._env.start()
         self._sleep = mock.patch.object(S.time, "sleep")
         self._sleep.start()
@@ -189,7 +189,7 @@ class TestUsageAccounting(unittest.TestCase):
         self.assertEqual(S._usage_of({"usage": {"prompt_tokens": 7}}), {"in": 7, "out": 0})
 
     def _ask_with(self, payload):
-        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "k"}):
+        with mock.patch.dict(os.environ, {"BAILIAN_KEY": "k"}):
             with mock.patch.object(S.requests, "post", return_value=_Resp(200, payload)):
                 return S.ask("deepseek", "q")
 
