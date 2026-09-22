@@ -59,6 +59,34 @@ class TestAliasBoundary(unittest.TestCase):
         self.assertTrue(S.analyze_answer("推荐AIGC，挺好", cfg)["brand_mentioned"])
 
 
+class TestStripThink(unittest.TestCase):
+    """推理模型的思维链不该进分析。
+
+    MiniMax 的 M 系列把 <think> 直接写在 content 里。品牌名若只出现在推理段，
+    那不算「答案里提到了」——用户看不到那段。
+    """
+
+    def test_think_block_is_stripped(self):
+        r = S.analyze_answer(
+            "<think>用户在问 AIGCLINK定制家，我得想想这是哪家。</think>"
+            "这是一款工具。", CFG)
+        self.assertFalse(r["brand_mentioned"])
+
+    def test_answer_outside_think_still_counts(self):
+        r = S.analyze_answer("<think>先想想。</think>AIGCLINK定制家很好用。", CFG)
+        self.assertTrue(r["brand_mentioned"])
+
+    def test_no_think_is_identity(self):
+        r = S.analyze_answer("AIGCLINK定制家很好用", CFG)
+        self.assertEqual(r["answer_chars"], len("AIGCLINK定制家很好用"))
+
+    def test_unclosed_think_not_eaten(self):
+        # 响应被截断时没有闭合标签。正则不该把后面整段吞掉——
+        # 吞掉的话品牌名一起消失，mention 变成假阴性，比留着思维链更糟。
+        r = S.analyze_answer("<think>没闭合。AIGCLINK定制家很好用", CFG)
+        self.assertTrue(r["brand_mentioned"])
+
+
 class TestUnknownCue(unittest.TestCase):
     """点名题里「复述品牌名」不等于「认识」。
 

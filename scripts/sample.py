@@ -86,11 +86,14 @@ PROVIDERS = {
     "minimax": {
         "name": "MiniMax", "market": "cn",
         "base": "https://api.minimaxi.com/v1",
-        "model": "MiniMax-M2",
+        "model": "MiniMax-M3",
         "model_env": "MINIMAX_MODEL",
         "key_env": "MINIMAX_API_KEY",
+        # 不显式给上限时推理会吃满默认额度、答案被 finish_reason=length 截断
+        # (实测 MiniMax-M2 就是这样)，4096 与 anthropic 分支取同一个值。
+        "extra": {"max_tokens": 4096},
         "search": False,
-        "note": "OpenAI 兼容端点，不联网；海螺 AI 网页版需人工采",
+        "note": "OpenAI 兼容端点，不联网；思维链写在 content 里，分析前由 _strip_think 剥掉",
     },
     "ernie": {
         # 百度千帆的 ERNIE 模型 API。**它不是 MANUAL_ONLY 里那个 baidu**——
@@ -614,9 +617,27 @@ def brand_in_question(question: str, cfg: dict) -> bool:
     return any(_alias_spans(ql, n.lower()) for n in names if n)
 
 
+THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """剥掉推理模型写在正文里的思维链。
+
+    测的是「AI 给用户的答案」——thinking 是内部推理，用户看不到（App 里折叠着，
+    甚至根本不展示）。留在正文里，品牌名会在推理段被当成「提及」，answer_chars
+    也虚高，mention_rate 就不是答案层的数字了。
+
+    MiniMax 的 M 系列直接把 <think> 写在 content 里；百炼/千帆那几家实测不写，
+    剥离对它们是恒等操作。落盘的 answer 仍是原文——保真是这个产品的主卖点，
+    要在分析层剥，不在存储层剥。
+    """
+    return THINK_RE.sub("", text or "").strip()
+
+
 def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dict:
     names, alias = entities_of(cfg)   # 先它：brand.name 缺失时它给的是可读的报错
     brand = cfg["brand"]["name"]
+    answer = _strip_think(answer)
     positions, needs_review = {}, False
     for n in names:
         pos, negated = _entity_hit(answer, alias[n])
