@@ -47,7 +47,16 @@ def report_key(f: Path) -> tuple[str, str]:
 
 
 def _pages_by_url(audit: dict) -> dict:
-    return {p["url"]: p for p in audit.get("pages", [])}
+    """按 URL 索引页面，含非内容页。
+
+    非内容页不在 audit["pages"] 里（不参与评分），但 SPA 空壳工单的受影响列表恰恰
+    全是它们。少了这一份，`pages.static_text` 会拿不到 url → word_count 记 0 →
+    修复了也永远判未达标，工单变成死题。修好之后该页会变成内容页回到 pages 里。
+    """
+    out = {p["url"]: p for p in audit.get("pages", [])}
+    for p in audit.get("non_content_pages", []):
+        out.setdefault(p["url"], p)
+    return out
 
 
 def _cited_domains(metrics: dict, market: str | None = None) -> dict[str, int]:

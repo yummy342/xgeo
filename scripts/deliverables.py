@@ -99,6 +99,9 @@ def optimization_plan(slug: str) -> str:
               # TypeError，三份交付物全出不来，后面那个 None 兜底分支也走不到。
               if "SPA_SHELL" in (p.get("issue_codes") or [])
               or (p.get("word_count", 0) < 120 and not p.get("issue_codes")))
+    # SPA 空壳页已不参与评分（不进 pages），从非内容页名单里补回计数，口径同 tasks.py
+    spa += sum(1 for p in audit.get("non_content_pages", [])
+               if "SPA_SHELL" in (p.get("issue_codes") or []))
     if spa:
         gate.append(f"{spa} 个页面静态 HTML 无正文")
     if audit.get("no_site"):

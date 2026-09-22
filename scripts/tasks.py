@@ -171,7 +171,11 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                            "desc": "中英页面数差距 ≤ 70%"}))
 
     # —— 页面级：按缺口类型聚合成一条工单，而不是一页一条 ——
+    # SPA 空壳页已被 audit 移出 pages（不参与评分），但它是真缺陷，从非内容页名单里取回来。
+    # 只取 SPA 那类：API 端点（application/json）同样不参与评分，但那不是问题，不出工单。
     spa = [p["url"] for p in pages if _has_issue(p, "SPA_SHELL", "静态 HTML 里几乎没有正文")]
+    spa += [p["url"] for p in audit.get("non_content_pages", [])
+            if "SPA_SHELL" in (p.get("issue_codes") or []) and p["url"] not in spa]
     if spa:
         t = _t(next(seq), "P0", "页面技术", "修复前端渲染空壳页（SSR / 预渲染）",
                "静态 HTML 无正文，多数 AI 抓取器看到的是空白页——国内官网最常见致命伤（method.md 可抓取性）",

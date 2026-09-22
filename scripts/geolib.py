@@ -547,6 +547,45 @@ def word_count(text: str) -> int:
     return int(cjk / 1.6 + latin)
 
 
+# 内容页判据：「这页是不是给人读的内容页」。抓取层用它决定槽位怎么分，
+# 审计层用它决定算不算内容质量——一个判据两处共用，不然阈值改一处漏一处。
+FUNC_PAGE_PATH = re.compile(
+    r"/(login|signin|signup|register|cart|checkout|account|auth|contact)(/|$)", re.I)
+MIN_CONTENT_WORDS = 120
+
+REASON_NON_DOCUMENT = "non_document"
+REASON_SPA_SHELL = "spa_shell"
+
+NON_CONTENT_REASON_LABEL = {
+    REASON_NON_DOCUMENT: "非网页内容（API / 文件端点）",
+    REASON_SPA_SHELL: "SPA 外壳（静态 HTML 无正文）",
+}
+
+
+def non_content_reason(page: dict) -> str:
+    """非内容页的原因；是内容页返回空串。
+
+    1) status 非 200 的页不在这里判：它们走「抓取失败」那条路，原因不同，
+       混进来会把「这次没抓到」静默改写成「这页不是内容页」。
+    2) non_document：响应不是网页（application/json 这类 API 端点）。
+       AI 读 JSON 比读 HTML 更顺，这是资产不是缺陷，所以不给 issue_codes。
+    3) spa_shell：静态 HTML 里没有正文（纯前端渲染），curl 拿到的是空壳，
+        AI 抓取器同样读不到——这条是真缺陷，调用方据此出工单。
+    4) 登录/注册/购物车这类功能页内容少属正常，不算非内容页，仍走原有的
+       LOW_CONTENT_PAGE 口径。
+    """
+    if (page.get("status") or 0) != 200:
+        return ""
+    ctype = page.get("content_type") or ""
+    if ctype and not any(k in ctype.lower() for k in ("html", "text/plain", "xml")):
+        return REASON_NON_DOCUMENT
+    if (page.get("word_count") or 0) >= MIN_CONTENT_WORDS:
+        return ""
+    if FUNC_PAGE_PATH.search(urlparse(page.get("url") or "").path):
+        return ""
+    return REASON_SPA_SHELL
+
+
 def strip_comments(text: str) -> str:
     """去掉 <!-- --> 注释，保持 re.sub(r"<!--.*?-->", "", text, re.S) 的语义。
 

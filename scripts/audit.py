@@ -45,8 +45,9 @@ RE_COMPARE = re.compile(r"(对比|相比|区别|差异|优于|不如|竞品|替�
 RE_HOWTO = re.compile(r"(第[一二三四五六七八九十\d]+步|步骤\s*[一二三四五六七八九十\d]|操作流程|手順|ステップ\s*\d|使い方|\bstep\s*\d|\bhow to\b)", re.I)
 # 「如何/怎么」只是弱信号，必须与列表结构共现才算操作步骤块（否则问句标题就送分）
 RE_HOWTO_SOFT = re.compile(r"(如何|怎么)")
-# 登录/注册/购物车/联系页等功能页天然低内容，不按 SPA 空壳 P0 误报
-FUNC_PAGE = re.compile(r"/(login|signin|signup|register|cart|checkout|account|auth|contact)(/|$)", re.I)
+# 登录/注册/购物车/联系页等功能页天然低内容，不按 SPA 空壳 P0 误报。
+# 判据本体挪到 geolib（抓取层分槽位时同一条），这里留别名给 verify.py 用。
+FUNC_PAGE = G.FUNC_PAGE_PATH
 RE_FAQ = re.compile(r"(常见问题|常见疑问|问答|よくある質問|\bFAQ\b|^\s*[问Q][:：]|答[:：])", re.I | re.M)
 RE_DATE = re.compile(r"(20\d{2}[-/年]\s?\d{1,2}[-/月]\s?\d{1,2}|更新[于时间]*[:：]?\s*20\d{2}|最后更新|发布于|\bupdated\b|\bpublished\b)", re.I)
 RE_AUTHOR = re.compile(r"(作者|撰文|编辑[:：]|著者|執筆|\bauthor\b|\bby\s+[A-Z][a-z]+)", re.I)
@@ -157,10 +158,10 @@ def score_page(page: dict, keywords: list[str]) -> dict:
         issue("NO_CANONICAL", "P2 缺 canonical，重复内容会稀释信号")
     if wc >= 120:
         s += 3
-    elif FUNC_PAGE.search(urlparse(page.get("url") or "").path):
+    elif status == 200:
+        # 200 且正文不足 120 词、又不是功能页的，已在 run() 里判为非内容页并移出评分
+        # （G.non_content_reason），走不到这里。SPA_SHELL 也从那边报。
         issue("LOW_CONTENT_PAGE", "P2 低内容功能页（登录/注册/购物车等），内容少属正常，可考虑补充说明性文案")
-    else:
-        issue("SPA_SHELL", "P0 静态 HTML 里几乎没有正文（疑似纯前端渲染），AI 抓取器读不到内容")
     d["可抓取性"] = s
 
     # 2. 内容长度 15（1000+ 词是进入高影响力区间的门槛）
@@ -302,21 +303,45 @@ def run(slug: str) -> dict:
                "no_site": True, "site": {}, "site_issues": [], "layers": [],
                "page_count": 0, "avg_score": None, "grade_distribution": {},
                "block_gap": [], "pages": [], "keywords_used": [],
+               "non_content_count": 0, "non_content_pages": [],
                "language_coverage": {}}
         G.write_json(pdir / "audit.json", out)
         return out
     if not pages:
         G.die("没有抓取结果，先运行：python3 scripts/geo.py crawl --slug " + slug)
+
+    # 非内容页（API 端点、SPA 外壳）不参与内容质量评价：它们的 word_count 天然为 0，
+    # 留在均分里等于拿「这页本来就不是给人读的」去扣内容分，还会顺带产出
+    # 「给 application/json 补 JSON-LD」这类伪工单。单列出来，SPA 那条仍作真缺陷报。
+    non_content: list[dict] = []
+    content: list[dict] = []
+    for p in pages:
+        reason = G.non_content_reason(p)
+        if not reason:
+            content.append(p)
+            continue
+        non_content.append({
+            "url": p["url"],
+            "reason": reason,
+            "reason_label": G.NON_CONTENT_REASON_LABEL[reason],
+            "title": p.get("title") or "",
+            "word_count": p.get("word_count") or 0,
+            "issue_codes": ["SPA_SHELL"] if reason == G.REASON_SPA_SHELL else [],
+        })
+    if not content:
+        G.die("抓到的页面里没有一页可评价的内容页（全是 API 端点或 SPA 外壳），"
+              "确认 pages.seed 与站点导航指向的是内容页")
+
     site = G.read_json(pdir / "evidence" / "site.json", {})
     kws = keywords_from_config(cfg)
 
-    results = [score_page(p, kws) for p in pages]
-    avg, grade_dist = summarize_scores(results, pages)
+    results = [score_page(p, kws) for p in content]
+    avg, grade_dist = summarize_scores(results, content)
 
     # 语言覆盖：做双市场时，「有没有英文原生内容」是海外 GEO 的门票
     market = cfg.get("market", "cn")
     lang_dist: dict[str, int] = {}
-    for p in pages:
+    for p in content:
         if p.get("word_count", 0) >= 120:
             # 有正文就从正文重算语言，不盲信存储字段——evidence 可能是旧版口径抓的
             if p.get("text"):
@@ -329,7 +354,7 @@ def run(slug: str) -> dict:
     zh_pages = lang_dist.get("zh", 0)
     ja_pages = lang_dist.get("ja", 0)
     content_pages = sum(lang_dist.values())
-    hreflang_pages = sum(1 for p in pages
+    hreflang_pages = sum(1 for p in content
                          if p.get("word_count", 0) >= 120 and p.get("hreflang_count", 0) > 0)
     # 多语言站才要求 hreflang：单语言站声明它没有意义
     multilingual = sum(1 for v in (zh_pages, en_pages, ja_pages) if v > 0) >= 2
@@ -376,7 +401,7 @@ def run(slug: str) -> dict:
     import hashlib
     by_title: dict[str, list[str]] = {}
     by_body: dict[str, list[str]] = {}
-    for p in pages:
+    for p in content:
         if (p.get("status") or 0) != 200 or p.get("word_count", 0) < 120:
             continue
         t = (p.get("title") or "").strip()
@@ -452,7 +477,9 @@ def run(slug: str) -> dict:
         return {"key": key, "name": name, "question": question, "status": status,
                 "issues": [t for _, t in entries]}
 
-    spa, unreach = pages_with("SPA_SHELL"), pages_with("PAGE_UNREACHABLE")
+    # SPA 外壳的页已被移出评分（进不了 results），从非内容页那份名单里数更直接
+    spa = sum(1 for e in non_content if "SPA_SHELL" in e["issue_codes"])
+    unreach = pages_with("PAGE_UNREACHABLE")
     noidx = pages_with("NOINDEX") + pages_with("XROBOTS_NOINDEX")
     nojld = pages_with("NO_JSONLD")
     layers = [
@@ -522,10 +549,15 @@ def run(slug: str) -> dict:
         "avg_score": avg,
         "grade_distribution": grade_dist,
         "block_gap": block_gap_dicts,
+        # pages 只装内容页：下游（工单、交付物、验收）一律照这份名单走，
+        # 非内容页单独一个键，谁要谁自己取，不会混进内容质量的统计里。
         "pages": sorted(results, key=lambda r: r["score"]),
+        "non_content_count": len(non_content),
+        "non_content_pages": non_content,
     }
     G.write_json(pdir / "audit.json", out)
-    G.info(f"体检完成：{len(results)} 页，均分 {avg}，分布 {grade_dist} → {pdir/'audit.json'}")
+    extra = f"，另有非内容页 {len(non_content)} 个未参与评分" if non_content else ""
+    G.info(f"体检完成：{len(results)} 页，均分 {avg}，分布 {grade_dist}{extra} → {pdir/'audit.json'}")
     return out
 
 
