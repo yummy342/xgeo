@@ -524,6 +524,26 @@ NEG_CUES = re.compile(
     r"|not recommended|avoid|scam|complaints?|lawsuit|shut ?down|worse than|downsides?",
     re.IGNORECASE)
 
+# 「我不认识这个品牌」的措辞。和 NEG_CUES 是两回事：那组是「认识且说坏话」，
+# 这组是「压根不认识」。点名题里答案必然复述品牌名，于是 recognized_rate 恒为 1.0——
+# 实测三家中文引擎答「Aiglade 是家什么公司」时给的全是「抱歉，我没有关于它的可靠信息」，
+# 却被记成 100% 认知。两类都收：明说没信息（没有/未找到/无法确认），
+# 以及承认认知不足再往下猜（信息有限/并非广为人知/基于现有信息推测）。
+# 不收泛化的「抱歉/很遗憾」——模型常以道歉开头再给出有效信息，那种不能算不认识。
+#
+# 这一组抓不到「编造」：deepseek 答「Aiglade 和 Dify 有什么区别」时把 Aiglade
+# 编成一个真实存在的平台，措辞上毫无破绽。那类只能靠人工复核（Gaps 页记事实偏差），
+# 所以 recognized_rate 是下限意义上的数字，不是「AI 认识你」的证明。
+UNKNOWN_CUES = re.compile(
+    r"没有(?:关于|找到|收录|可靠|相关|足够)|没能|未找到|未收录|不了解|不清楚|不知道|"
+    r"无法(?:确认|提供|找到|验证)|知识(?:库)?截止|拼写(?:错误|有误)|"
+    r"信息(?:非常)?有限|资料有限|了解(?:有限|不多)|信息(?:很)?少|"
+    r"并非广为人知|并不广为人知|不是一家广为人知|多个同名|同名实体|"
+    r"(?:基于|根据)(?:现有|目前)(?:的)?信息推测|"
+    r"no reliable|no information|no mention|couldn'?t find|unable to find|"
+    r"not familiar|not aware|don'?t have|knowledge cutoff|very limited information",
+    re.IGNORECASE)
+
 
 def _alias_spans(text: str, alias: str) -> list[tuple[int, int]]:
     """别名命中区间。
@@ -612,16 +632,23 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     own = urlparse(cfg["brand"]["site"]).netloc.lower().removeprefix("www.") if G.has_site(cfg) else ""
 
     # 疑似负面：品牌每个命中点前 80 / 后 160 字符窗口内的负面线索词
-    neg = set()
+    # 同一窗口策略也用来判「不认识」：措辞必须落在品牌名邻域，
+    # 全文搜会把「另一家公司没有公开信息」这种无关句子算进来。
+    neg, unk = set(), set()
     if present.get(brand):
         for a in alias[brand]:
             for s, e in _alias_spans(answer, a):
-                for mm in NEG_CUES.finditer(answer[max(0, s - 80):e + 160]):
+                rng = answer[max(0, s - 80):e + 160]
+                for mm in NEG_CUES.finditer(rng):
                     neg.add(mm.group(0).lower())
+                for mm in UNKNOWN_CUES.finditer(rng):
+                    unk.add(mm.group(0).lower())
 
     return {
         "brand_mentioned": present.get(brand, False),
         "brand_rank": (ordered.index(brand) + 1) if brand in ordered else 0,
+        "brand_unknown": bool(unk),
+        "unknown_cues": sorted(unk),
         "candidates": ordered,
         "competitors_mentioned": [n for n in names if n != brand and present.get(n)],
         "cited_domains": sorted(set(domains)),
@@ -695,10 +722,15 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
             # 判成没引用，那条工单永远无法闭环。
             "cited_domains_all": dict(sorted(dom.items(), key=lambda x: -x[1])),
             "top_cited_domains": dict(sorted(dom.items(), key=lambda x: -x[1])[:15]),
-            # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网
+            # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网。
+            # 「复述了品牌名」不等于「认识」——点名题里答案必然复述，所以还要
+            # 排除本轮明确说了「没有关于它的信息」的那些样本（brand_unknown）。
             "probe": {
                 "samples": len(probe),
-                "recognized_rate": round(sum(1 for r in probe if r["analysis"]["brand_mentioned"]) / len(probe), 3) if probe else None,
+                "recognized_rate": round(sum(
+                    1 for r in probe
+                    if r["analysis"]["brand_mentioned"] and not r["analysis"].get("brand_unknown")
+                ) / len(probe), 3) if probe else None,
                 "own_domain_cite_rate": (round(sum(1 for r in probe if r["analysis"]["own_domain_cited"]) / len(probe), 3)
                                           if probe and G.has_site(cfg) else None),
             },

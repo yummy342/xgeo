@@ -59,6 +59,40 @@ class TestAliasBoundary(unittest.TestCase):
         self.assertTrue(S.analyze_answer("推荐AIGC，挺好", cfg)["brand_mentioned"])
 
 
+class TestUnknownCue(unittest.TestCase):
+    """点名题里「复述品牌名」不等于「认识」。
+
+    实测三家中文引擎答「Aiglade 是家什么公司」全是「很抱歉，我没有关于它的可靠
+    信息」，recognized_rate 却记成 1.0。这里守住：说了没信息就不算认知，
+    但以道歉开头再给有效信息的，不能误伤。
+    """
+
+    def test_denial_marks_unknown(self):
+        r = S.analyze_answer("很抱歉，我对「AIGCLINK定制家」这家公司没有可靠的信息。", CFG)
+        self.assertTrue(r["brand_mentioned"])
+        self.assertTrue(r["brand_unknown"])
+
+    def test_apology_then_real_intro_is_recognition(self):
+        r = S.analyze_answer("抱歉来晚了。AIGCLINK定制家是一家做定制家居的公司。", CFG)
+        self.assertTrue(r["brand_mentioned"])
+        self.assertFalse(r["brand_unknown"])
+
+    def test_unrelated_denial_outside_window_ignored(self):
+        # 否定措辞必须落在品牌名邻域；拿另一家公司说事不该算到本品牌头上
+        r = S.analyze_answer(
+            "另有一家公司没有可靠的信息可查。" + "无关内容。" * 30 + "AIGCLINK定制家挺好用", CFG)
+        self.assertTrue(r["brand_mentioned"])
+        self.assertFalse(r["brand_unknown"])
+
+    def test_unknown_samples_drop_out_of_recognized_rate(self):
+        rows = [make_row(qid="Q1", probe=True, question="AIGCLINK定制家是什么"),
+                make_row(qid="Q2", probe=True, question="AIGCLINK定制家官网是哪个")]
+        rows[1]["analysis"]["brand_unknown"] = True
+        m = S.aggregate(rows, CFG)["deepseek"]
+        self.assertEqual(m["probe"]["samples"], 2)
+        self.assertEqual(m["probe"]["recognized_rate"], 0.5)
+
+
 class TestDedup(unittest.TestCase):
     def test_same_day_rerun_keeps_last(self):
         first = make_row(mentioned=True)
