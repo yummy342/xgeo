@@ -51,16 +51,26 @@ PROVIDERS = {
         "note": "经百炼 MaaS 调智谱 GLM。不联网，测的是模型参数化知识里的品牌认知",
     },
     "doubao": {
-        # 火山方舟。联网要在控制台开通「内容插件」（console.volcengine.com/common-buy/CC_content_plugin）。
-        # 没开通时自动降级成不联网采样，不会中断整期。
+        # 2026-09-22：账号 2131007510 开通后实测可用的是 2-1-pro / 2-1-lite / 2-1-turbo
+        # 与 2-0 全系；seed-evolving 未开通。**开通生效有几分钟抖动**（同一模型
+        # 通→不通→通都出现过），新开通后别急着判定失败，隔几分钟再测一轮。
+        # 模型名写错会得到和「未开通」几乎一样的报错，别把名字问题当成权限问题。
+        #
+        # 走普通 chat/completions 而不再挂 protocol="ark"：responses + web_search
+        # 那条路当前直接回 InternalServiceError（内容插件未生效），秒错不是超时。
+        # 所以这一档测的是参数化知识，口径同 glm/deepseek，报告里标「不联网」。
+        # 一旦开通内容插件，把 protocol 加回 "ark" 即可恢复联网+引用。
+        # 取 lite 不取 pro：pro 实测单条 198s，是整轮里最慢的档。注册表一贯的规矩
+        # 是「用各家的轻量档，测的是模型认不认识这个品牌，不是推理质量」——
+        # 这一条在豆包这里尤其要紧，思考链一长，一题就能吃掉十分钟。
         "name": "豆包(方舟API)", "market": "cn",
-        "protocol": "ark",
         "base": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "doubao-seed-1-6-250615",
+        "model": "doubao-seed-2-1-lite-260915",
         "model_env": "ARK_MODEL",
         "key_env": "ARK_API_KEY",
-        "search": True,
-        "note": "开通内容插件后走 responses+web_search 并返回引用；否则退回参数化知识采样",
+        "timeout": 300,          # 实测单条 119s，120s 的默认值会误判成超时
+        "search": False,
+        "note": "方舟 chat 端点，不联网；要测豆包联网行为需先开通内容插件再挂回 ark 协议",
     },
     "deepseek": {
         "name": "DeepSeek", "market": "cn",
@@ -312,7 +322,10 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
                 refs = [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
                 return {"ok": True, "answer": answer, "citations": refs,
                         "raw_model": _p_model(p), "usage": _usage_of(d), "searched": True}
-        elif "ToolNotOpen" not in r.text:
+        elif "ToolNotOpen" not in r.text and "ModelNotOpen" not in r.text:
+            # ModelNotOpen 也放行到降级分支：responses 端点和 chat/completions 的
+            # 开通状态不一定一致（实测 doubao-seed-2-1-turbo 只在 chat 侧通），
+            # 在这里返回失败等于把一条能采的链路直接掐掉。能不能用交给降级那次去判。
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except Exception:  # noqa: BLE001
         pass  # 降级重试
@@ -436,6 +449,9 @@ def _refs_from(data: dict) -> list[dict]:
 
 def ask(platform: str, question: str, timeout: int = 120) -> dict:
     p = PROVIDERS[platform]
+    # 注册表可按平台放宽：豆包带思考链，实测单条 73~198s，卡在 120s 默认值上
+    # 会先超时、再重试两轮，一题吃掉十分钟。慢是它的常态，不是异常。
+    timeout = p.get("timeout") or timeout
     key = os.environ.get(p["key_env"])
     if not key:
         return {"ok": False, "answer": "", "error": f"缺少环境变量 {p['key_env']}"}
