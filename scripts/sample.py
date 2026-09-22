@@ -623,7 +623,9 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     for u in urls:
         try:
             h = urlparse(u).netloc.lower().removeprefix("www.")
-            if h:
+            # 本机地址不是信源：模型答「可以本地跑」时会带上 ollama 的
+            # localhost:11434，算进 top_cited_domains 就是纯噪音。
+            if h and h.split(":")[0] not in ("localhost", "127.0.0.1", "0.0.0.0"):
                 domains.append(h)
         except Exception:  # noqa: BLE001
             pass
