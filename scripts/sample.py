@@ -556,8 +556,9 @@ UNKNOWN_CUES = re.compile(
     r"信息(?:非常)?有限|资料有限|了解(?:有限|不多)|信息(?:很)?少|"
     r"并非广为人知|并不广为人知|不是一家广为人知|多个同名|同名实体|"
     r"(?:基于|根据)(?:现有|目前)(?:的)?信息推测|"
-    r"no reliable|no information|no mention|couldn'?t find|unable to find|"
-    r"not familiar|not aware|don'?t have|knowledge cutoff|very limited information",
+    r"no reliable|no information|no mention|couldn'?t find|can'?t find|cannot find|"
+    r"unable to find|not familiar|not aware|don'?t have|do not have|knowledge cutoff|"
+    r"not sure which|aren'?t sure which|very limited information",
     re.IGNORECASE)
 
 
