@@ -667,8 +667,14 @@ Output directly. No explanation, no preamble.
     if angle_hint:
         prompt += (f"\n## 叙事角度（只影响怎么讲，不影响上面任何一条纪律）\n{angle_hint}\n" if zh
                    else f"\n## Narrative angle (changes only how it is told; none of the discipline above)\n{angle_hint}\n")
-    res = S.ask(plat, prompt, timeout=300)
-    return res.get("answer", "") if res.get("ok") else ""
+    # 起草一篇 2000 词长文要跑几分钟。原来写死 300s，实测有篇跑到 6 分钟被判失败，
+    # 而失败信息又被上层统一报成「没有可用的 LLM API Key」——把一次超时误导成
+    # 配置问题。这里抬到 600s，并且失败时把真实原因打出来。
+    res = S.ask(plat, prompt, timeout=600)
+    if res.get("ok"):
+        return res.get("answer", "")
+    G.info(f"  起草请求失败（{plat}）：{res.get('error') or '返回空正文'}")
+    return ""
 
 
 # ---------------------------------------------------------------- 多版本起草
