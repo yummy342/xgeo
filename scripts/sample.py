@@ -301,7 +301,12 @@ def available(platform: str) -> bool:
 
 # 所有「挑一个可用 LLM 干活」的模块（bootstrap/expand/generate）共用这一条候选链，
 # 避免各写一份后悄悄漂移。顺序：便宜的国内引擎优先。
-LLM_PREFS = ("deepseek", "glm", "doubao", "openai", "gemini")
+#
+# 末尾三个是 API 中转与 OpenRouter 转发。链里原本只有官方 Key，于是手上只有中转
+# 通道的项目 pick_llm() 直接返回 None，整批初稿起不来 —— 2026-09-24 实测：
+# freemodel 只有 api2d / OpenRouter 的 Key，五个官方一个都没有。
+LLM_PREFS = ("deepseek", "glm", "doubao", "openai", "gemini",
+             "api2d-gpt", "api2d-claude", "openrouter-sonar")
 
 
 def pick_llm(prefer: str | None = None):
