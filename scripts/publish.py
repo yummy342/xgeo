@@ -24,11 +24,69 @@ import geolib as G
 # 渠道注册表：env 是 .env 里的凭证变量；cfg 是存在项目 geo.json publishing.<code> 的非敏感配置。
 # market：general 通用 / cn 国内 / global 海外，发布渠道页按此分组。
 #
-# 准入纪律：只接有官方可用发布 API 的平台，宁缺毋滥。微博（开放平台发布接口需企业应用
-# 审核）、搜狐号/头条号/小红书/B站专栏（无公开发布 API）、LinkedIn（三方 OAuth + token
-# 60 天过期）、Facebook 个人主页（接口已废弃）、Instagram（需企业号且不支持纯文本）均不
-# 接入——Cookie 模拟发布违反各家 ToS 且极易失效，不进本产品；这些平台走人工发布或用
-# 自定义 Webhook 桥接你自己的工具。
+# 准入纪律：两条通路，按**平台规则**选，不按实现难度选。
+#
+# 1) 自动发布（_IMPL 里有实现 + env 凭证齐）：只接平台规则允许官方 API 自动推送的渠道。
+# 2) 半自动（PUBLISHERS[code]["semi"] 规格在）：平台规则禁止自动推送、或没有个人可用的
+#    发布接口时，工具只做「备好内容 + 一键复制 + 打开发布页」，**最后那一下发布由账号
+#    主人自己点**。工具不代点、不模拟登录、不代持 Cookie。
+#
+# 第 2 档不是「怕 ToS 的妥协」，是唯一合规形态。以微博为例（都是它自家规则）：
+#   · 发布类接口需要用户 OAuth2.0 授权，不只是企业开发者审核；
+#   · 开放平台明文规定「用户授权确认后使用应用，不得直接将使用信息自动分享到用户微博，
+#     需以浮层或明显提示让用户选择『分享』或『取消』」，并禁止「利用用户账号在不知情的
+#     情况下发微博、发私信、发 @」；
+#   · 禁止或难以过审的应用类型里点名列了「多微博平台同步类」——本产品正是这一类；
+#     未审核应用仅限创建者 + 15 个测试用户调用，AccessToken 未审核 24 小时。
+# 结论：自动代点在这些平台不是「技术上做不到」，是**平台规则本身禁止把发布动作交给应用**。
+# 所以红线没有放松，只是划得更准了：**不代点发布**；接入的是「人工发布的正规化」——
+# 内容备好、链接回填、发布状态可追溯。Cookie 模拟登录代发仍然一律不做。
+#
+# 不接的：微博（走 semi）、LinkedIn（三方 OAuth + token 60 天过期）、Facebook 个人主页
+# （接口已废弃）、Instagram（需企业号且不支持纯文本）。
+def _semi(**over) -> dict:
+    """半自动规格：默认值 + 覆盖。
+
+    默认值取多数平台的形态（富文本编辑器、要封面、带标签、正文接回链）；
+    每个渠道只写它跟默认不同的项 —— 九个渠道各写满 15 个字段会把注册表埋掉。
+
+    字段含义（消费点见 _prepare_payload 与前端 ManualPublishDialog）：
+      publish_url   打开发布页的地址。放**稳定入口页**，深链接失效是常事，而它是数据。
+                    留空 = 待核实，界面只提示不显示按钮。
+      login_url     未登录时的提示链接。
+      body_form     正文形态 html / markdown / text（"tbd" 按 text 处理，纯文本最不容易坏）。
+      copy_as       剪贴板 flavor，可与 body_form 不同。
+      title_max     标题上限；数字则超了截断并告警，"tbd"/None 只告警不截断。
+      title_inline  True = 平台没有独立标题栏（微博），标题并入正文首行。
+      tags          {max, format(plain|inline), prefix, suffix, sep}；max 为 "tbd" 只告警。
+      cover         required / optional / False / "tbd"。
+      backlink      正文尾部是否自动接上长文落点（复用 _latest_public_url）。
+      dist          回填时顺带勾上的蓝图阵地 id（distribution.json）。
+      api           {status: available|blocked|unverified, note}。blocked 时永不自动选 api 通路。
+      editor_hint   粘贴前要做的动作；link_hint 回填时去哪复制公开链接。
+    """
+    s = {
+        "publish_url": "", "login_url": "",
+        "body_form": "html", "copy_as": "html",
+        "title_max": "tbd", "title_inline": False,
+        "tags": {"max": 5, "format": "plain", "prefix": "", "suffix": "", "sep": ","},
+        "cover": "optional", "backlink": True, "dist": None,
+        "api": {"status": "unverified", "note": ""},
+        "editor_hint": "", "link_hint": "",
+    }
+    s.update(over)
+    return s
+
+
+# 半自动渠道共用同一套操作步骤（渲染在配置弹窗里）。渠道特有的注意点写在 _semi 的
+# editor_hint / link_hint，不往这里堆 —— 这里只说流程，说一遍就够。
+_SEMI_STEPS = [
+    '点「备好并复制」：按本渠道的格式生成标题、正文、标签',
+    '点「复制正文」（富文本渠道会连格式一起复制）',
+    '点「打开发布页」，登录后粘贴；先读一眼弹窗里的「编辑器提示」',
+    '发布完成后回到这里「贴回链接」—— 这一步别跳，回链与分发清单都靠它',
+]
+
 PUBLISHERS = {
     "github": {
         "name": "GitHub 仓库", "market": "general", "env": ["GITHUB_TOKEN"],
@@ -52,6 +110,15 @@ PUBLISHERS = {
         "name": "公众号草稿箱", "market": "cn", "env": ["WECHAT_APPID", "WECHAT_APPSECRET"],
         "cfg": [("thumb_media_id", "永久素材封面 media_id（草稿必需）")],
         "note": "新建草稿，需在公众号后台预览并群发；服务器 IP 要在白名单",
+        # 公众号同时有两条路：配了凭证走 API 建草稿；没配（或想手排一次版）走半自动。
+        "semi": _semi(
+            publish_url="https://mp.weixin.qq.com/", login_url="https://mp.weixin.qq.com/",
+            title_max=64, cover="required", dist="wechat",
+            api={"status": "available",
+                 "note": "草稿箱 API 通（需把服务器出口 IP 加进白名单）；草稿仍需到后台群发"},
+            editor_hint="后台「新的创作 → 图文消息」，正文框可直接粘富文本；标题上限 64 字",
+            link_hint="群发后点右上「…」→ 复制链接",
+        ),
         "guide": {"url": 'https://mp.weixin.qq.com', "steps": ['公众号后台 → 设置与开发 → 基本配置：拿 AppID / AppSecret', '同页「IP 白名单」加上本机出口 IP（不加会报 40164）', '素材库上传一张封面图，拿永久素材 media_id 填 thumb_media_id（草稿必需）', '发布后到后台「草稿箱」预览、群发']},
     },
     "devto": {
@@ -78,7 +145,114 @@ PUBLISHERS = {
         "env": ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_USERNAME", "REDDIT_PASSWORD"],
         "cfg": [("subreddit", "发到哪个 subreddit（不带 r/）")],
         "note": "script 应用密码授权，markdown 全文作为 self-post；注意目标社区的自我推广规则",
+        # Reddit 也有两条路。API 那条风控严（新号）+ 要求披露；半自动让登录态留在
+        # 你自己的浏览器里，反而更稳。publish_url 的 {subreddit} 从 cfg 取值。
+        "semi": _semi(
+            publish_url="https://www.reddit.com/r/{subreddit}/submit",
+            publish_url_fallback="https://www.reddit.com/submit",
+            login_url="https://www.reddit.com/login/",
+            body_form="markdown", copy_as="markdown", title_max=300,
+            tags={"max": None, "format": "plain"}, cover=False, dist="reddit",
+            api={"status": "available", "note": "API 通（script 应用 + 密码授权），但风控严、要求披露身份"},
+            editor_hint="正文框吃 Markdown；先选好目标子版，发前读一遍那版的自我推广规则",
+            link_hint="发布后在帖子下方 share → copy link",
+        ),
         "guide": {"url": 'https://www.reddit.com/prefs/apps', "steps": ['reddit.com/prefs/apps → create app → 类型选「script」', 'REDDIT_CLIENT_ID 是应用名下方那串字符，SECRET 在旁边', '用户名密码就是登录凭证；账号开了两步验证会失败，建议用专用账号', 'subreddit 先用自己的主页社区（u_你的用户名）试发，再进目标社区——先读对方的自我推广规则']},
+    },
+
+    # ---------------- 半自动（无可用自动发布通路，工具只备好、不代发） ----------------
+    "toutiao": {
+        "name": "头条号", "market": "cn", "env": [], "cfg": [],
+        "note": "无个人可用的发布接口；备好标题与富文本正文，你到后台粘贴发布",
+        "guide": {"url": 'https://mp.toutiao.com/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="https://mp.toutiao.com/profile_v4/graphic/publish",
+            login_url="https://mp.toutiao.com/",
+            title_max=30, cover="required", dist="toutiao",
+            api={"status": "blocked", "note": "平台无个人可用的发布接口"},
+            editor_hint="标题 30 字上限（以编辑器实时计数为准，超了会被截）；正文粘贴富文本，图片要重新上传",
+            link_hint="「内容管理」里点开刚发的文章，复制地址栏",
+        ),
+    },
+    "sohu": {
+        "name": "搜狐号", "market": "cn", "env": [], "cfg": [],
+        "note": "无个人可用的发布接口；备好后人工粘贴",
+        "guide": {"url": 'https://mp.sohu.com/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="https://mp.sohu.com/", login_url="https://mp.sohu.com/",
+            cover="optional", dist="media",
+            api={"status": "blocked", "note": "平台无个人可用的发布接口"},
+            editor_hint="创作中心 → 发文章；正文贴富文本，外链图不显示，要重新上传",
+            link_hint="文章页复制地址栏",
+        ),
+    },
+    "zhihu": {
+        "name": "知乎", "market": "cn", "env": [], "cfg": [],
+        "note": "专栏无公开的自动发布接口；备好后人工粘贴（Markdown 直粘）",
+        "guide": {"url": 'https://zhuanlan.zhihu.com/write', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="https://zhuanlan.zhihu.com/write",
+            login_url="https://www.zhihu.com/signin",
+            body_form="markdown", copy_as="markdown",
+            tags={"max": 5, "format": "plain", "sep": ","}, dist="zhihu",
+            api={"status": "blocked", "note": "专栏无公开的自动发布接口"},
+            editor_hint="专栏编辑器先切到 Markdown 模式再粘；标签最多 5 个",
+            link_hint="发布后复制文章链接",
+        ),
+    },
+    "csdn": {
+        "name": "CSDN", "market": "cn", "env": [], "cfg": [],
+        "note": "无公开的自动发布接口；备好后人工粘贴（Markdown 直粘）",
+        "guide": {"url": 'https://editor.csdn.net/md/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="https://editor.csdn.net/md/", login_url="https://passport.csdn.net/login",
+            body_form="markdown", copy_as="markdown",
+            tags={"max": 5, "format": "plain", "sep": ","}, dist="tech",
+            api={"status": "blocked", "note": "无公开的自动发布接口"},
+            editor_hint="编辑器默认 Markdown；标签最多 5 个，逗号分隔",
+            link_hint="发布后复制博客链接",
+        ),
+    },
+    "baijia": {
+        "name": "百家号", "market": "cn", "env": [], "cfg": [],
+        "note": "无个人可用的发布接口；备好后人工粘贴",
+        "guide": {"url": 'https://baijiahao.baidu.com/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="", login_url="https://baijiahao.baidu.com/",
+            cover="required", dist="baijia",
+            api={"status": "blocked", "note": "无个人可用的发布接口"},
+            editor_hint="后台「发布 → 图文」；正文粘贴富文本，封面必填",
+            link_hint="「内容管理」里点开文章复制链接",
+        ),
+    },
+    "weibo": {
+        "name": "微博", "market": "cn", "env": [], "cfg": [],
+        "note": "平台规则禁止应用代发；备好正文（标题并入首行）后人工发布",
+        "guide": {"url": 'https://weibo.com/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="https://weibo.com/", login_url="https://weibo.com/login.php",
+            body_form="text", copy_as="text",
+            title_max=None, title_inline=True,
+            tags={"max": "tbd", "format": "inline", "prefix": "#", "suffix": "#", "sep": " "},
+            cover=False, dist=None,
+            api={"status": "blocked",
+                 "note": "平台规则禁止自动推送：发布接口需用户 OAuth2.0 授权；明文规定不得把"
+                         "使用信息自动分享到用户微博；「多微博平台同步类」应用禁止或难以过审"},
+            editor_hint="微博没有独立标题栏 —— 标题已并入正文首行；话题写成 #话题# 形式",
+            link_hint="发布后点微博时间戳进详情页，复制地址栏",
+        ),
+    },
+    "smzdm": {
+        "name": "什么值得买", "market": "cn", "env": [], "cfg": [],
+        "note": "发布接口未核实；先备好内容人工投递",
+        "guide": {"url": 'https://www.smzdm.com/', "steps": _SEMI_STEPS},
+        "semi": _semi(
+            publish_url="", login_url="https://www.smzdm.com/",
+            body_form="tbd", copy_as="text",
+            api={"status": "unverified", "note": "是否存在可用的发布接口未核实"},
+            editor_hint="发布入口与格式待核实：先打开站点确认投稿/发文位置，再决定正文形态",
+            link_hint="发布后复制公开链接",
+        ),
     },
 }
 
@@ -138,6 +312,56 @@ def md2html(md: str) -> str:
     if in_code:
         out.append("</code></pre>")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------- markdown → 纯文本
+
+
+def md2text(md: str) -> str:
+    """把 markdown 压成纯文本：给没有富文本/Markdown 支持的发布框用。
+
+    **有损且不可逆**：表格、图片、嵌套结构都会退化。所以调用方必须把结果先给人看
+    再进剪贴板 —— 猜错的表现是「贴进去格式全乱」，那时人已经花时间了。
+    """
+    text = G.strip_comments(md or "")
+    out: list[str] = []
+    in_code = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            out.append(("    " + line.strip()) if line.strip() else "")
+            continue
+        s = line.strip()
+        if not s:
+            out.append("")
+            continue
+        s = re.sub(r"^#{1,6}\s*", "", s)                       # 标题去井号
+        s = re.sub(r"^>\s*", "", s)                            # 引用
+        s = re.sub(r"^[-*+]\s+", "· ", s)                      # 无序列表
+        s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)                 # 粗体
+        s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", s)       # 斜体
+        s = re.sub(r"`([^`]+)`", r"\1", s)                      # 行内代码
+        s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\1 \2", s)    # 图片
+        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", s)   # 链接
+        if s.startswith("|") and s.endswith("|"):               # 表格
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells if c):
+                continue                                        # 分隔行丢掉
+            s = "  ".join(cells)
+        out.append(s)
+    res, blank = [], False
+    for l in out:
+        if not l.strip():
+            if blank:
+                continue
+            blank = True
+        else:
+            blank = False
+        res.append(l)
+    return "\n".join(res).strip()
 
 
 # ---------------------------------------------------------------- 各渠道实现
@@ -362,6 +586,16 @@ DEFAULT_STATE = {
     "reddit": "published",
     "x": "published",
     "webhook": "published",
+    # 半自动渠道：从不外发，state 由 prepare(prepared) / record_manual(published) 显式写。
+    # 登记成 draft 是硬要求 —— 漏登记会让前端把「备好了」显示成已发布（tests/test_publish_state.py
+    # 遍历 PUBLISHERS 断言覆盖，漏一个就红；另有断言要求带 semi 规格的必须是 draft）。
+    "toutiao": "draft",
+    "sohu": "draft",
+    "zhihu": "draft",
+    "csdn": "draft",
+    "baijia": "draft",
+    "weibo": "draft",
+    "smzdm": "draft",
 }
 
 _IMPL = {"github": _pub_github, "wordpress": _pub_wordpress,
@@ -404,12 +638,252 @@ def records(slug: str) -> list[dict]:
     return G.read_json(G.project_dir(slug) / "publish.json", []) or []
 
 
+# ---------------------------------------------------------------- 半自动：备好，不代发
+#
+# 这条链只做三件事：按渠道格式把内容备好 → 人复制粘贴发布 → 回填公开链接。
+# **它不发任何外发请求、不模拟登录、不代持 Cookie** —— 平台规则不允许（见文件头的
+# 准入纪律注释）。所以它不写「已发布」，只写「已备好待粘贴」，回填后才转已发布。
+
+SEMI_STATE = "prepared"   # 备好待人工粘贴。既不是 draft（渠道里建了草稿）也不是 published
+
+
+def record_id() -> str:
+    """给每条备好记录一个短 id，供「备好 → 回填」配对。"""
+    return os.urandom(4).hex()
+
+
+def paths_of(code: str) -> list[str]:
+    """该渠道现在有哪几条路，按优先级。api 看 _IMPL 有没有实现，semi 看规格在不在。"""
+    out = []
+    if code in _IMPL:
+        out.append("api")
+    if (PUBLISHERS.get(code) or {}).get("semi"):
+        out.append("semi")
+    return out
+
+
+def resolve_path(code: str, slug: str | None = None, force: str | None = None) -> str:
+    """这个渠道这次走哪条路。
+
+    优先级用「能不能自动发」来定，不用「哪条高级」：API 通路要求 _IMPL 有实现、
+    规格里没标 blocked、凭证齐。凭证或必备 cfg 缺任一，**有半自动就降级半自动**；
+    没有半自动的渠道照旧走 api —— 让它去撞真实错误（「缺 repo」这类信息比一句
+    「没有可用发布通路」有用得多，那是今天之前的行为，不该被我这次改动吃掉）。
+    两条都不通返回 ""。
+    """
+    paths = paths_of(code)
+    if force in paths:
+        return force
+    spec = (PUBLISHERS.get(code) or {}).get("semi") or {}
+    if "api" in paths and (spec.get("api") or {}).get("status") != "blocked" \
+            and not missing_env(code):
+        cfg_keys = [k for k, _ in (PUBLISHERS[code].get("cfg") or [])]
+        cfg = _cfg(slug, code) if slug else {}
+        if all(str(cfg.get(k) or "").strip() for k in cfg_keys) or "semi" not in paths:
+            return "api"
+    return "semi" if "semi" in paths else ""
+
+
+def semi_spec(code: str, slug: str | None = None) -> dict | None:
+    """注册表里的规格 → 前端要的字典：填掉 cfg 占位、算出 publish_url、带上 api 状态。"""
+    p = PUBLISHERS.get(code) or {}
+    spec = p.get("semi")
+    if not spec:
+        return None
+    cfg = _cfg(slug, code) if slug else {}
+    url, missing = str(spec.get("publish_url") or ""), []
+    for name in re.findall(r"\{(\w+)\}", url):
+        val = str(cfg.get(name) or "").strip()
+        if not val:
+            missing.append(name)
+        url = url.replace("{" + name + "}", val)
+    if missing:
+        # 占位没填就别给一个会把 {subreddit} 原样打开的地址；有兜底页就用兜底页
+        url = str(spec.get("publish_url_fallback") or "")
+    return {**spec, "code": code, "name": p.get("name", code),
+            "publish_url": url, "missing_placeholders": missing,
+            "paths": paths_of(code), "path": resolve_path(code, slug),
+            "steps": (p.get("guide") or {}).get("steps") or _SEMI_STEPS}
+
+
+def _tags_text(tags: dict, proj: dict, cfg: dict) -> str:
+    """按渠道格式生成标签串。标签内容取渠道 cfg 覆盖，没有就用项目 keywords 前 N 个。"""
+    n = tags.get("max")
+    if n is None:
+        return ""
+    items = [str(s).strip() for s in (cfg.get("tags") or proj.get("keywords") or []) if str(s).strip()]
+    if isinstance(n, int):
+        items = items[:n]
+    if not items:
+        return ""
+    fmt = tags.get("format") or "plain"
+    if fmt == "inline":
+        pre, suf = tags.get("prefix") or "#", tags.get("suffix") or ""
+        return (tags.get("sep") or " ").join(f"{pre}{t}{suf}" for t in items)
+    return (tags.get("sep") or ",").join(items)
+
+
+def _prepare_payload(code: str, spec: dict, text: str, title: str, rel: str,
+                     cfg: dict, recs: list, proj: dict) -> dict:
+    """按规格把一篇成稿组装成可以直接粘贴的形态。不外发，纯组装。"""
+    form = spec.get("body_form")
+    if form == "markdown":
+        body = text
+    elif form == "html":
+        body = md2html(text)
+    else:                       # text / tbd：纯文本最不容易坏
+        body = md2text(text)
+
+    warn: list[str] = []
+    head = (title or "").strip()
+    if spec.get("title_inline"):
+        # 微博这类没有独立标题栏：标题并入正文首行，别让它丢
+        body = (head + "\n\n" + body).strip() if head else body
+    tmax = spec.get("title_max")
+    if isinstance(tmax, int):
+        if len(head) > tmax:
+            warn.append(f"标题 {len(head)} 字，超过该渠道上限 {tmax}，已截断")
+            head = head[:tmax]
+    elif tmax == "tbd" and head:
+        warn.append("该渠道的标题上限未核实 —— 发布前在编辑器里看一眼字数")
+    if not head and not spec.get("title_inline"):
+        warn.append("标题为空 —— 该渠道需要独立标题")
+
+    tags = spec.get("tags") or {}
+    tags_text = _tags_text(tags, proj, cfg)
+    if tags.get("max") == "tbd" and tags_text:
+        warn.append("标签上限未核实 —— 先少带几个，被拒再加")
+
+    backlink = ""
+    if spec.get("backlink"):
+        backlink = (cfg.get("link_url") or "").strip() or _latest_public_url(recs, rel)
+        if backlink:
+            if form == "html":
+                body = body.rstrip() + f'\n<p>原文：<a href="{backlink}">{backlink}</a></p>'
+            else:
+                body = body.rstrip() + f"\n\n原文：{backlink}"
+    return {"title": head, "body": body, "body_form": form or "text",
+            "copy_as": spec.get("copy_as") or form or "text",
+            "tags_text": tags_text, "backlink": backlink,
+            "cover": spec.get("cover"), "warnings": warn,
+            "editor_hint": spec.get("editor_hint") or "",
+            "link_hint": spec.get("link_hint") or "",
+            "api_status": (spec.get("api") or {}).get("status") or "unverified",
+            "api_note": (spec.get("api") or {}).get("note") or "",
+            "publish_url": spec.get("publish_url") or "",
+            "login_url": spec.get("login_url") or "",
+            "missing_placeholders": spec.get("missing_placeholders") or [],
+            "steps": spec.get("steps") or _SEMI_STEPS, "dist": spec.get("dist")}
+
+
+def _open_record(rows: list, code: str, rel: str) -> dict | None:
+    """同渠道 + 同文件、还没回填的那条记录。反复点「备好」不该刷出一串待办。"""
+    for r in reversed(rows or []):
+        if r.get("platform") == code and r.get("path") == rel and r.get("state") == SEMI_STATE:
+            return r
+    return None
+
+
+def prepare(slug: str, code: str, rel: str, title: str = "", force: str | None = None) -> dict:
+    """备好一篇待人工发布的内容。**不外发**，写一条 state=prepared 的待办。"""
+    if code not in PUBLISHERS:
+        return {"ok": False, "error": f"未知渠道 {code}"}
+    if resolve_path(code, slug, force) != "semi":
+        return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」当前走自动发布通路，"
+                                     f"用发布按钮或 geo.py publish 即可"}
+    try:
+        text, fname = _read_source(slug, rel)
+    except (ValueError, FileNotFoundError, OSError) as e:
+        return {"ok": False, "error": f"文件不可用：{rel}（{type(e).__name__}）"}
+    proj = G.load_config(slug)
+    spec = semi_spec(code, slug) or {}
+    title = title or _title_of(text, fname)
+    payload = _prepare_payload(code, spec, text, title, rel, _cfg(slug, code),
+                              records(slug), proj)
+    with G.project_lock(slug):
+        rows = records(slug)
+        prev = _open_record(rows, code, rel)
+        if prev:                       # 幂等：同一条待办更新，不追加
+            rid = prev.get("id") or record_id()
+            prev.update({"id": rid, "at": G.now_iso(), "title": payload["title"],
+                         "mode": "semi", "ok": True, "state": SEMI_STATE,
+                         "note": "已备好（重新生成），待人工粘贴"})
+            entry = prev
+        else:
+            rid = record_id()
+            entry = {"at": G.now_iso(), "id": rid, "mode": "semi", "platform": code,
+                     "platform_name": PUBLISHERS[code]["name"], "path": rel,
+                     "title": payload["title"], "ok": True, "state": SEMI_STATE,
+                     "url": "", "error": "",
+                     "note": "已备好，待人工粘贴到 " + PUBLISHERS[code]["name"]}
+            rows.append(entry)
+        G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
+    return {"ok": True, "mode": "semi", "id": rid, "code": code,
+            "name": PUBLISHERS[code]["name"], "record": entry, **payload}
+
+
+def record_manual(slug: str, code: str, rel: str, rid: str, url: str = "",
+                  note: str = "", cancel: bool = False) -> dict:
+    """人工发布完成后的回填（或作废）。
+
+    回填的 URL 是 X 自动回链与分发清单的唯一来源 —— 跳过这一步，那条内容在系统里
+    就永远停在「已备好」。
+    """
+    with G.project_lock(slug):
+        rows = records(slug)
+        ent = next((r for r in rows
+                    if r.get("id") == rid and r.get("platform") == code
+                    and (not rel or r.get("path") == rel)), None)
+        if not ent:
+            return {"ok": False, "error": f"找不到待回填的记录 {rid}（可能已回填或已作废）"}
+        if cancel:
+            rows = [r for r in rows if r is not ent]
+            G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
+            return {"ok": True, "cancelled": True, "id": rid}
+        url = (url or "").strip()
+        if not url:
+            return {"ok": False, "error": "回填需要一条公开链接"}
+        ent.update({"state": "published", "url": url, "at": G.now_iso(),
+                    "note": note or "人工发布并回填", "error": ""})
+        ticked: list[str] = []
+        spec = (PUBLISHERS.get(code) or {}).get("semi") or {}
+        if spec.get("dist"):
+            # 顺带把蓝图里的分发清单勾上：原来那是另一条人工链（没 URL、不写 publish.json），
+            # 两条并成一条，回链与分发记录就不会各说各话。
+            try:
+                text, _ = _read_source(slug, ent.get("path") or "")
+            except (ValueError, FileNotFoundError, OSError):
+                text = ""
+            qids = sorted(set(re.findall(r"\bq\d{3}\b", (text or "")[:800])))
+            if qids:
+                dpath = G.project_dir(slug) / "distribution.json"
+                dist = G.read_json(dpath, {}) or {}
+                for q in qids:
+                    dist.setdefault(q, {})[spec["dist"]] = G.now_iso()
+                    ticked.append(q)
+                G.write_json(dpath, dist)
+        G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
+    return {"ok": True, "id": rid, "url": url, "state": "published", "dist_ticked": ticked}
+
+
 def publish(slug: str, code: str, rel: str, title: str = "", publish_now: bool = False) -> dict:
     if code not in PUBLISHERS:
         return {"ok": False, "error": f"未知渠道 {code}"}
     miss = missing_env(code)
     if miss:
-        return {"ok": False, "error": "缺凭证：" + "、".join(miss)}
+        # 有半自动规格的渠道：缺凭证不是死路，补一句指路
+        extra = ("；也可以走「备好并复制」的半自动通路（同一命令会打印备好的内容）"
+                 if PUBLISHERS[code].get("semi") else "")
+        return {"ok": False, "error": "缺凭证：" + "、".join(miss) + extra}
+    # 通路判定放在读文件之前：半自动渠道压根没有可外发的实现，读一遍文件再报错是白读。
+    _mode = resolve_path(code, slug)
+    if _mode == "semi":
+        return {"ok": False, "mode": "semi",
+                "error": f"「{PUBLISHERS[code]['name']}」没有可用的自动发布通路"
+                         f"（平台规则不允许代发，或没有公开接口）——"
+                         f"请用「备好并复制」：同一命令会打印可直接粘贴的标题/正文/标签"}
+    if _mode == "":
+        return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」没有可用的发布通路"}
     try:
         text, fname = _read_source(slug, rel)
     except (ValueError, FileNotFoundError, OSError) as e:

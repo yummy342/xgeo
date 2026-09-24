@@ -50,10 +50,25 @@ class TestFromMetricsNone(unittest.TestCase):
         self.assertFalse(any("检索结果" in t["title"] for t in out))
 
     def test_low_measured_avg_still_creates_task(self):
-        m = _metrics({"deepseek": _plat(mention=0.0, cite=0.0), "kimi": _plat(mention=None, cite=None)})
+        """有联网通道且引用率 0 → 该开工单。doubao 在注册表里 search=True。"""
+        m = _metrics({"doubao": _plat(mention=0.0, cite=0.0),
+                      "kimi": _plat(mention=None, cite=None)})
         out = T.from_metrics(m, CFG, _seq())
         self.assertTrue(any("提及率" in t["title"] for t in out))
         self.assertTrue(any("检索结果" in t["title"] for t in out))
+
+    def test_no_searching_channel_does_not_create_citation_task(self):
+        """不联网的通道不产生引用，引用率对它恒为 0 —— 据此开工单就是开死题。
+
+        2026-09-24 实测：api2d 三个通道抽出来的「引用域名」全是示例代码里的占位符
+        （localhost:8000、your-api-base.example.com 这类），同期 sonar 是 289 个真实域名。
+        """
+        m = _metrics({"deepseek": _plat(mention=0.0, cite=0.0),
+                      "kimi": _plat(mention=None, cite=None)})
+        out = T.from_metrics(m, CFG, _seq())
+        self.assertTrue(any("提及率" in t["title"] for t in out),
+                        "提及率不受影响：不联网也能说明「模型认不认识这个品牌」")
+        self.assertFalse(any("检索结果" in t["title"] for t in out))
 
 
 class TestMarketAvg(unittest.TestCase):

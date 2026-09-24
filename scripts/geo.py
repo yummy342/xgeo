@@ -377,14 +377,69 @@ def cmd_deliver(a):
     deliver.run(a.slug)
 
 
+def _print_prepared(r: dict, slug: str) -> None:
+    """把备好的内容打到终端。
+
+    **不写文件也不进剪贴板**：CLI 常跑在服务器上（隔着 ssh），写文件没用、进剪贴板
+    更不可能。这里只负责「看得到、选得中」，复制由前端的按钮做。
+    """
+    G.info(f"已备好（本条不会自动发出）：{r['name']} · 记录 id {r['id']}")
+    if r.get("title"):
+        G.info(f"  标题（{len(r['title'])} 字）: {r['title']}")
+    else:
+        G.info("  标题：无（该渠道的标题并入正文首行）")
+    if r.get("tags_text"):
+        G.info(f"  标签: {r['tags_text']}")
+    if r.get("publish_url"):
+        G.info(f"  发布页: {r['publish_url']}")
+    elif r.get("missing_placeholders"):
+        G.info(f"  发布页：待配置（缺 {'、'.join(r['missing_placeholders'])}，先用渠道配置补上）")
+    else:
+        G.info("  发布页：待核实 —— 先手动打开站点确认发文入口")
+    if r.get("editor_hint"):
+        G.info(f"  编辑器提示: {r['editor_hint']}")
+    for w in r.get("warnings") or []:
+        G.info(f"  警告: {w}")
+    print()
+    print(r.get("body") or "")
+    print()
+    G.info(f"粘贴发布完成后回填：geo.py publish-mark --slug {slug} "
+           f"--platform {r['code']} --id {r['id']} --url <公开链接>")
+    if r.get("link_hint"):
+        G.info(f"  链接从哪来: {r['link_hint']}")
+
+
 def cmd_publish(a):
     import publish
 
+    # 半自动渠道不进发布流程，只备好并打印。**这不是失败**，所以不能用 G.die。
+    if publish.resolve_path(a.platform, a.slug, force=getattr(a, "via", None)) == "semi":
+        r = publish.prepare(a.slug, a.platform, a.path, a.title or "")
+        if not r.get("ok"):
+            G.die(f"备好失败：{r.get('error')}")
+        _print_prepared(r, a.slug)
+        return
     r = publish.publish(a.slug, a.platform, a.path, a.title or "", publish_now=a.published)
     if r.get("ok"):
         G.info(f"已发布：{r.get('url') or r.get('note') or 'ok'}")
     else:
         G.die(f"发布失败：{r.get('error')}")
+
+
+def cmd_publish_mark(a):
+    """半自动渠道：人工发布完成后回填公开链接（或作废那条待办）。"""
+    import publish
+
+    r = publish.record_manual(a.slug, a.platform, a.path or "", a.id,
+                              url=a.url or "", note=a.note or "", cancel=a.cancel)
+    if not r.get("ok"):
+        G.die(f"回填失败：{r.get('error')}")
+    if r.get("cancelled"):
+        G.info(f"已作废待办 {a.id}")
+        return
+    G.info(f"已记入发布记录：{r['url']}")
+    if r.get("dist_ticked"):
+        G.info(f"  顺带勾上分发清单：{'、'.join(r['dist_ticked'])}")
 
 
 def cmd_task(a):
@@ -677,7 +732,19 @@ def main():
     s.add_argument("--title")
     s.add_argument("--published", action="store_true",
                    help="直接对外发布；不加则只建草稿（目前作用于 dev.to）")
+    s.add_argument("--via", choices=["api", "semi"],
+                   help="强制走哪条通路；不给则按平台规则自动选。选 semi 时只备好并打印，不外发")
     s.set_defaults(func=cmd_publish)
+
+    s = sub.add_parser("publish-mark", help="半自动渠道：人工发布完成后回填公开链接")
+    s.add_argument("--slug", required=True)
+    s.add_argument("--platform", required=True, choices=sorted(_pub.PUBLISHERS))
+    s.add_argument("--id", required=True, help="备好时打印的 8 位记录 id")
+    s.add_argument("--url", help="发布后的公开链接（回链与分发清单都靠它）")
+    s.add_argument("--path", help="成稿相对路径（可选，用于消歧）")
+    s.add_argument("--note")
+    s.add_argument("--cancel", action="store_true", help="作废这条待办（备了但没发）")
+    s.set_defaults(func=cmd_publish_mark)
 
     s = sub.add_parser("task", help="查看或更新单条工单状态")
     s.add_argument("--slug", required=True)

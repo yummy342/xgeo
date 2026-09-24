@@ -26,9 +26,18 @@ SPA_TEXT = "加载中"  # 空壳：远低于 120 词
 
 
 class TestIssueCodes(unittest.TestCase):
-    def test_spa_shell_has_code(self):
-        r = A.score_page(make_page(text=SPA_TEXT), [])
-        self.assertIn("SPA_SHELL", r["issue_codes"])
+    def test_spa_shell_is_reported_by_the_non_content_gate(self):
+        """SPA 空壳的判定在 G.non_content_reason，不在 score_page。
+
+        口径 A（2026-09-23 定）：空壳页不占抓取槽位、也不参与评分，所以评分器不再
+        给它打 SPA_SHELL。这条断言跟着判定搬家，顺便让 non_content_reason 第一次有
+        测试 —— 口径 A 改动时只删了旧位置的期望，新位置一直没测。
+        """
+        page = make_page(text=SPA_TEXT)
+        self.assertEqual(G.non_content_reason(page), G.REASON_SPA_SHELL)
+        r = A.score_page(page, [])
+        self.assertNotIn("SPA_SHELL", r["issue_codes"],
+                         "评分器不再报 SPA_SHELL：这种页根本不该走到评分")
         self.assertEqual(len(r["issue_codes"]), len(r["issues"]))
 
     def test_functional_page_exempt(self):
@@ -36,6 +45,10 @@ class TestIssueCodes(unittest.TestCase):
         self.assertNotIn("SPA_SHELL", r["issue_codes"])
         self.assertIn("LOW_CONTENT_PAGE", r["issue_codes"])
         self.assertFalse(any(i.startswith("P0 静态 HTML") for i in r["issues"]))
+        # 同一条豁免在新位置也要成立：功能页不算非内容页，否则登录页会把
+        # SPA 空壳工单永远卡在未达标
+        self.assertEqual(G.non_content_reason(
+            make_page(url="https://example.com/login", text=SPA_TEXT)), "")
 
     def test_functional_page_case_insensitive(self):
         r = A.score_page(make_page(url="https://example.com/Auth/SignIn", text=SPA_TEXT), [])
@@ -43,8 +56,8 @@ class TestIssueCodes(unittest.TestCase):
         self.assertNotIn("SPA_SHELL", r["issue_codes"])
 
     def test_normal_low_page_still_spa(self):
-        r = A.score_page(make_page(url="https://example.com/products", text=SPA_TEXT), [])
-        self.assertIn("SPA_SHELL", r["issue_codes"])
+        page = make_page(url="https://example.com/products", text=SPA_TEXT)
+        self.assertEqual(G.non_content_reason(page), G.REASON_SPA_SHELL)
 
 
 class TestHowto(unittest.TestCase):
