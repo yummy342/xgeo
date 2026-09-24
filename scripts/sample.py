@@ -340,7 +340,11 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
                 refs = [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
                 return {"ok": True, "answer": answer, "citations": refs,
                         "raw_model": _p_model(p), "usage": _usage_of(d), "searched": True}
-        elif "ToolNotOpen" not in r.text:
+        elif "ToolNotOpen" not in r.text and "ModelNotOpen" not in r.text:
+            # ModelNotOpen 也放行到降级分支：responses 端点和 chat/completions 的
+            # 开通状态不一定一致（实测 doubao-seed-2-1-turbo 只在 chat 侧通），
+            # 在这里返回失败等于把一条能采的链路直接掐掉。能不能用交给降级那次去判。
+            # ★ 这一条对「刚开通内容插件」那段时间尤其要紧，别删。
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except Exception:  # noqa: BLE001
         pass  # 降级重试
@@ -464,6 +468,11 @@ def _refs_from(data: dict) -> list[dict]:
 
 def ask(platform: str, question: str, timeout: int = 120) -> dict:
     p = PROVIDERS[platform]
+    # 注册表可按平台放宽：豆包带思考链，实测单条 73~198s，卡在 120s 默认值上
+    # 会先超时、再重试两轮，一题吃掉十分钟。慢是它的常态，不是异常。
+    # ★ 这一行 2026-09-24 合并两条线时被漏过一次：产物级对比只覆盖分析层，
+    #   采样层的差异它看不见。别删，也别只靠调用方传超时。
+    timeout = p.get("timeout") or timeout
     key = os.environ.get(p["key_env"])
     if not key:
         return {"ok": False, "answer": "", "error": f"缺少环境变量 {p['key_env']}"}
@@ -474,8 +483,12 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
     body = {
         "model": _p_model(p),
         "messages": [{"role": "user", "content": question}],
-        "temperature": 0.7,
     }
+    # kimi-k3 这类模型直接拒收 temperature（400 invalid_parameter_error）。
+    # 注册表标了 skip_temperature 就不带这个参数，而不是去猜一个「它能接受的值」——
+    # 采样测的是品牌认知，温度不参与口径，少一个参数不影响可比性。
+    if not p.get("skip_temperature"):
+        body["temperature"] = 0.7
     body.update(p.get("extra", {}))
     delays = (1, 3)  # 超时/429/5xx 指数退避重试 2 次；其他错误（4xx 等）不重试
     for attempt in range(len(delays) + 1):
