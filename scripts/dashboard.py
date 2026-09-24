@@ -648,6 +648,11 @@ class Handler(BaseHTTPRequestHandler):
                                  "market": spec.get("market", "general"),
                                  "guide": spec.get("guide") or {},
                                  "env": spec["env"], "missing": P.missing_env(code),
+                                 # 通路：api / semi。前端按它分组 —— 半自动渠道的交互是
+                                 # 「备好 + 复制 + 打开发布页」，与「勾选后统一提交」不兼容，
+                                 # 所以不能跟自动渠道挤在同一个列表里。
+                                 "paths": P.paths_of(code), "path": P.resolve_path(code, slug),
+                                 "semi": P.semi_spec(code, slug),
                                  "cfg": [{"key": k, "hint": h, "value": cfg.get(k, "")}
                                          for k, h in spec["cfg"]]})
                 return self._json({"publishers": pubs, "records": P.records(slug)})
@@ -913,6 +918,25 @@ class Handler(BaseHTTPRequestHandler):
                                  if k in keys}
                     G.save_config(slug, cfg)
                 return self._json({"ok": True})
+
+            # 半自动：备好（**不外发**）与回填。必须排在下面那条 /api/publish/<slug> 之前，
+            # 否则 slug 会取成 "alpha/prepare"（那条不管后缀，整个尾串都当 slug）。
+            # path_slug 取第一段，所以项目隔离照旧由入口那层 _deny 兜住，不用另写。
+            if p.startswith("/api/publish/") and p.endswith("/prepare"):
+                import publish as P
+                slug = p[len("/api/publish/"):-len("/prepare")]
+                r = P.prepare(slug, body.get("platform", ""), body.get("path", ""),
+                              body.get("title", ""), force=body.get("force"))
+                return self._json(r, 200 if r.get("ok") else 400)
+
+            if p.startswith("/api/publish/") and p.endswith("/manual"):
+                # 回填 = 人工发布完成后登记公开链接（或作废待办）。写入不算外发动作。
+                import publish as P
+                slug = p[len("/api/publish/"):-len("/manual")]
+                r = P.record_manual(slug, body.get("platform", ""), body.get("path", ""),
+                                    body.get("id", ""), url=body.get("url", ""),
+                                    note=body.get("note", ""), cancel=bool(body.get("cancel")))
+                return self._json(r, 200 if r.get("ok") else 400)
 
             if p.startswith("/api/publish/"):
                 # 发布 = 外发动作：只响应界面上用户的明确点击，服务端绝不自行调用
