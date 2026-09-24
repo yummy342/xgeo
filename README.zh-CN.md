@@ -150,6 +150,38 @@ python3 scripts/geo.py ui
 
 公网部署建议再套一层 HTTPS 反向代理（nginx/caddy），令牌走明文 HTTP 会被中间人看到。`.env` 与 `work/` 含密钥和项目数据，注意文件权限。
 
+#### 用 FreeModel 账号登录（可选档）
+
+除了访问令牌，还可以让看板认 **FreeModel 账号**：每个人用自己的 FreeModel API Key
+（`sk-fm-…`）登录，而不是共用一串令牌。Key 只在登录那一刻拿去 `GET {XGEO_AUTH_BASE}/me`
+换一次邮箱、对一次允许名单，不落盘也不留存。
+
+```bash
+export XGEO_ACCOUNTS='you@example.com:*;teammate@example.com:my-project'   # * = 管理员
+# 可选：
+export XGEO_AUTH_BASE=https://freemodel.online/api/auth   # 默认
+export XGEO_SESSION_TTL=604800                            # 秒；默认 7 天
+```
+
+开启前要知道的几点：
+
+- **没有 `:` 的条目整条丢弃**。允许名单是安全边界，写错一个标点的结果是「进不来」
+  而不是「变成管理员」。`*` 是管理员，`proj-a,proj-b` 把某人限制在列出的项目里。
+- **会话在进程内**。重启看板所有人都会掉线；盘上没有可偷的东西，登出也立刻生效。
+- **前面有反代就要设 `XGEO_PUBLIC_HOST`**，写用户实际输入的那个域名
+  （`XGEO_PUBLIC_HOST=geo.example.com`，多个用逗号分隔）。不设的话 Host 校验会回
+  403 —— 连登录页都打不开。这道校验挡的是 DNS rebinding（否则攻击者的页面能把你
+  登进**他**的账号），所以它是故意的，不是 bug。
+- **反代不在同一台机器上**时，还要设 `XGEO_TRUST_PROXY=1`，按 IP 的登录限流与
+  `Secure` cookie 才会正常工作。只有反代会覆写 `X-Real-IP` 时才该开（nginx 会，
+  裸客户端不会）。
+- 允许名单只能改环境变量 + 重启。
+- **采样助手要的是令牌，不是账号** —— 它没有浏览器会话。同一台机器上要用助手，
+  就得同时保留 `XGEO_TOKEN`。
+
+`X-Xgeo-Token` 与 `?token=` 两条老路逐字不变，账号档是新增的一档。
+
+
 ### 升级
 
 ```bash
@@ -247,7 +279,7 @@ python3 scripts/geo.py sample-import --slug <项目> --file <采样表>
 
 ## 设计原则与安全边界
 
-- **单机自托管**：标准库 `http.server` 只绑 127.0.0.1；无数据库无账号，数据即文件
+- **单机自托管**：标准库 `http.server` 只绑 127.0.0.1；无数据库，数据即文件。访问由令牌把关，另有一档可选的 FreeModel 账号登录（不设 `XGEO_ACCOUNTS` 就不生效）
 - **宁缺毋滥**：品牌事实只从官网正文抽取，抽不到标「待确认」；竞品严禁发明名字；AI 初稿必须过 lint 并人工核实
 - **验收即产品**：能自动判定的绝不靠人回填
 - **发布永远手动**：渠道凭证在本地 `.env`（权限 600），每次发布人工点击确认；公众号/WordPress 只进草稿箱

@@ -142,8 +142,17 @@ NGINX
 
 还有三步脚本不替你做（都需要环境就绪，且涉及凭据）：
 
-  1) 注入令牌（脚本不碰这个）：
+  1) 注入凭据（脚本不碰这个）：
      .env 里写 XGEO_TOKEN=<管理员令牌> 和可选的 XGEO_PROJECT_TOKENS=<客户令牌>:<项目>
+
+     或者改用账号登录（每人用自己的 FreeModel API Key，不共用令牌）：
+       XGEO_ACCOUNTS='邮箱:*;同事邮箱:项目标识'     # * = 管理员，裸邮箱整条丢弃
+       XGEO_PUBLIC_HOST=$DOMAIN                    # ★ 这一档必设：本脚本的 nginx 传的是
+                                                   #   Host: $DOMAIN，不设它 Host 校验会
+                                                   #   把登录页本身 403 掉
+       XGEO_AUTH_BASE=https://freemodel.online/api/auth   # 默认值，可省
+     两种档可以并存。
+
      写完 sudo systemctl restart xgeo
 
   2) 安全组放行 80 / 443（云控制台，脚本够不着）

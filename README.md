@@ -77,7 +77,7 @@ Most GEO products are **monitoring SaaS**: they show mention rates and rankings,
 | **Cost** | Subscription | Free and open source; you only pay your own engine API sampling costs (can be zero — manual sampling works) |
 | **Deliverables** | Dashboard screenshots | Client-ready diagnosis report / strategy / execution plan / ticket CSV — built for agencies and consultants |
 
-Honest limits: single-machine tool, no accounts or team collaboration; sampling frequency and volume depend on your own API budget; "suspected negative" flags are leads for human review, not verdicts. These are deliberate design choices.
+Honest limits: single-machine tool, no team collaboration (per-project scoping exists, shared editing does not); sampling frequency and volume depend on your own API budget; "suspected negative" flags are leads for human review, not verdicts. These are deliberate design choices.
 
 ## 4. Deployment
 
@@ -124,6 +124,41 @@ python3 scripts/geo.py ui
 ```
 
 For public deployments put an HTTPS reverse proxy (nginx/caddy) in front — a token over plain HTTP can be intercepted. `.env` and `work/` contain secrets and project data — mind file permissions.
+
+#### Signing in with a FreeModel account (optional tier)
+
+Alongside the access token, the dashboard can gate on **FreeModel accounts**: people
+sign in with their own FreeModel API key (`sk-fm-…`) instead of being handed a shared
+token. The key is exchanged once for an email at `GET {XGEO_AUTH_BASE}/me` and checked
+against an allowlist. Nothing is written to disk and the key itself is never stored.
+
+```bash
+export XGEO_ACCOUNTS='you@example.com:*;teammate@example.com:my-project'   # * = admin
+# Optional:
+export XGEO_AUTH_BASE=https://freemodel.online/api/auth   # default
+export XGEO_SESSION_TTL=604800                            # seconds; default 7 days
+```
+
+What to know before turning it on:
+
+- **An entry without `:` is dropped.** The allowlist is a security boundary, so a typo
+  means "no access" rather than "admin". `*` is admin, `proj-a,proj-b` limits someone
+  to those projects.
+- **Sessions live in the process.** Restarting logs everyone out; nothing is on disk to
+  steal and signing out takes effect immediately.
+- **Behind a reverse proxy, set `XGEO_PUBLIC_HOST`** to the hostname people type
+  (`XGEO_PUBLIC_HOST=geo.example.com`, comma-separated for several). Without it the Host
+  check answers 403 — even for the login page. That check is what stops DNS rebinding
+  from signing you into an attacker's account, so it is deliberate rather than a bug.
+- **Proxy not on the same machine?** Set `XGEO_TRUST_PROXY=1` so per-IP login rate
+  limiting and `Secure` cookies work. Only do this when the proxy overwrites
+  `X-Real-IP` (nginx does); with a bare client it would let callers pick their own bucket.
+- The allowlist only changes by editing the environment and restarting.
+- **The sampling extension needs a token, not an account** — it has no browser session.
+  Using it on the same machine therefore means keeping `XGEO_TOKEN` set too.
+
+`X-Xgeo-Token` and `?token=` keep working exactly as before; the account tier is additive.
+
 
 ### Upgrading
 
@@ -214,7 +249,7 @@ All six audit dimensions are anchored in public empirical data; `scripts/audit.p
 
 ## Design principles & security boundaries
 
-- **Single-machine, self-hosted**: stdlib `http.server` on 127.0.0.1; no DB, no accounts; data is plain files
+- **Single-machine, self-hosted**: stdlib `http.server` on 127.0.0.1; no DB; data is plain files. Access is token-gated, with an optional FreeModel-account tier (off unless `XGEO_ACCOUNTS` is set)
 - **Never fabricate**: facts only from site copy; inventing competitor names is forbidden; AI drafts must pass lint + human review
 - **Verification is the product**: anything auto-verifiable never relies on someone saying "done"
 - **Publishing is always manual**: channel credentials in local `.env` (mode 600); every publish is an explicit click; WeChat/WordPress go to drafts only
