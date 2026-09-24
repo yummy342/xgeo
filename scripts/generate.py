@@ -1283,7 +1283,7 @@ ASSETS = ["llms", "jsonld", "snippets", "outlines", "attribution"]
 
 
 def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
-        draft_limit: int = 3) -> dict:
+        draft_limit: int = 3, redraft: bool = False) -> dict:
     cfg = G.load_config(slug)
     market = cfg.get("market", "cn")
     adir = G.project_dir(slug) / "assets"
@@ -1392,6 +1392,14 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
                     G.info(f"  跳过 {qid_o}：已有人工选定稿（要重生成先删掉它）")
                     made.append(f"assets/drafts/{qid_o}.md")
                     continue
+                # 已有初稿默认跳过：27 篇里挂了一篇，重跑只为补那一篇，
+                # 不该把另外 26 篇用 27 次调用重写一遍。要整批重写就删掉 drafts/*.md
+                # 或调用时给 redraft=True（命令行没开这个开关，故意的 —— 默认行为
+                # 必须是「补缺」而不是「覆盖」）。
+                if dst.exists() and not redraft:
+                    G.info(f"  跳过 {qid_o}：已有初稿（要重写先删掉它）")
+                    made.append(f"assets/drafts/{qid_o}.md")
+                    continue
                 G.info(f"起草 {qid_o} · {o['target_question'][:30]}…")
                 try:
                     text = draft(slug, o)
@@ -1407,7 +1415,7 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
                     G.info(f"  {qid_o} 没拿到正文，继续下一篇（不中断整批）")
             if failed:
                 G.info(f"  本批 {len(failed)} 篇没出稿：{'、'.join(failed)}。"
-                       f"重跑同一条命令会补上（已有的会被覆盖）")
+                       f"重跑同一条命令即可补上（已有初稿会跳过，只补缺的）")
         rep = lint_all(slug)
         if rep.get("total_issues"):
             G.info(f"初稿风险检查：{rep['total_issues']} 项（高风险 {rep['high']} 项）"
