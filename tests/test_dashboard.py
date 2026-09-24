@@ -3,9 +3,11 @@ import json
 import os
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -77,8 +79,19 @@ class TestRenameCompatibility(unittest.TestCase):
         self.assertTrue(D.auth_ok("tok", {}, old), "旧 cookie 名不再认了，用户会被登出")
 
     def test_login_page_shows_the_new_brand(self):
-        self.assertIn("GEO", D._LOGIN_HTML)
-        self.assertNotIn("Look", D._LOGIN_HTML)
+        page = D._login_html()
+        self.assertIn("GEO", page)
+        self.assertNotIn("Look", page)
+
+    def test_login_page_keeps_the_token_route(self):
+        """账号登录是**新增档**，老的令牌路要在界面上仍然可达（三份 README 都写着）。"""
+        self.assertIn("?token=", D._login_html())
+
+    def test_login_page_escapes_the_error_text(self):
+        """错误回显是插进 HTML 的，虽然来路都是我们自己那几句固定文案 —— 也转它。"""
+        page = D._login_html('<img src=x onerror="alert(1)">')
+        self.assertNotIn("<img", page)
+        self.assertIn("&lt;img", page)
 
 
 class TestScopedTokens(unittest.TestCase):
@@ -548,3 +561,342 @@ class TestStaticServing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAccountLogin(unittest.TestCase):
+    """账号档：FreeModel API Key → /me → 允许名单 → 本地会话。
+
+    这一档最容易出的是**组合漏洞**而不是单点漏洞：
+      · `auth_ok` 在「两个令牌变量都没配」时恒返回 True，而只配 XGEO_ACCOUNTS 的
+        实例正好落在那个分支上 —— 少一对括号，允许名单就形同虚设、所有人放行。
+      · 会话与令牌共用同一个 cookie 名，靠「摘要在不在 SESSIONS 里」区分；
+        写成「有 cookie 就放行」是另一个同向的坑。
+    所以这里既有纯函数测试，也有真起服务的「打进来会不会被挡住」。
+    """
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        work = Path(self.tmp.name) / "work"
+        for slug in ("alpha", "beta"):
+            d = work / slug
+            d.mkdir(parents=True)
+            (d / "geo.json").write_text(
+                json.dumps({"brand": {"name": slug}, "questions": []}), "utf-8")
+        self.work = mock.patch.object(D.G, "WORK", work)
+        self.work.start()
+        # 关键：**不配任何令牌，只配账号档** —— 正是那个组合漏洞的形态
+        self.tok = mock.patch.object(D.Handler, "TOKEN", None)
+        self.tok.start()
+        self.scopes = mock.patch.object(D.Handler, "SCOPES", {})
+        self.scopes.start()
+        self.env = mock.patch.dict(os.environ, {
+            "XGEO_ACCOUNTS": "boss@example.com:*;guest@example.com:beta",
+            "XGEO_AUTH_BASE": "http://127.0.0.1:9/api/auth",   # 不可达，登录一定 503
+        }, clear=False)
+        self.env.start()
+        D.SESSIONS.clear()
+        D.LOGIN_HITS.clear()
+        self.addCleanup(self._teardown)
+        self.srv = D.ThreadingHTTPServer(("127.0.0.1", 0), D.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (self.srv.shutdown(), self.srv.server_close()))
+
+    def _teardown(self):
+        self.env.stop()
+        self.scopes.stop()
+        self.tok.stop()
+        self.work.stop()
+        self.tmp.cleanup()
+
+    def _req(self, method, path, cookie=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            headers = {}
+            if cookie:
+                headers["Cookie"] = cookie
+            payload = None
+            if body is not None:
+                payload = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=payload, headers=headers)
+            r = conn.getresponse()
+            # 第三个返回整个响应头（dict 语义）：测试里既要看 Content-Type 也要看
+            # Set-Cookie，只固定回一个的话另一个断言就会拿到 None 而误判。
+            return r.status, r.read(), dict(r.headers)
+        finally:
+            conn.close()
+
+    # --- 纯函数 ---
+
+    def test_parse_accounts_admin_and_tenant(self):
+        acc = D.parse_accounts("a@x.com:*;b@x.com:proj-a,proj-b")
+        self.assertTrue(acc["a@x.com"]["admin"])
+        self.assertEqual(acc["b@x.com"]["projects"], {"proj-a", "proj-b"})
+        self.assertFalse(acc["b@x.com"]["admin"])
+
+    def test_bare_email_is_dropped(self):
+        """允许名单是安全边界：少一个冒号宁可当没写，也不能默认给管理员。"""
+        self.assertEqual(D.parse_accounts("a@x.com"), {})
+        self.assertEqual(D.parse_accounts("a@x.com:;b@x.com:*")["b@x.com"]["admin"], True)
+
+    def test_session_cookie_hides_the_id_and_carries_max_age(self):
+        sid = D.session_new("boss@example.com", {"admin": True, "projects": set()})
+        c = D.session_cookie(sid, secure=True)
+        self.assertNotIn(sid, c, "cookie 里不该出现会话 id 原文")
+        self.assertIn(D._token_digest(sid), c)
+        self.assertIn("Max-Age=", c, "没有过期时间 = 关浏览器就掉线")
+        self.assertIn("HttpOnly", c)
+        self.assertIn("Secure", c)
+        self.assertNotIn("Secure", D.session_cookie(sid, secure=False), "本机 http 不能带 Secure")
+
+    def test_session_expires(self):
+        sid = D.session_new("boss@example.com", {"admin": True, "projects": set()})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        self.assertIsNotNone(D.session_get(cookie))
+        D.SESSIONS[D._token_digest(sid)]["exp"] = 1        # 过期
+        self.assertIsNone(D.session_get(cookie))
+        self.assertTrue(D.session_drop(cookie) is False, "过期条目应已被清掉")
+
+    def test_login_rate_limited(self):
+        for _ in range(10):
+            self.assertTrue(D.login_allowed("9.9.9.9"))
+            D.login_note("9.9.9.9")
+        self.assertFalse(D.login_allowed("9.9.9.9"))
+        self.assertTrue(D.login_allowed("8.8.8.8"), "限流是按 IP 的，别连坐")
+
+    # --- 打进来会不会被挡住 ---
+
+    def test_accounts_configured_without_token_is_not_open(self):
+        """★ 这条锁的是那个组合漏洞。
+
+        只配 XGEO_ACCOUNTS、不配任何令牌时，`auth_ok(None, {}, …)` 返回 True ——
+        少一对括号，未认证请求就全部放行、允许名单白配。
+        """
+        self.assertEqual(self._req("GET", "/api/projects")[0], 401)
+        self.assertEqual(self._req("POST", "/api/config/alpha", body={"x": 1})[0], 401)
+
+    def test_login_page_still_served_when_unauthorized(self):
+        status, _body, headers = self._req("GET", "/api/projects")
+        self.assertEqual(status, 401, "探活脚本按 200/401 判活，别改成 302")
+        self.assertIn("text/html", headers.get("Content-Type") or "")
+
+    def test_login_with_unreachable_auth_service_is_503_not_open(self):
+        """认证服务挂了要报错，**不能放行** —— 那是永久后门。"""
+        status, body, _ = self._req("POST", "/api/auth/login",
+                                    body={"credential": "sk-fm-x"})
+        self.assertEqual(status, 503)
+        self.assertNotIn(b'"ok": true', body)
+
+    def test_login_rejected_when_no_allowlist_configured(self):
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": ""}, clear=False):
+            status, _, _ = self._req("POST", "/api/auth/login",
+                                     body={"credential": "sk-fm-x"})
+        self.assertEqual(status, 403)
+
+    def test_session_from_allowlisted_account_gets_in(self):
+        sid = D.session_new("boss@example.com", {"admin": True, "projects": set()})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+        status, body, _ = self._req("GET", "/api/auth/me", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["mode"], "account")
+        self.assertEqual(json.loads(body)["email"], "boss@example.com")
+
+    def test_tenant_session_keeps_project_isolation(self):
+        """会话用户照样受 _deny 管：租户只能碰自己名下的项目。"""
+        sid = D.session_new("guest@example.com", {"admin": False, "projects": {"beta"}})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        self.assertEqual(self._req("GET", "/api/p/beta", cookie=cookie)[0], 200)
+        self.assertEqual(self._req("GET", "/api/p/alpha", cookie=cookie)[0], 403)
+        self.assertEqual(self._req("GET", "/api/keys", cookie=cookie)[0], 403,
+                         "管理员接口对租户会话也要挡住")
+
+    def test_logout_drops_the_session(self):
+        sid = D.session_new("boss@example.com", {"admin": True, "projects": set()})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        status, _, headers = self._req("POST", "/api/auth/logout", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("Max-Age=0", headers.get("Set-Cookie") or "")
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 401,
+                         "登出要立刻失效（会话在进程内就是为了这个）")
+
+    def test_random_cookie_is_not_a_session(self):
+        """cookie 名与会话共用，靠「摘要在不在 SESSIONS 里」区分 —— 别写成有 cookie 就放行。"""
+        self.assertEqual(self._req("GET", "/api/projects",
+                                   cookie=f"{D.AUTH_COOKIE}=deadbeef")[0], 401)
+
+
+class _FakeMe(BaseHTTPRequestHandler):
+    """假的 fm-auth `/me`。真服务在线上，单测不能依赖外网。
+
+    返回结构对齐线上的真实调用点（公开的 console/js/auth.js：
+    `data.code === 200 && data.data.api_key`），只认一个 key。
+    """
+
+    seen: list = []
+    payload: dict = {}
+
+    def do_GET(self):
+        token = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
+        type(self).seen.append(token)
+        if token == "sk-fm-good":
+            body = json.dumps({"code": 200, "data": dict(type(self).payload)}).encode()
+            self.send_response(200)
+        else:
+            body = json.dumps({"code": 400, "msg": "Invalid token"}).encode()
+            self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+class TestAccountLoginEndToEnd(unittest.TestCase):
+    """登录的**正路**：key → /me → 允许名单 → 下发 cookie → 真的进得去。
+
+    上一套（TestAccountLogin）只验「挡得住」——**一个全挡住的实现也能全绿**。
+    这条补正路，并钉住那条硬约束：账号档开着时，老令牌那三条路一条都不能断。
+    """
+
+    EMAIL = "boss@example.com"
+    TOKEN = "s3cret-admin-token"
+
+    def setUp(self):
+        _FakeMe.seen = []
+        _FakeMe.payload = {"email": self.EMAIL, "api_key": "sk-fm-fresh"}
+        self.auth = D.ThreadingHTTPServer(("127.0.0.1", 0), _FakeMe)
+        threading.Thread(target=self.auth.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (self.auth.shutdown(), self.auth.server_close()))
+
+        self.tmp = TemporaryDirectory()
+        work = Path(self.tmp.name) / "work"
+        for slug in ("alpha", "beta"):
+            d = work / slug
+            d.mkdir(parents=True)
+            (d / "geo.json").write_text(
+                json.dumps({"brand": {"name": slug}, "questions": []}), "utf-8")
+        self.work = mock.patch.object(D.G, "WORK", work)
+        self.work.start()
+        # 管理员令牌也在：这才是「账号档 + 令牌档并存」的形态，也是老用户的升级路径
+        self.tok = mock.patch.object(D.Handler, "TOKEN", self.TOKEN)
+        self.tok.start()
+        self.scopes = mock.patch.object(D.Handler, "SCOPES", {})
+        self.scopes.start()
+        self.env = mock.patch.dict(os.environ, {
+            "XGEO_ACCOUNTS": "boss@example.com:*;guest@example.com:beta",
+            "XGEO_AUTH_BASE": f"http://127.0.0.1:{self.auth.server_address[1]}/api/auth",
+        }, clear=False)
+        self.env.start()
+        D.SESSIONS.clear()
+        D.LOGIN_HITS.clear()
+        self.addCleanup(self._teardown)
+        self.srv = D.ThreadingHTTPServer(("127.0.0.1", 0), D.Handler)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (self.srv.shutdown(), self.srv.server_close()))
+
+    def _teardown(self):
+        self.env.stop()
+        self.scopes.stop()
+        self.tok.stop()
+        self.work.stop()
+        self.tmp.cleanup()
+
+    def _req(self, method, path, cookie=None, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            h = dict(headers or {})
+            if cookie:
+                h["Cookie"] = cookie
+            payload = None
+            if body is not None:
+                payload = json.dumps(body).encode("utf-8")
+                h["Content-Type"] = "application/json"
+            conn.request(method, path, body=payload, headers=h)
+            r = conn.getresponse()
+            return r.status, r.read(), dict(r.headers)
+        finally:
+            conn.close()
+
+    def _login(self, cred="sk-fm-good", **kw):
+        return self._req("POST", "/api/auth/login", body={"credential": cred}, **kw)
+
+    @staticmethod
+    def _cookie_of(headers):
+        """从 Set-Cookie 里取 `名=值` 那一段（后面还挂着属性）。"""
+        return (headers.get("Set-Cookie") or "").split(";")[0]
+
+    # --- 正路 ---
+
+    def test_allowlisted_key_gets_a_working_session(self):
+        status, body, headers = self._login()
+        self.assertEqual(status, 200, body)
+        info = json.loads(body)
+        self.assertEqual(info["email"], self.EMAIL)
+        self.assertTrue(info["admin"])
+        cookie = self._cookie_of(headers)
+        self.assertTrue(cookie.startswith(f"{D.AUTH_COOKIE}="), headers.get("Set-Cookie"))
+        # 拿到 cookie 才算真进得去 —— 只验 200 的话，不下发 cookie 也能过。
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+        status, body, _ = self._req("GET", "/api/auth/me", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["mode"], "account")
+
+    def test_credential_reaches_the_auth_service_and_is_not_echoed(self):
+        _status, body, headers = self._login()
+        self.assertEqual(_FakeMe.seen, ["sk-fm-good"], "凭据没按 ?token= 传出去")
+        self.assertNotIn("sk-fm-good", body.decode("utf-8"))
+        self.assertNotIn("sk-fm-good", headers.get("Set-Cookie") or "")
+
+    def test_session_cookie_gets_secure_only_behind_https(self):
+        """本机 http 加 Secure，浏览器会直接丢掉 cookie —— 表现是「登录成功却没进去」。"""
+        _s, _b, plain = self._login()
+        self.assertNotIn("Secure", plain.get("Set-Cookie") or "")
+        _s2, _b2, proxied = self._login(headers={"X-Forwarded-Proto": "https"})
+        self.assertIn("Secure", proxied.get("Set-Cookie") or "")
+
+    def test_bad_key_is_401_and_sets_no_cookie(self):
+        status, _body, headers = self._login("sk-fm-wrong")
+        self.assertEqual(status, 401)
+        self.assertIsNone(headers.get("Set-Cookie"))
+
+    def test_key_of_an_account_outside_the_allowlist_is_403(self):
+        _FakeMe.payload = {"email": "stranger@example.com"}
+        status, body, headers = self._login()
+        self.assertEqual(status, 403)
+        self.assertIn("允许名单", json.loads(body)["error"])
+        self.assertIsNone(headers.get("Set-Cookie"))
+
+    def test_missing_email_blames_the_shape_not_the_allowlist(self):
+        """字段名一变，含糊的报错会把人引去翻允许名单 —— 这里必须指出是响应的问题。"""
+        _FakeMe.payload = {"api_key": "sk-fm-fresh"}
+        status, body, _ = self._login()
+        self.assertEqual(status, 502)
+        self.assertIn("邮箱", json.loads(body)["error"])
+
+    # --- 那三条老路 ---
+
+    def test_query_token_route_still_works(self):
+        status, _body, headers = self._req("GET", f"/?token={self.TOKEN}")
+        self.assertEqual(status, 302, "老令牌换 cookie 那条路断了")
+        self.assertIn(D._token_digest(self.TOKEN), headers.get("Set-Cookie") or "")
+
+    def test_header_token_route_still_works(self):
+        status, _, _ = self._req("GET", "/api/projects",
+                                 headers={"X-Xgeo-Token": self.TOKEN})
+        self.assertEqual(status, 200, "X-Xgeo-Token 那条路断了")
+
+    def test_token_cookie_route_still_works(self):
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(self.TOKEN)}"
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+
+    def test_account_session_cannot_reach_admin_routes_when_tenant(self):
+        """会话是「另一个身份来源」，不是「另一个权限层」——照样受 _deny 管。"""
+        sid = D.session_new("guest@example.com", {"admin": False, "projects": {"beta"}})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        self.assertEqual(self._req("GET", "/api/p/beta", cookie=cookie)[0], 200)
+        self.assertEqual(self._req("GET", "/api/p/alpha", cookie=cookie)[0], 403)

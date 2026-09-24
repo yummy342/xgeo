@@ -2,6 +2,7 @@
   import SwitchBrandDialog from './SwitchBrandDialog.svelte'
   import { NAV, badgeFor, LANGS } from '../lib/nav.js'
   import { i18n, setLocale, t } from '../lib/i18n/index.svelte.js'
+  import { api } from '../lib/api.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
   import { runAction } from '../lib/jobs.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
@@ -11,6 +12,25 @@
   // 语言状态改读 i18n store——切换不再整页 reload。
 
   let switching = $state(false)
+  let me = $state(null)
+
+  // 只有账号档答得上「你是谁」：令牌档服务端只知道一个令牌，默认档（本机无凭据）
+  // 压根没有账号。查不到就整块不渲染，不留空位。
+  $effect(() => {
+    let cancelled = false
+    api('/api/auth/me').then((r) => {
+      if (!cancelled && r && !r.error) me = r
+    })
+    return () => { cancelled = true }
+  })
+
+  const account = $derived(me && me.mode === 'account' ? me : null)
+
+  async function signOut() {
+    await api('/api/auth/logout', { method: 'POST' })
+    // 会话在服务端的进程里，刷新之后这个请求就是 401，浏览器落到登录页
+    location.reload()
+  }
 
   const brandName = $derived(project.data?.brand?.name || '—')
   const latest = $derived(project.data?.analytics?.latest_date || '—')
@@ -51,6 +71,12 @@
   </nav>
 
   <div class="foot">
+    {#if account}
+      <div class="who">
+        <span class="mail" title={account.email}>{account.email}</span>
+        <button class="btn btn-ghost out" onclick={signOut}>{t('Sign out')}</button>
+      </div>
+    {/if}
     {t('Data updated')} {latest}<br>
     {t('Sampling is manual or schedule-driven')}
     <div class="run">
@@ -95,4 +121,14 @@
   }
   .run { margin-top: 8px; }
   .run-btn { font-size: 12px; padding: 2px 4px; }
+
+  .who {
+    display: flex; align-items: center; gap: 6px; justify-content: space-between;
+    padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  .mail {
+    font-size: 11px; color: var(--t400);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .out { font-size: 11px; padding: 2px 6px; flex: none; }
 </style>

@@ -866,6 +866,7 @@ export const zh = {
   'Sampling is manual or schedule-driven': '采样为手动触发或由 schedule 驱动',
   'A task is running': '任务运行中',
   'Run full cycle': '跑完整一期',
+  'Sign out': '退出登录',
 
   // ---- 任务动作（lib/jobs.svelte.js）----
   'Could not start': '启动失败',

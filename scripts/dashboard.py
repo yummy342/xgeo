@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import threading
 import time
 import webbrowser
@@ -23,6 +24,8 @@ from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+import requests
 
 try:
     import geolib as G
@@ -383,18 +386,185 @@ def path_slug(path: str) -> str | None:
     return None
 
 
-_LOGIN_HTML = """<!doctype html><meta charset="utf-8"><title>XGEO</title>
+# ---------------------------------------------------------------- 账号登录（可选档）
+# 与令牌档并存，不是替代：令牌那三条路（?token= 302 / X-Xgeo-Token 头 / 摘要 cookie）
+# 一条都不动。工作台接 freemodel 的账号体系 —— 用户填自己的 FreeModel API Key，
+# 服务端拿它调一次 `GET {AUTH_BASE}/me` 换出邮箱，再对允许名单。名单在 .env，
+# 界面改不了（/api/keys 的白名单不含 XGEO_*，避免远端账号给自己提权）。
+#
+# 为什么凭据是 API Key 而不是邮箱密码：fm-auth 的 /login 在验密码**之前**强制校验
+# Turnstile（服务端代调过不去），而在自家看板里接收用户的明文密码比接收 API Key 更糟。
+#
+# 会话在进程内（SESSIONS）：换来的好处是登出即时生效、零凭据落盘；代价是重启即掉线，
+# 这条要写进 README。**不做「认证服务不可达就放行」** —— 那是永久后门。
+
+
+def parse_accounts(raw: str | None) -> dict[str, dict]:
+    """`a@b.com:*;c@d.com:proj-a,proj-b` → {邮箱: {admin, projects}}。
+
+    `*` = 管理员（不受项目限制）；否则是租户，只能碰列出的项目。格式对齐
+    parse_scoped_tokens。**裸邮箱（没有 `:`）整条丢弃** —— 允许名单是安全边界，
+    写错的条目宁可当没写（fail closed），也不能默认给管理员。
+    """
+    out: dict[str, dict] = {}
+    for part in (raw or "").split(";"):
+        email, sep, scope = part.partition(":")
+        email = email.strip().lower()
+        if not email or not sep:
+            continue
+        names = {s.strip() for s in scope.split(",") if s.strip()}
+        if "*" in names:
+            out[email] = {"admin": True, "projects": set()}
+        elif names:
+            out[email] = {"admin": False, "projects": names}
+    return out
+
+
+def accounts() -> dict[str, dict]:
+    """每次现读 —— 测试要能改环境变量，别在 import 时定死。"""
+    return parse_accounts(_env("XGEO_ACCOUNTS"))
+
+
+def accounts_enabled() -> bool:
+    return bool(accounts())
+
+
+def _auth_base() -> str:
+    return (_env("XGEO_AUTH_BASE") or "https://freemodel.online/api/auth").rstrip("/")
+
+
+# /me 的响应形状是从 freemodel.online 的公开静态文件 console/js/auth.js 上读来的
+# （它自己也调这条：`data.code === 200 && data.data.api_key`），线上实测
+# `?token=` 是对的、`?key=` 报 Missing token。**但那个文件只用 api_key 字段，
+# 没有「响应里有 email」的直接证据** —— 服务端代码不在本仓库、也不能去线上捞。
+# 所以邮箱字段名按几种可能的形状都试一遍，全落空就明确报「没拿到邮箱」，
+# 而不是含糊地回一句「不在允许名单里」（那会把字段改名说成权限问题）。
+_EMAIL_KEYS = ("email", "user_email", "mail")
+
+
+def email_from_me(payload) -> str:
+    """从 /me 响应里取邮箱；取不到返回空串。"""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for src in (data, payload):
+        for k in _EMAIL_KEYS + ("user_name",):     # user_name 兜底：按邮箱注册时它就是邮箱
+            v = src.get(k)
+            if isinstance(v, str) and "@" in v:
+                return v.strip().lower()
+    return ""
+
+
+def _session_ttl() -> int:
+    try:
+        return int(_env("XGEO_SESSION_TTL") or 7 * 24 * 3600)
+    except ValueError:
+        return 7 * 24 * 3600
+
+
+SESSIONS: dict[str, dict] = {}     # cookie 摘要 → {email, admin, projects, exp}
+LOGIN_HITS: dict[str, list] = {}   # 客户端 IP → 尝试时间戳（进程内限流）
+
+
+def session_new(email: str, acct: dict) -> str:
+    """建会话，返回会话 id；cookie 里只放它的 sha256 摘要（沿用令牌那套）。"""
+    now = time.time()
+    for k, v in list(SESSIONS.items()):
+        if v.get("exp", 0) < now:
+            SESSIONS.pop(k, None)
+    sid = secrets.token_urlsafe(32)
+    SESSIONS[_token_digest(sid)] = {"email": email, "admin": bool(acct.get("admin")),
+                                    "projects": set(acct.get("projects") or ()),
+                                    "exp": now + _session_ttl()}
+    return sid
+
+
+def session_get(cookie_header: str | None) -> dict | None:
+    digest = _cookie_value(cookie_header)
+    if not digest:
+        return None
+    s = SESSIONS.get(digest)
+    if not s:
+        return None
+    if s.get("exp", 0) < time.time():
+        SESSIONS.pop(digest, None)
+        return None
+    return s
+
+
+def session_drop(cookie_header: str | None) -> bool:
+    digest = _cookie_value(cookie_header)
+    return bool(digest and SESSIONS.pop(digest, None))
+
+
+def session_cookie(sid: str, secure: bool, max_age: int | None = None) -> str:
+    """会话 cookie。**沿用 AUTH_COOKIE 这个名字** —— 值是另一个秘密的摘要，
+    与令牌 cookie 靠「在不在 SESSIONS 里」区分，`_cookie_value` 一行不用改。"""
+    age = _session_ttl() if max_age is None else max_age
+    c = (f"{AUTH_COOKIE}={_token_digest(sid)}; HttpOnly; SameSite=Strict; "
+         f"Path=/; Max-Age={age}")
+    return c + "; Secure" if secure else c
+
+
+def login_allowed(ip: str, limit: int = 10, window: int = 300) -> bool:
+    """进程内限流。凭据是 48 位 hex 不可猜，这里挡的是「拿别人泄露的 key 试」这类。"""
+    now = time.time()
+    hits = [t for t in LOGIN_HITS.get(ip, []) if now - t < window]
+    LOGIN_HITS[ip] = hits
+    return len(hits) < limit
+
+
+def login_note(ip: str) -> None:
+    LOGIN_HITS.setdefault(ip, []).append(time.time())
+
+
+def _login_html(err: str = "") -> str:
+    """登录页。**凭据走 POST body，不进 URL**。
+
+    老表单把令牌拼进 `?token=`（那条路保留在下面的折叠里，README 也写着）；
+    但账号档的凭据是长期 API Key，拼进 URL 就会留在 nginx access log 里 ——
+    等于把一份可复用的钥匙抄进了日志。
+    """
+    e = (err or "").replace("&", "&amp;").replace("<", "&lt;")
+    return f"""<!doctype html><meta charset="utf-8"><title>XGEO</title>
 <body style="background:#131622;color:#e8eaf2;font-family:system-ui;display:flex;
 align-items:center;justify-content:center;height:100vh;margin:0">
-<form style="text-align:center" onsubmit="location='/?token='+encodeURIComponent(
-document.getElementById('t').value);return false">
+<div style="text-align:center;max-width:320px">
 <div style="font-size:20px;margin-bottom:14px">X<span style="color:#9184d9">GEO</span></div>
-<input id="t" type="password" placeholder="访问令牌 / Access token" autofocus
+<input id="k" type="password" placeholder="FreeModel API Key（sk-fm-…）" autofocus
 style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
-padding:10px 14px;font-size:14px;width:240px">
-<button style="background:#9184d9;border:0;border-radius:8px;color:#101223;
-padding:10px 18px;font-size:14px;margin-left:8px;cursor:pointer">进入</button>
-</form></body>"""
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<button id="go" onclick="xgLogin()" style="background:#9184d9;border:0;border-radius:8px;
+color:#101223;padding:10px 18px;font-size:14px;margin-top:8px;width:100%;cursor:pointer">
+进入</button>
+<div id="e" style="color:#e08a8a;font-size:12px;margin-top:8px;min-height:16px">{e}</div>
+<details style="margin-top:14px;text-align:left">
+<summary style="cursor:pointer;font-size:12px;color:#8b90a5">用访问令牌登录</summary>
+<div style="display:flex;gap:8px;margin-top:8px">
+<input id="t" type="password" placeholder="访问令牌 / Access token"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<button onclick="location='/?token='+encodeURIComponent(document.getElementById('t').value)"
+style="background:#2a2f45;border:0;border-radius:8px;color:#e8eaf2;padding:10px 14px;
+font-size:14px;cursor:pointer">进入</button>
+</div>
+</details>
+<div style="font-size:11px;color:#6b7085;margin-top:12px;line-height:1.6">
+登录用 FreeModel 控制台拿到的 API Key。认证服务不可达时可以改用访问令牌。
+</div>
+</div>
+<script>
+async function xgLogin() {{
+  const k = document.getElementById('k').value.trim()
+  if (!k) return
+  const r = await fetch('/api/auth/login', {{method: 'POST',
+    headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: k}})}})
+  const j = await r.json().catch(() => ({{}}))
+  if (r.ok) {{ location.href = '/'; return }}
+  document.getElementById('e').textContent = j.error || ('HTTP ' + r.status)
+}}
+</script></body>"""
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -402,9 +572,64 @@ class Handler(BaseHTTPRequestHandler):
     TOKEN: str | None = None          # run() 注入；None = 没有管理员令牌
     SCOPES: dict[str, set[str]] = {}  # run() 注入；分项目令牌 → 允许的项目
     _scope: set[str] | None = None    # 本请求命中的令牌的授权范围，_auth 里赋值
+    _mode: str = ""                   # 本请求是怎么过的鉴权：token / account / open
+    _email: str = ""                  # 账号档下当前登录的邮箱
 
     def log_message(self, *a):  # 静音访问日志
         pass
+
+    def _https(self) -> bool:
+        """本次请求是不是 https。nginx 已设 X-Forwarded-Proto；本机 http 不加 Secure，
+        否则浏览器会把 cookie 丢掉。"""
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+    def _do_login(self, body: dict) -> tuple[dict, int, str | None]:
+        """用 FreeModel API Key 换一次本地会话。返回 (响应体, HTTP 码, 会话 id)。
+
+        会话 id 单独返回而不是塞进响应体：它是凭据，只该进 Set-Cookie。"""
+        ip = self.client_address[0] if self.client_address else "?"
+        if not login_allowed(ip):
+            return {"ok": False, "error": "尝试过于频繁，稍后再试"}, 429, None
+        # 登录 CSRF：Origin 存在且与 Host 不同源时拒掉 —— 否则第三方页面能把
+        # 受害者「登进攻击者的账号」，之后他上传的东西全落在攻击者名下。
+        org = self.headers.get("Origin")
+        if org and (urlparse(org).hostname or "").lower() !=                 (self.headers.get("Host") or "").split(":")[0].lower():
+            return {"ok": False, "error": "跨站请求被拒绝"}, 403, None
+        if not accounts_enabled():
+            return {"ok": False,
+                    "error": "这个实例没有配账号登录（XGEO_ACCOUNTS 为空），请用访问令牌"}, 403, None
+        cred = body.get("credential")
+        if not isinstance(cred, str) or not cred.strip():
+            return {"ok": False, "error": "请填 FreeModel API Key"}, 400, None
+        login_note(ip)
+        try:
+            r = requests.get(f"{_auth_base()}/me", params={"token": cred.strip()}, timeout=8)
+        except Exception as e:  # noqa: BLE001
+            # 认证服务不可达 ≠ 凭据错。**不自动放行**（那是永久后门），但要说清
+            # 可以改走令牌，别让人以为是 key 错了。
+            return {"ok": False, "error": f"认证服务不可达（{type(e).__name__}），"
+                                          f"可改用访问令牌登录"}, 503, None
+        if r.status_code in (401, 403):
+            return {"ok": False, "error": "凭据无效（FreeModel API Key 不对或已失效）"}, 401, None
+        if r.status_code != 200:
+            return {"ok": False, "error": f"认证服务返回 {r.status_code}，稍后再试"}, 503, None
+        try:
+            payload = r.json() or {}
+        except Exception:  # noqa: BLE001
+            payload = {}
+        email = email_from_me(payload)
+        if not email:
+            # 与「不在名单里」分开报：字段名一变，含糊的那句会把故障指向权限，
+            # 排查的人会去翻允许名单，而问题其实在响应形状上。
+            return {"ok": False, "error": "认证服务没返回邮箱（接口字段可能变了）"}, 502, None
+        acct = accounts().get(email)
+        if not acct:
+            # 只有持有效 key 的人才会看到这句，不构成信息泄露
+            return {"ok": False, "error": "该 FreeModel 账号不在本工作台的允许名单里"}, 403, None
+        sid = session_new(email, acct)
+        # 凭据不进日志、不落盘、不进记录：本次用它换到邮箱之后就不再需要它
+        return ({"ok": True, "email": email, "admin": bool(acct.get("admin")),
+                 "projects": sorted(acct.get("projects") or [])}, 200, sid)
 
     def _host_ok(self) -> bool:
         """默认档（不设令牌）下只接受本机 Host。
@@ -417,7 +642,9 @@ class Handler(BaseHTTPRequestHandler):
         配了令牌就不再限 Host：鉴权已经挡住未认证请求，而且这时用户可能
         故意绑 0.0.0.0 从别的机器访问。
         """
-        if Handler.TOKEN or Handler.SCOPES:
+        if Handler.TOKEN or Handler.SCOPES or accounts_enabled():
+            # 配了账号档就别限 Host：鉴权已经挡住未认证请求，而这时用户一定是
+            # 从别的机器上的浏览器访问的 —— 限 Host 会把登录页本身 403 掉。
             return True
         h = (self.headers.get("Host") or "").strip().lower()
         h = h[1:h.index("]")] if h.startswith("[") and "]" in h else h.split(":")[0]
@@ -435,8 +662,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _auth(self) -> bool:
         """True=放行；False=已自行响应（401 或换 cookie 的 302）。"""
-        if not Handler.TOKEN and not Handler.SCOPES:
+        # 账号档也算「配了东西」：只配 XGEO_ACCOUNTS 不配令牌时（全新自托管实例
+        # 正是这形态），少这个条件会让 auth_ok(None, {}, …) 返回 True → 所有人放行、
+        # 允许名单形同虚设。
+        if not Handler.TOKEN and not Handler.SCOPES and not accounts_enabled():
             self._scope = None
+            self._mode = "open"
             return True
         u = urlparse(self.path)
         qt = (parse_qs(u.query).get("token") or [None])[0]
@@ -450,13 +681,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return False
-        if auth_ok(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
-                   header_token=_header_token(self.headers)):
+        # 括号不能省：auth_ok 在「两个令牌变量都没配」时恒返回 True，
+        # 而配了账号档却没配令牌的实例正好落在这个分支上。
+        if (Handler.TOKEN or Handler.SCOPES) and auth_ok(
+                Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
+                header_token=_header_token(self.headers)):
             self._scope = scope_of(Handler.TOKEN, Handler.SCOPES, self.headers.get("Cookie"),
                                    header_token=_header_token(self.headers))
+            self._mode = "token"
+            return True
+        # 账号会话。顺序在令牌之后：显式带头的 API 客户端意图更明确，
+        # 且升级后老的令牌 cookie 继续有效（老用户不会被登出）。
+        sess = session_get(self.headers.get("Cookie"))
+        if sess:
+            self._scope = None if sess["admin"] else set(sess["projects"])
+            self._mode = "account"
+            self._email = sess["email"]
             return True
         if self.command == "GET":
-            self._send(401, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(401, _login_html().encode("utf-8"), "text/html; charset=utf-8")
         else:
             self._json({"error": "未授权：需要 X-Xgeo-Token 头或先在浏览器登录"}, 401)
         return False
@@ -478,18 +721,22 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": f"{what}只有管理员令牌可用"}, 403)
         return True
 
-    def _send(self, code, body: bytes, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body: bytes, ctype="application/json; charset=utf-8",
+              headers: dict | None = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         # 内容类型由扩展名猜，猜错就等于让浏览器改按 HTML 解析
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, obj, code=200):
-        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+    def _json(self, obj, code=200, extra: dict | None = None):
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                   headers=extra)
 
     def _static(self, base: Path, rel: str, force_text: bool = False):
         """从 base 目录下取静态文件，解析后必须仍落在 base 内（防目录穿越）。
@@ -638,6 +885,14 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/api/expand/"):
                 slug = p[len("/api/expand/"):]
                 return self._json(G.read_json(G.project_dir(slug) / "expand.json", {}) or {})
+            if p == "/api/auth/me":
+                # 前端用它渲染侧栏（邮箱 + 登出）、隐藏管理员入口。
+                # 只是体验：真正的判权在服务端每个路由上，前端隐藏不作为边界。
+                return self._json({"ok": True, "mode": self._mode or "token",
+                                   "email": self._email,
+                                   "admin": self._scope is None,
+                                   "projects": sorted(self._scope) if self._scope else []})
+
             if p.startswith("/api/publish/"):
                 import publish as P
                 slug = p[len("/api/publish/"):]
@@ -735,6 +990,20 @@ class Handler(BaseHTTPRequestHandler):
         # keep-alive 下表现为同一条连接上的下一个正常请求莫名 400。
         if not self._host_ok():
             self.close_connection = True
+            return
+        p = unquote(urlparse(self.path).path)
+        # 登录/登出必须在 _auth() **之前**：登录本来就发生在还没有凭据的时候。
+        if p in ("/api/auth/login", "/api/auth/logout"):
+            body = self._body()
+            if p == "/api/auth/logout":
+                session_drop(self.headers.get("Cookie"))
+                # Max-Age=0 让浏览器立刻丢掉它；路径/属性要与下发时一致，否则删不掉
+                self._json({"ok": True}, 200,
+                           extra={"Set-Cookie": session_cookie("x", self._https(), max_age=0)})
+                return
+            res, code, sid = self._do_login(body)
+            self._json(res, code,
+                       extra={"Set-Cookie": session_cookie(sid, self._https())} if sid else None)
             return
         if not self._auth():
             self.close_connection = True
@@ -1084,7 +1353,7 @@ def run(port: int = 8765, open_browser: bool = True,
     host = host or _env("XGEO_HOST") or "127.0.0.1"
     token = token or _env("XGEO_TOKEN") or None
     scoped = parse_scoped_tokens(_env("XGEO_PROJECT_TOKENS"))
-    if host not in ("127.0.0.1", "localhost") and not token and not scoped:
+    if host not in ("127.0.0.1", "localhost") and not token and not scoped             and not accounts_enabled():
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
