@@ -1,9 +1,11 @@
 <script>
   import PageHead from '../components/PageHead.svelte'
+  import ManualPublishDialog from '../components/ManualPublishDialog.svelte'
   import PendingDialog from '../components/PendingDialog.svelte'
   import PublishConfigDialog from '../components/PublishConfigDialog.svelte'
   import PublishDialog from '../components/PublishDialog.svelte'
   import { api } from '../lib/api.js'
+  import { hasPublished, isPrepared, stateOf as stateOfRecords } from '../lib/publishstate.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
@@ -29,20 +31,18 @@
 
   const pubs = $derived((pub && pub.publishers) || [])
   const recs = $derived(((pub && pub.records) || []).slice().reverse())
-  const pend = $derived(contentPub.filter((f) => !(f.published || []).length))
-  const ready = $derived(pubs.filter((x) => !x.missing.length).length)
+  const pend = $derived(contentPub.filter((f) => !hasPublished(f.published)))
+  // 「可用」= 至少有一条通路：半自动渠道无需凭证，也算可用
+  const ready = $derived(pubs.filter((x) => x.path === 'semi' || !x.missing.length).length)
 
-  // 「已发布」取渠道侧的可见性，不是我们自己的调用是否成功。
-  // dev.to 建草稿同样返回 ok:true —— 靠 ok 计数的话，稿子躺在 Drafts 里没公开，
-  // 这里照样显示已发布（三篇文章就是这么被漏掉的）。state 空值是 09-22 前的旧记录，
-  // 那时不分草稿与发布，按已发布处理，不制造假警报。
-  const stateOf = (f) => {
-    const rs = f.published || []
-    if (!rs.length) return 'none'
-    return rs.some((r) => (r.state || 'published') === 'published') ? 'published' : 'draft'
-  }
+  // 「已发布」取渠道侧的可见性，不是我们自己的调用是否成功 —— 判据收在
+  // lib/publishstate.js（四处共用，理由见那个文件）。
+  const stateOf = (f) => stateOfRecords(f.published)
   const pubCount = $derived(contentPub.filter((f) => stateOf(f) === 'published').length)
   const draftCount = $derived(contentPub.filter((f) => stateOf(f) === 'draft').length)
+  const prepCount = $derived(contentPub.filter((f) => stateOf(f) === 'prepared').length)
+  // 半自动渠道的去回填入口：带 id 的那条记录
+  let manualRec = $state(null)
 
   $effect(() => {
     void project.data?.slug
@@ -78,6 +78,7 @@
       <div class="pk-l">{t('Drafts / published')}</div>
       <div class="pk-v">{contentPub.length}<span class="pk-u"> / {pubCount} {t('published')}</span>
         {#if draftCount}<span class="pk-u draft-n"> · {draftCount} {t('Draft')}</span>{/if}
+        {#if prepCount}<span class="pk-u prep-n"> · {prepCount} {t('Prepared')}</span>{/if}
       </div>
     </div>
     <div class="card elev pk clickable" onclick={() => (pendingOpen = true)} title={t('Open the pending list')}>
@@ -98,9 +99,17 @@
               {x.name}
               <div class="muted chan-note">{x.note}</div>
             </span>
-            <span class="chan-state" class:ok={!x.missing.length}>
-              {x.missing.length ? t('Missing {l}').replace('{l}', x.missing.join(', ')) : t('Ready')}
-            </span>
+            <span class="tag tag-dim path">{x.path === 'semi' ? t('Semi-automatic') : t('Automatic')}</span>
+            {#if x.path === 'semi'}
+              <!-- 半自动渠道不要凭证，「Missing X」对它没意义；要说明的是它的原生 API 通不通 -->
+              <span class="chan-state" title={x.semi?.api?.note || ''}>
+                {x.semi?.api?.status === 'blocked' ? t('No automatic path — prepare and publish yourself') : t('Native API unverified')}
+              </span>
+            {:else}
+              <span class="chan-state" class:ok={!x.missing.length}>
+                {x.missing.length ? t('Missing {l}').replace('{l}', x.missing.join(', ')) : t('Ready')}
+              </span>
+            {/if}
             <button class="btn {x.missing.length ? 'btn-secondary' : 'btn-ghost'} chan-btn" onclick={() => (configTarget = x)}>{t('Configure')}</button>
           </div>
         {/each}
@@ -109,7 +118,7 @@
   {/each}
 
   <div class="muted why">
-    {@html t('Why there is no Weibo / Toutiao / Xiaohongshu / Bilibili / Sohu / LinkedIn / Facebook / Instagram: these platforms have no official publishing API available to individuals (or require business review, with tokens expiring constantly), and cookie-driven posting violates their terms and breaks quickly. <b>Better to not integrate than to fake an integration.</b> To cover those channels: publish by hand and tick them off under the Workbench distribution list, or bridge through the custom webhook to your own tooling.')}
+    {@html t('Why some channels are semi-automatic: their rules forbid an app from posting on your behalf. Weibo requires OAuth2 user authorisation for its publishing API, bans apps that sync to multiple platforms, and states outright that an app must not share information to your account without an explicit choice. So the tool prepares the title, body, tags and back-link, opens the official publishing page, and <b>you click publish</b>. That is not a compromise — it is the only form those platforms allow. <b>We still never simulate a logged-in session to post.</b> You will find the one-click prepare-and-copy flow in the per-article publish dialog.')}
   </div>
 
   <h4 class="grp-h">
@@ -130,7 +139,13 @@
               <td class="ct-cell" title={r.path || ''}>{r.title || r.path || ''}</td>
               <td>
                 {#if r.ok}
-                  {#if r.state === 'draft'}
+                  {#if isPrepared(r)}
+                    <span class="tag tag-dim res" title={r.note || ''}>{t('Prepared')}</span>
+                    <button class="btn btn-ghost mini"
+                            onclick={() => (manualRec = { code: r.platform, path: r.path, id: r.id })}>
+                      {t('Fill in')}
+                    </button>
+                  {:else if r.state === 'draft'}
                     <span class="tag tag-dim res" title={r.note || ''}>{t('Draft')}</span>
                   {:else}
                     <span class="tag tag-accent res">{t('Success')}</span>
@@ -168,6 +183,12 @@
   <PublishDialog rel={publishRel} onclose={() => (publishRel = null)} />
 {/if}
 
+{#if manualRec}
+  <ManualPublishDialog rel={manualRec.path} code={manualRec.code} id={manualRec.id}
+                       onclose={() => (manualRec = null)}
+                       ondone={() => api('/api/publish/' + slug).then((r) => { if (r && !r.error) { pub = r } })} />
+{/if}
+
 {#if configTarget}
   <PublishConfigDialog
     publisher={configTarget}
@@ -186,6 +207,7 @@
   .pk-v.ok { color: var(--accent); }
   .pk-v.pend { color: var(--a300); }
   .pk-u { font-size: 13px; color: var(--t600); }
+  .pk-u.prep-n { color: var(--a300); }
   .pk-link { font-size: 12px; color: var(--a300); }
 
   .grp-h { font-size: 16px; margin: 20px 0 6px; }
@@ -197,6 +219,8 @@
   .chan-state { font-size: 11.5px; color: var(--t600); }
   .chan-state.ok { color: var(--a300); }
   .chan-btn { font-size: 12px; padding: 3px 10px; }
+  .tag.path { font-size: 10.5px; margin-right: 8px; }
+  .mini { font-size: 11px; padding: 1px 7px; margin-left: 6px; }
 
   .why { font-size: 11.5px; margin-top: 10px; line-height: 1.7; }
 

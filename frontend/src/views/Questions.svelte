@@ -6,6 +6,7 @@
   import QuestionsEditor from '../components/QuestionsEditor.svelte'
   import { demandSort, demandTag, diagTag } from '../lib/domain.js'
   import { go } from '../lib/router.svelte.js'
+  import { isPublished } from '../lib/publishstate.js'
   import { pct } from '../lib/format.js'
   import { project } from '../lib/stores/project.svelte.js'
 import { runAction } from '../lib/jobs.svelte.js'
@@ -33,7 +34,10 @@ import { runAction } from '../lib/jobs.svelte.js'
     for (const f of contentPub) {
       for (const q of (f.qids || [])) {
         qFile[q] = qFile[q] || f.path
-        if ((f.published || []).length) pubQ[q] = (f.published || []).map((p) => p.platform_name).join('、')
+        // 只列真对外可见的渠道：备好待人工粘贴（prepared）不算已发布，
+        // 混进来会让问题库说这题已经铺到搜狐号了
+        const live = (f.published || []).filter(isPublished)
+        if (live.length) pubQ[q] = live.map((p) => p.platform_name).join('、')
       }
     }
     return { pubQ, qFile }

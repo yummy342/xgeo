@@ -1,4 +1,5 @@
 <script>
+  import { hasPublished, isPrepared } from '../lib/publishstate.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
 
@@ -27,14 +28,19 @@
             </div>
             {#each (f.published || []) as p (p.platform + p.at)}
               <div class="pub">
-                ✓ {p.platform_name} {(p.at || '').slice(0, 10)}
-                {#if p.url}<a href={p.url} target="_blank" class="link">{p.url.slice(0, 40)}</a>{/if}
+                {#if isPrepared(p)}
+                  <!-- 备好 ≠ 发布：这条只是内容备好了，等人去贴 -->
+                  · {p.platform_name} {(p.at || '').slice(0, 10)} <span class="prep">{t('Prepared — not published yet')}</span>
+                {:else}
+                  ✓ {p.platform_name} {(p.at || '').slice(0, 10)}
+                  {#if p.url}<a href={p.url} target="_blank" class="link">{p.url.slice(0, 40)}</a>{/if}
+                {/if}
               </div>
             {/each}
           </div>
-          <button class="btn {(f.published || []).length ? 'btn-ghost' : 'btn-primary'} go"
+          <button class="btn {hasPublished(f.published) ? 'btn-ghost' : 'btn-primary'} go"
                   onclick={() => { onclose?.(); onpublish?.('content/' + f.path) }}>
-            {(f.published || []).length ? t('Publish again') : t('Publish')}
+            {hasPublished(f.published) ? t('Publish again') : t('Publish')}
           </button>
         </div>
       {:else}
@@ -56,6 +62,7 @@
   .title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { font-size: 11px; color: var(--t600); }
   .pub { font-size: 11px; color: var(--t500); }
+  .prep { color: var(--a300); }
   .link { color: var(--a300); }
   .go { flex: none; font-size: 12px; }
   .actions { justify-content: flex-end; margin-top: 12px; }

@@ -6,6 +6,7 @@
   import { go } from '../lib/router.svelte.js'
   import { post } from '../lib/api.js'
   import { progBar, taskWbTarget } from '../lib/domain.js'
+  import { hasPublished } from '../lib/publishstate.js'
   import { project, loadProject } from '../lib/stores/project.svelte.js'
 import { runAction } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
@@ -44,8 +45,10 @@ import { runAction } from '../lib/jobs.svelte.js'
     (a, b) => ((a.status === 'done') - (b.status === 'done')) || a.priority.localeCompare(b.priority),
   ))
 
-  const pub = $derived(contentPub.filter((f) => (f.published || []).length))
-  const pend = $derived(contentPub.filter((f) => !(f.published || []).length))
+  // 判据走 lib/publishstate.js：备好待人工粘贴（prepared）不算已发布 —— 这条卡片的
+  // 数字是给人看进度的，把「备好了」算进「已发布」会让进度虚高
+  const pub = $derived(contentPub.filter((f) => hasPublished(f.published)))
+  const pend = $derived(contentPub.filter((f) => !hasPublished(f.published)))
 </script>
 
 <div class="page">

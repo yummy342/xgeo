@@ -16,5 +16,13 @@ work/
 # 时间戳改动备份，回滚已交给 git
 *.bak-*
 
+# 前端依赖：一次装几十兆，绝不进仓库。
+# **构建产物 scripts/ui_dist/ 反而要进**（部署要能离线，见 frontend/README.md）——
+# 所以别把这条写成 `dist` 或 `scripts/ui_dist`，那会把部署产物一起挡掉。
+# 2026-09-25 补：`git check-ignore` 对目录带尾斜杠时给的匹配行号不可靠，我据此
+# 误判过一次「node_modules 已被忽略」，结果 1465 个依赖文件进了提交（已回滚）。
+frontend/node_modules/
+frontend/.vite/
+
 # macOS
 .DS_Store

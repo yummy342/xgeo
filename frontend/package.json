@@ -7,7 +7,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node scripts/i18n-audit.mjs --strict && node scripts/legacy-globals.mjs --strict && node scripts/dist-integrity.mjs --strict",
-    "test:e2e": "node scripts/smoke.mjs && node scripts/responsive.mjs && node scripts/dialog-smoke.mjs && node scripts/workbench-focus.mjs"
+    "test:e2e": "node scripts/smoke.mjs && node scripts/responsive.mjs && node scripts/dialog-smoke.mjs && node scripts/workbench-focus.mjs && node scripts/manual-publish-smoke.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
