@@ -27,59 +27,97 @@ import requests
 
 import geolib as G
 
+# 阿里云百炼 MaaS（新加坡区）的 OpenAI 兼容端点。2026-09-22 起国内三家引擎改走这里：
+# 本机没有智谱/月之暗面/DeepSeek 的官方 key，百炼转发的是同一家模型，测品牌认知口径不变。
+# 端点里的 workspace id 属于账号，换账号要连 URL 一起改。
+BAILIAN_BASE = ("https://ws-iey2cz9rzkqklxb5.ap-southeast-1.maas.aliyuncs.com"
+                "/compatible-mode/v1")
+
+
 # 平台注册表：code -> 配置。market 决定这个平台该问哪一套问题库。
 # 观测集合（2026-07 定）：国内 = 智谱GLM/豆包/DeepSeek/Kimi/MiniMax/纳米AI/百度AI；
 # 海外 = Gemini/ChatGPT/Claude/Grok/Perplexity。纳米AI、百度AI 无公开 API，走人工采样。
 PROVIDERS = {
     # ---------------- 国内 ----------------
+    # 换了端点要连 model 一起换：百炼上只有 5.x 一代（没有 glm-4-flash 这类旧轻量档），
+    # 模型名对不上会 404。换回官方端点时三处一起回退：
+    #   base  https://open.bigmodel.cn/api/paas/v4   key_env  ZHIPUAI_API_KEY    model  glm-4-flash
     "glm": {
         "name": "智谱GLM", "market": "cn",
-        "base": "https://open.bigmodel.cn/api/paas/v4",
-        # 采样默认用各家的轻量档：测的是「模型认不认识这个品牌」，不是推理质量，口径一致优先。
-        "model": "glm-4-flash",
+        "base": BAILIAN_BASE,
+        "model": "glm-5.3",
         "model_env": "GLM_MODEL",
-        "key_env": "ZHIPUAI_API_KEY",
+        "key_env": "BAILIAN_KEY",
         "search": False,
-        "note": "OpenAI 兼容端点，不联网；智谱清言网页版联网行为需人工采",
+        "note": "经百炼 MaaS 调智谱 GLM。不联网，测的是模型参数化知识里的品牌认知",
     },
     "doubao": {
-        # 火山方舟。联网要在控制台开通「内容插件」（console.volcengine.com/common-buy/CC_content_plugin）。
-        # 没开通时自动降级成不联网采样，不会中断整期。
+        # 2026-09-22：账号 2131007510 开通后实测可用的是 2-1-pro / 2-1-lite / 2-1-turbo
+        # 与 2-0 全系；seed-evolving 未开通。**开通生效有几分钟抖动**（同一模型
+        # 通→不通→通都出现过），新开通后别急着判定失败，隔几分钟再测一轮。
+        # 模型名写错会得到和「未开通」几乎一样的报错，别把名字问题当成权限问题。
+        #
+        # 走普通 chat/completions 而不再挂 protocol="ark"：responses + web_search
+        # 那条路当前直接回 InternalServiceError（内容插件未生效），秒错不是超时。
+        # 所以这一档测的是参数化知识，口径同 glm/deepseek，报告里标「不联网」。
+        # 一旦开通内容插件，把 protocol 加回 "ark" 即可恢复联网+引用。
+        # 取 lite 不取 pro：pro 实测单条 198s，是整轮里最慢的档。注册表一贯的规矩
+        # 是「用各家的轻量档，测的是模型认不认识这个品牌，不是推理质量」——
+        # 这一条在豆包这里尤其要紧，思考链一长，一题就能吃掉十分钟。
         "name": "豆包(方舟API)", "market": "cn",
-        "protocol": "ark",
         "base": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "doubao-seed-1-6-250615",
+        "model": "doubao-seed-2-1-lite-260915",
         "model_env": "ARK_MODEL",
         "key_env": "ARK_API_KEY",
-        "search": True,
-        "note": "开通内容插件后走 responses+web_search 并返回引用；否则退回参数化知识采样",
+        "timeout": 300,          # 实测单条 119s，120s 的默认值会误判成超时
+        "search": False,
+        "note": "方舟 chat 端点，不联网；要测豆包联网行为需先开通内容插件再挂回 ark 协议",
     },
     "deepseek": {
         "name": "DeepSeek", "market": "cn",
-        "base": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash",
+        # 回退官方：base 改 https://api.deepseek.com/v1，key_env 改 DEEPSEEK_API_KEY
+        "base": BAILIAN_BASE,
+        "model": "deepseek-v4-pro",
         "model_env": "DEEPSEEK_MODEL",
-        "key_env": "DEEPSEEK_API_KEY",
+        "key_env": "BAILIAN_KEY",
         "search": False,
-        "note": "官方 API 不联网，测的是模型参数化知识里的品牌认知",
+        "note": "经百炼 MaaS 调 DeepSeek。不联网，测的是模型参数化知识里的品牌认知",
     },
     "kimi": {
         "name": "Kimi", "market": "cn",
-        "base": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2-0905-preview",
+        # 回退官方：base 改 https://api.moonshot.cn/v1，key_env 改 MOONSHOT_API_KEY
+        "base": BAILIAN_BASE,
+        "model": "kimi-k3",
         "model_env": "MOONSHOT_MODEL",
-        "key_env": "MOONSHOT_API_KEY",
+        "key_env": "BAILIAN_KEY",
+        "skip_temperature": True,   # kimi-k3 拒收 temperature，带就 400
         "search": False,
-        "note": "默认不联网；需要联网请在网页端采样",
+        "note": "经百炼 MaaS 调月之暗面 Kimi。默认不联网；需要联网请在网页端采样",
     },
     "minimax": {
         "name": "MiniMax", "market": "cn",
         "base": "https://api.minimaxi.com/v1",
-        "model": "MiniMax-M2",
+        "model": "MiniMax-M3",
         "model_env": "MINIMAX_MODEL",
         "key_env": "MINIMAX_API_KEY",
+        # 不显式给上限时推理会吃满默认额度、答案被 finish_reason=length 截断
+        # (实测 MiniMax-M2 就是这样)，4096 与 anthropic 分支取同一个值。
+        "extra": {"max_tokens": 4096},
         "search": False,
-        "note": "OpenAI 兼容端点，不联网；海螺 AI 网页版需人工采",
+        "note": "OpenAI 兼容端点，不联网；思维链写在 content 里，分析前由 _strip_think 剥掉",
+    },
+    "ernie": {
+        # 百度千帆的 ERNIE 模型 API。**它不是 MANUAL_ONLY 里那个 baidu**——
+        # 那个指「百度 AI 搜索」联网产品（无公开 API，只能人工采），两者不是一件事，
+        # 所以这里新开一个引擎码而不是把 baidu 转正。千帆上也有 glm/deepseek，
+        # 但那些已经走百炼，不重复接。
+        "name": "文心ERNIE(千帆API)", "market": "cn",
+        "base": "https://qianfan.baidubce.com/v2",
+        "model": "ernie-5.1",
+        "model_env": "ERNIE_MODEL",
+        "key_env": "QIANFAN_KEY",
+        "search": False,
+        "note": "千帆 ERNIE 模型 API，不联网；文心一言网页版需人工采",
     },
     # ---------------- 海外 ----------------
     "gemini": {
@@ -521,6 +559,28 @@ NEG_CUES = re.compile(
     r"|not recommended|avoid|scam|complaints?|lawsuit|shut ?down|worse than|downsides?",
     re.IGNORECASE)
 
+# 「我不认识这个品牌」的措辞。和 NEG_CUES 是两回事：那组是「认识且说坏话」，
+# 这组是「压根不认识」。点名题里答案必然复述品牌名，于是 recognized_rate 恒为 1.0——
+# 实测三家中文引擎答「Aiglade 是家什么公司」时给的全是「抱歉，我没有关于它的可靠信息」，
+# 却被记成 100% 认知。两类都收：明说没信息（没有/未找到/无法确认），
+# 以及承认认知不足再往下猜（信息有限/并非广为人知/基于现有信息推测）。
+# 不收泛化的「抱歉/很遗憾」——模型常以道歉开头再给出有效信息，那种不能算不认识。
+#
+# 这一组抓不到「编造」：deepseek 答「Aiglade 和 Dify 有什么区别」时把 Aiglade
+# 编成一个真实存在的平台，措辞上毫无破绽。那类只能靠人工复核（Gaps 页记事实偏差），
+# 所以 recognized_rate 是下限意义上的数字，不是「AI 认识你」的证明。
+UNKNOWN_CUES = re.compile(
+    r"没有(?:关于|找到|收录|可靠|相关|足够)|没能|未找到|未收录|不了解|不清楚|不知道|"
+    r"无法(?:确认|提供|找到|验证)|知识(?:库)?截止|拼写(?:错误|有误)|"
+    r"信息(?:非常)?有限|资料有限|了解(?:有限|不多)|信息(?:很)?少|"
+    r"并非广为人知|并不广为人知|不是一家广为人知|多个同名|同名实体|"
+    r"(?:基于|根据)(?:现有|目前)(?:的)?信息推测|"
+    r"no reliable|no information|no mention|couldn'?t find|can'?t find|cannot find|"
+    r"unable to find|not familiar|not aware|don'?t have|do not have|knowledge cutoff|"
+    r"not sure which|aren'?t sure which|very limited information",
+    re.IGNORECASE)
+
+
 
 def _alias_spans(text: str, alias: str) -> list[tuple[int, int]]:
     """别名命中区间。
@@ -596,9 +656,27 @@ def is_probe_question(q: dict, cfg: dict) -> bool:
     return brand_in_question(q.get("text") or "", cfg)
 
 
+THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """剥掉推理模型写在正文里的思维链。
+
+    测的是「AI 给用户的答案」——thinking 是内部推理，用户看不到（App 里折叠着，
+    甚至根本不展示）。留在正文里，品牌名会在推理段被当成「提及」，answer_chars
+    也虚高，mention_rate 就不是答案层的数字了。
+
+    MiniMax 的 M 系列直接把 <think> 写在 content 里；百炼/千帆那几家实测不写，
+    剥离对它们是恒等操作。落盘的 answer 仍是原文——保真是这个产品的主卖点，
+    要在分析层剥，不在存储层剥。
+    """
+    return THINK_RE.sub("", text or "").strip()
+
+
 def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dict:
     names, alias = entities_of(cfg)   # 先它：brand.name 缺失时它给的是可读的报错
     brand = cfg["brand"]["name"]
+    answer = _strip_think(answer)
     positions, needs_review = {}, False
     for n in names:
         pos, negated = _entity_hit(answer, alias[n])
@@ -618,7 +696,9 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     for u in urls:
         try:
             h = urlparse(u).netloc.lower().removeprefix("www.")
-            if h:
+            # 本机地址不是信源：模型答「可以本地跑」时会带上 ollama 的
+            # localhost:11434，算进 top_cited_domains 就是纯噪音。
+            if h and h.split(":")[0] not in ("localhost", "127.0.0.1", "0.0.0.0"):
                 domains.append(h)
         except Exception:  # noqa: BLE001
             pass
@@ -627,16 +707,21 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     own = urlparse(cfg["brand"]["site"]).netloc.lower().removeprefix("www.") if G.has_site(cfg) else ""
 
     # 疑似负面：品牌每个命中点前 80 / 后 160 字符窗口内的负面线索词
-    neg = set()
+    neg, unk = set(), set()
     if present.get(brand):
         for a in alias[brand]:
             for s, e in _alias_spans(answer, a):
-                for mm in NEG_CUES.finditer(answer[max(0, s - 80):e + 160]):
+                _rng = answer[max(0, s - 80):e + 160]
+                for mm in NEG_CUES.finditer(_rng):
                     neg.add(mm.group(0).lower())
+                for mm in UNKNOWN_CUES.finditer(_rng):
+                    unk.add(mm.group(0).lower())
 
     return {
         "brand_mentioned": present.get(brand, False),
         "brand_rank": (ordered.index(brand) + 1) if brand in ordered else 0,
+        "brand_unknown": bool(unk),
+        "unknown_cues": sorted(unk),
         "candidates": ordered,
         "competitors_mentioned": [n for n in names if n != brand and present.get(n)],
         "cited_domains": sorted(set(domains)),
@@ -725,7 +810,10 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
             # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网
             "probe": {
                 "samples": len(probe),
-                "recognized_rate": round(sum(1 for r in probe if r["analysis"]["brand_mentioned"]) / len(probe), 3) if probe else None,
+                "recognized_rate": round(sum(
+                    1 for r in probe
+                    if r["analysis"]["brand_mentioned"] and not r["analysis"].get("brand_unknown")
+                ) / len(probe), 3) if probe else None,
                 "own_domain_cite_rate": (round(sum(1 for r in probe if r["analysis"]["own_domain_cited"]) / len(probe), 3)
                                           if probe and G.has_site(cfg) else None),
             },
