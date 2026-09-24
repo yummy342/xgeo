@@ -162,8 +162,18 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
         s = audit.get("site", {})
         A("| 检查项 | 结果 |")
         A("|---|---|")
-        A(f"| sitemap.xml | {'有（' + str(s.get('sitemap_url_count', 0)) + ' 条 URL）' if s.get('has_sitemap') else '**无**'} |")
-        A(f"| llms.txt | {'有' if s.get('has_llms_txt') else '**无**'} |")
+        # 抓取失败时写「未测出」，不写「无」：报告是要拿去做决定的，不能把
+        # 「这次没问到」渲染成一个确定结论。
+        if s.get("has_sitemap"):
+            sm_cell = "有（" + str(s.get("sitemap_url_count", 0)) + " 条 URL）"
+        else:
+            sm_cell = "**无**" if s.get("sitemap_reachable", True) else "未测出（抓取失败）"
+        A(f"| sitemap.xml | {sm_cell} |")
+        if s.get("has_llms_txt"):
+            llms_cell = "有"
+        else:
+            llms_cell = "**无**" if s.get("llms_txt_reachable", True) else "未测出（抓取失败）"
+        A(f"| llms.txt | {llms_cell} |")
         A(f"| robots 封禁 AI 抓取器 | {'、'.join(s.get('ai_bots_blocked') or []) or '无'} |")
         probe = s.get("ai_ua_probe") or {}
         if probe or s.get("ai_ua_blocked"):

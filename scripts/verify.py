@@ -114,6 +114,8 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             ok = bool(site.get("robots_sitemap_declared"))
             return ok, ("robots.txt 已声明 Sitemap" if ok else "robots.txt 仍未声明 Sitemap"), None
         if expr == "site.llms_txt_valid":
+            if not site.get("llms_txt_reachable", True):
+                return None, "本次重抓没拿到 /llms.txt 的结论（超时/源站故障），先重跑 crawl", None
             if not site.get("has_llms_txt"):
                 return False, "llms.txt 缺失", None
             lch = site.get("llms_txt_check") or {}
@@ -166,9 +168,15 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             return cur >= tgt, f"hreflang 覆盖 {lc2.get('hreflang_pages', 0)}/{total} 页（{cur:.0%} / 目标 {tgt:.0%}）", \
                 {"label": "hreflang 覆盖率", "cur": round(cur, 2), "target": tgt, "op": "gte", "pct": True}
         if expr == "site.has_sitemap":
+            # 重抓时没能确认（超时/5xx）不能判「仍缺失」——那会把一次网络抖动
+            # 记成「工单没做」，交人工。同 rules 见 site.has_llms_txt。
+            if not site.get("sitemap_reachable", True):
+                return None, "本次重抓没拿到 sitemap 的结论（超时/源站故障），先重跑 crawl", None
             ok = bool(site.get("has_sitemap"))
             return ok, f"sitemap {'已上线（%d 条 URL）' % site.get('sitemap_url_count', 0) if ok else '仍缺失'}", None
         if expr == "site.has_llms_txt":
+            if not site.get("llms_txt_reachable", True):
+                return None, "本次重抓没拿到 /llms.txt 的结论（超时/源站故障），先重跑 crawl", None
             ok = bool(site.get("has_llms_txt"))
             return ok, ("llms.txt 已上线" if ok else "llms.txt 仍缺失"), None
         if expr.startswith("site.avg_score_gte:"):

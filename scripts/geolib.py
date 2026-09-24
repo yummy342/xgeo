@@ -349,15 +349,23 @@ def fetch(url: str, timeout: int = 12, retries: int = 1, ua: str | None = None) 
             "x_robots_tag": "", "elapsed": 0, "error": last}
 
 
-def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000, retries: int = 2) -> str:
+def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000,
+               retries: int = 2) -> str | None:
     """站点级小文件（robots.txt / llms.txt / sitemap）的读取。
 
     带体积上限：大站的 sitemap 常有几十 MB，不带 stream 会把整个 body 读进
     内存，apparent_encoding 还要对全量字节跑一遍编码探测。
 
-    重试：一次网络抖动会让调用方把「抓取失败」读成「站点没有这个文件」，
-    产出假 P2（robots 甚至假 P0）。404 是真不存在，不重试；其余非 200
-    与超时/连接错按退避重试。
+    三种返回要分清（这是本函数存在的全部理由）：
+      200  → 文件内容
+      404  → ""，站点确实没有这个文件
+      其余（超时 / 连接错 / 5xx / 403）→ None，「这次没拿到」，不下任何结论
+
+    以前失败也返回 ""，调用方分不出「没有」和「没抓到」，一次抖动就写成
+    「站点没有 /llms.txt」这种假 P2。robots.txt 那侧早已改用 fetch 区分
+    （见 crawl.run 里的注释），其余三个调用点一直没跟上——2026-09-24 实测
+    llms.txt 在线上 200 / 2849 字节，audit 却报「没有 /llms.txt」。
+    404 是真不存在，不重试；其余非 200 与网络错按退避重试。
     """
     for attempt in range(retries + 1):
         try:
@@ -383,7 +391,7 @@ def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000, retries: 
         except Exception:  # noqa: BLE001
             if attempt < retries:
                 time.sleep(0.5 * (attempt + 1))
-    return ""
+    return None
 
 
 # ---------------------------------------------------------------- robots.txt

@@ -38,22 +38,32 @@ def _same_site_url(root: str, u: str) -> bool:
     return bool(base) and (host == base or host.endswith("." + base))
 
 
-def discover_sitemap(root: str, limit: int = 300) -> list[str]:
+def discover_sitemap(root: str, limit: int = 300) -> tuple[list[str], bool]:
+    """返回 (URL 列表, 是否拿到了结论)。
+
+    第二个值是「这次到底问清楚没有」：所有 sitemap 请求要么 200 要么 404 才算有结论。
+    任何一条 fetch_text 返回 None（超时/5xx）就说明这轮问了但没答上来，调用方
+    不能据此断言「站点没有 sitemap」——那是一句会变成 P0 工单的话。
+    """
     urls: list[str] = []
     seen_maps = set()
     queue = [G.normalize_url(root, "/sitemap.xml"), G.normalize_url(root, "/sitemap_index.xml")]
 
-    robots = G.fetch_text(G.normalize_url(root, "/robots.txt"))
+    robots = G.fetch_text(G.normalize_url(root, "/robots.txt")) or ""
     for m in re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots):
         queue.append(m.strip())
 
     # 最多只跟 8 个 sitemap 文件：有些站的 sitemap index 挂着上百个分片，会把抓取拖死
+    probed = True
     while queue and len(urls) < limit and len(seen_maps) < 8:
         sm = queue.pop(0)
         if not sm or sm in seen_maps:
             continue
         seen_maps.add(sm)
         xml = G.fetch_text(sm)
+        if xml is None:
+            # 这轮问不到答案。已经拿到的 URL 仍然算数，一条都没有才是「没结论」。
+            return urls, bool(urls)
         if not xml:
             continue
         # 只留同站 http(s) 的 loc：sitemap 托管在 CDN、多站 sitemap index、
@@ -66,7 +76,7 @@ def discover_sitemap(root: str, limit: int = 300) -> list[str]:
             queue.extend(locs[:20])
         else:
             urls.extend(locs)
-    return urls
+    return urls, probed
 
 
 def discover_links(root: str, html: str, limit: int = 200) -> list[str]:
@@ -326,8 +336,14 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     rstatus = robots_res["status"]
     robots_reachable = rstatus in (200, 404)
     robots_txt = robots_res["html"] if rstatus == 200 else ""
-    llms_txt = G.fetch_text(G.normalize_url(root, "/llms.txt"))
-    sitemap_urls = discover_sitemap(root)
+    # llms.txt 同理走 G.fetch：fetch_text 分不出「站点没有」与「这次没抓到」，
+    # 实测线上 /llms.txt 返回 200 / 2849 字节，audit 却报「没有 /llms.txt」——
+    # 那条假 P2 直接变成一张「上线 /llms.txt」工单。
+    # 「拿到了正文」与「404 确实没有」都算有结论；200 但正文被 ctype 拦下也算没结论。
+    llms_res = G.fetch(G.normalize_url(root, "/llms.txt"))
+    llms_reachable = llms_res["status"] == 404 or bool(llms_res["html"])
+    llms_txt = llms_res["html"] if llms_res["status"] == 200 else ""
+    sitemap_urls, sitemap_probed = discover_sitemap(root)
 
     home = G.fetch(root)
     link_urls = discover_links(root, home["html"]) if home["html"] else []
@@ -343,10 +359,13 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
             res = home if u.rstrip("/") == root else G.fetch(u)
             # 只在 200 时落快照：404/500 的错误页存下来没有价值，还会被
             # 人工核查时当成真实页面内容。
-            if res["status"] == 200 and res["html"]:
+            saved = bool(res["status"] == 200 and res["html"])
+            if saved:
                 (outdir / "html" / f"{i:03d}.html").write_text(res["html"], "utf-8")
             page = analyze_page(u, res)
-            page["snapshot"] = f"evidence/html/{i:03d}.html"
+            # snapshot 只在真落了盘时才写。无条件写会留下指向不存在文件的路径
+            # （2026-09-23 那轮 27 页写了 27 条路径，盘中只有 26 个文件）。
+            page["snapshot"] = f"evidence/html/{i:03d}.html" if saved else ""
             return page
         except Exception as e:  # noqa: BLE001
             # 一页的解析/落盘异常不能带走整轮：异常经 pool.map 冒到 run()，
@@ -392,14 +411,20 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
 
     # 内容页填满 limit 个槽位就停。碰到非内容页不下锚，往下顺延——否则几个应用入口
     # 就能把真内容页顶掉，报告里「页面数」和均分都建立在一批读不出字的页上。
+    # 抓取失败的页同理不占槽位：它同样没给出可评价的内容。
+    # 试抓总数封在 2×limit：源站整体挂掉时，若还按「槽位没填满就继续」跑，
+    # 会把候选里的上百条 URL 全试一遍，每条都带重试。
     pages: list[dict] = []
     content_n = 0
     cursor = 0
-    while cursor < len(candidates) and content_n < limit:
+    while cursor < len(candidates) and content_n < limit and len(pages) < limit * 2:
         window = candidates[cursor:cursor + (limit - content_n)]
         cursor += len(window)
         for page in crawl_window(window, base=len(pages) + 1):
             pages.append(page)
+            if (page.get("status") or 0) != 200:
+                G.info(f"    抓取失败（{page.get('status')}），槽位顺延 {page['url']}")
+                continue
             reason = G.non_content_reason(page)
             if reason:
                 page["non_content_reason"] = reason
@@ -430,7 +455,9 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
         "has_robots": bool(robots_txt),
         "robots_fetched": robots_reachable,
         "has_llms_txt": bool(llms_txt),
+        "llms_txt_reachable": llms_reachable,
         "has_sitemap": bool(sitemap_urls),
+        "sitemap_reachable": sitemap_probed,
         "sitemap_url_count": len(sitemap_urls),
         "robots_sitemap_declared": bool(re.search(r"(?im)^\s*sitemap:", robots_txt or "")),
         "sitemap_noisy_urls": len(noisy),

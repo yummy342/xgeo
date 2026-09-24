@@ -304,6 +304,7 @@ def run(slug: str) -> dict:
                "page_count": 0, "avg_score": None, "grade_distribution": {},
                "block_gap": [], "pages": [], "keywords_used": [],
                "non_content_count": 0, "non_content_pages": [],
+               "unreachable_count": 0, "unreachable_pages": [],
                "language_coverage": {}}
         G.write_json(pdir / "audit.json", out)
         return out
@@ -314,8 +315,21 @@ def run(slug: str) -> dict:
     # 留在均分里等于拿「这页本来就不是给人读的」去扣内容分，还会顺带产出
     # 「给 application/json 补 JSON-LD」这类伪工单。单列出来，SPA 那条仍作真缺陷报。
     non_content: list[dict] = []
+    unreachable: list[dict] = []
     content: list[dict] = []
     for p in pages:
+        # 非 200 的页单列，不评分也不出页面级 issue。它们拿到的是 CDN/源站的
+        # 错误页（实测：CF 502 页 42 词、带 noindex），拿去打分等于给一张错误页
+        # 算「缺 FAQ / 缺 JSON-LD / 缺 canonical」，一口气产出 3 条 P0 + 1 条 P2
+        # 伪工单，还把一份 18.1 分塞进均分里拉低全站。抓取失败这件事本身在
+        # 「访问」层报一次就够，不需要拆成十二条。
+        if (p.get("status") or 0) != 200:
+            unreachable.append({
+                "url": p["url"], "status": p.get("status") or 0,
+                "error": p.get("error") or "",
+                "title": p.get("title") or "",
+            })
+            continue
         reason = G.non_content_reason(p)
         if not reason:
             content.append(p)
@@ -390,11 +404,14 @@ def run(slug: str) -> dict:
         site_issues.append(
             f"P1 robots.txt 对 {p['bot']} 封了部分内容路径（{p['count']}/{p['sampled']} 抽样页命中 "
             f"{p.get('rule') or ''}，如 {p['paths'][0]}），确认封的是低价值页而不是内容页")
-    if not site.get("has_sitemap"):
+    # 站点级资产只在「确实问了、答案是 404」时才敢说「没有」。抓取失败（超时 / 5xx）
+    # 时 *_reachable 为 False，一律不下结论 —— 否则一次抖动就变成一张
+    # 「补 sitemap.xml」「上线 /llms.txt」工单。默认 True 让旧 evidence 行为不变。
+    if not site.get("has_sitemap") and site.get("sitemap_reachable", True):
         site_issues.append("P0 没有 sitemap.xml，收录效率和覆盖面都会打折")
     elif site.get("robots_sitemap_declared") is False:
         site_issues.append("P2 robots.txt 没有声明 Sitemap: 行，AI 抓取器发现新页面会更慢")
-    if not site.get("has_llms_txt"):
+    if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True):
         site_issues.append("P2 没有 /llms.txt，可以低成本给 AI 一份官方事实索引")
     # 重复检测：同题多 URL 会让检索在错误的候选里二选一，「错的那个」可能赢
     #（GEO Readiness Manual：duplicate URL increases the chance the wrong thing survives）
@@ -479,7 +496,7 @@ def run(slug: str) -> dict:
 
     # SPA 外壳的页已被移出评分（进不了 results），从非内容页那份名单里数更直接
     spa = sum(1 for e in non_content if "SPA_SHELL" in e["issue_codes"])
-    unreach = pages_with("PAGE_UNREACHABLE")
+    unreach = len(unreachable)
     noidx = pages_with("NOINDEX") + pages_with("XROBOTS_NOINDEX")
     nojld = pages_with("NO_JSONLD")
     layers = [
@@ -492,13 +509,16 @@ def run(slug: str) -> dict:
             if site.get("ai_bots_partial") else None,
             (("fail" if spa >= n * 0.3 else "warn"), f"{spa} 页疑似前端渲染空壳，抓取器读不到正文") if spa else None,
             (("fail" if noidx >= n * 0.3 else "warn"), f"{noidx} 页带 noindex（meta 或 X-Robots-Tag）") if noidx else None,
-            ("warn", f"{unreach} 页抓取失败") if unreach else None,
+            ("warn", f"{unreach} 页抓取失败（本次未参与评分）：{unreachable[0]['url']}"
+                     f"{' 等' if unreach > 1 else ''}") if unreach else None,
         ]),
         layer("orient", "定向", "抓取器找得到、认得清每个 URL 吗", [
-            ("fail", "没有 sitemap.xml") if not site.get("has_sitemap") else None,
+            ("fail", "没有 sitemap.xml")
+            if not site.get("has_sitemap") and site.get("sitemap_reachable", True) else None,
             ("warn", "robots.txt 未声明 Sitemap: 行")
             if site.get("has_sitemap") and site.get("robots_sitemap_declared") is False else None,
-            ("warn", "没有 /llms.txt") if not site.get("has_llms_txt") else None,
+            ("warn", "没有 /llms.txt")
+            if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True) else None,
             ("warn", f"llms.txt 有 {len(lch['broken'])} 条失效链接") if lch.get("broken") else None,
             ("warn", "llms.txt 指向的页面被 robots 封禁") if lch.get("robots_blocked") else None,
             ("warn", f"{pages_with('NO_CANONICAL')} 页缺 canonical") if pages_with("NO_CANONICAL") else None,
@@ -554,9 +574,14 @@ def run(slug: str) -> dict:
         "pages": sorted(results, key=lambda r: r["score"]),
         "non_content_count": len(non_content),
         "non_content_pages": non_content,
+        # 抓取失败的页也单列：既不进均分也不出页面级 issue，只在「访问」层报一次。
+        # 报告里那句「N 页抓取失败」与这里的明细是同一件事的两种粒度。
+        "unreachable_count": len(unreachable),
+        "unreachable_pages": unreachable,
     }
     G.write_json(pdir / "audit.json", out)
     extra = f"，另有非内容页 {len(non_content)} 个未参与评分" if non_content else ""
+    extra += f"，抓取失败 {len(unreachable)} 页未参与评分" if unreachable else ""
     G.info(f"体检完成：{len(results)} 页，均分 {avg}，分布 {grade_dist}{extra} → {pdir/'audit.json'}")
     return out
 

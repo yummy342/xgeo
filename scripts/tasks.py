@@ -102,7 +102,9 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                       "内容页被误伤的改规则放行", "开发", "S",
                       {"type": "manual",
                        "desc": "封禁是刻意为之（低价值页）而非误伤内容页，需人工确认"}))
-    if not site.get("has_sitemap"):
+    # 抓取失败（*_reachable 为 False）时不下「没有这个文件」的判断，也不开工单：
+    # 「补 sitemap.xml」这种工单在重抓时必然自证清白，白占一次人工。
+    if not site.get("has_sitemap") and site.get("sitemap_reachable", True):
         out.append(_t(next(seq), "P0", "页面技术", "补 sitemap.xml 并提交各搜索引擎",
                       "无 sitemap，收录效率和覆盖面打折（method.md 可抓取性）",
                       "生成 sitemap.xml，robots.txt 里声明，提交百度/必应/Google/夸克",
@@ -114,7 +116,7 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                       "在 robots.txt 末尾加一行 `Sitemap: <完整 URL>`", "开发", "S",
                       {"type": "auto", "check": "site.robots_sitemap_declared",
                        "desc": "robots.txt 含 Sitemap: 声明"}))
-    if not site.get("has_llms_txt"):
+    if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True):
         out.append(_t(next(seq), "P1", "知识库", "上线 /llms.txt 官方事实索引",
                       "低成本给 AI 一份人工整理的官方索引，国内很多站没做（content-patterns.md 第 7 节）",
                       "用 `geo.py generate --asset llms` 产出后部署到网站根目录", "开发", "S",
