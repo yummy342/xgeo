@@ -1,8 +1,9 @@
 <script>
   import SwitchBrandDialog from './SwitchBrandDialog.svelte'
-  import { NAV, badgeFor, LANGS } from '../lib/nav.js'
+  import { navFor, badgeFor, LANGS } from '../lib/nav.js'
   import { i18n, setLocale, t } from '../lib/i18n/index.svelte.js'
   import { api } from '../lib/api.js'
+  import { toast } from '../lib/stores/toast.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
   import { runAction } from '../lib/jobs.svelte.js'
   import { project } from '../lib/stores/project.svelte.js'
@@ -25,9 +26,18 @@
   })
 
   const account = $derived(me && me.mode === 'account' ? me : null)
+  // 身份没回来之前不隐藏任何入口（隐藏是体验，不是边界；服务端照旧逐路由判权）
+  const nav = $derived(navFor(me ? me.admin : true))
 
   async function signOut() {
-    await api('/api/auth/logout', { method: 'POST' })
+    const r = await api('/api/auth/logout', { method: 'POST' })
+    // api() 把非 2xx 与网络失败都吞成 {error}，**从不抛** —— 所以必须自己判：
+    // 服务端没删掉会话时刷新会把人送回看板，而他会以为自己已经登出了
+    // （共用机器上这正是最危险的那种误会）。
+    if (r && r.error) {
+      toast.error(r.error)
+      return
+    }
     // 会话在服务端的进程里，刷新之后这个请求就是 401，浏览器落到登录页
     location.reload()
   }
@@ -58,7 +68,7 @@
   </button>
 
   <nav>
-    {#each NAV as g (g.key)}
+    {#each nav as g (g.key)}
       <div class="grp">
         <div class="navgrp">{t(g.label)}</div>
         {#each g.items as [k, label] (k)}

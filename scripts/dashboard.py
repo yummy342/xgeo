@@ -285,6 +285,19 @@ def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
     return out
 
 
+def host_name(value: str | None) -> str:
+    """取 Host / Origin 里的主机名：去掉端口与 IPv6 的方括号。
+
+    全文件必须只有这一套解析。`[::1]:8765` 用 `split(":")[0]` 会切出 `"["`，
+    于是「Origin 与 Host 同源」恒不相等 —— 走 IPv6 字面量访问的实例登录永远 403，
+    报的还是「跨站请求被拒绝」，排查会被引到 CSRF 上去。
+    """
+    h = (value or "").strip().lower()
+    if h.startswith("["):
+        return h[1:h.index("]")] if "]" in h else h
+    return h.split(":")[0]
+
+
 def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -295,6 +308,23 @@ def _cookie_value(cookie_header: str | None) -> str | None:
         if k in (AUTH_COOKIE, LEGACY_COOKIE) and v:
             return v
     return None
+
+
+def _cookie_values(cookie_header: str | None) -> list[str]:
+    """cookie 里所有候选值，**新名在前**。
+
+    `_cookie_value` 只取第一个命中的名字，而浏览器同 path 下按创建时间升序发——
+    从 geolook 改名过来的浏览器里，旧的 `glk_auth`（值多半已失效）排在
+    `xgeo_auth` 前面，于是拿一个死值去比。会话档下表现为「登录 POST 回 200 并
+    下发新 cookie，但之后每个请求都 401」，界面上完全看不出原因。
+    令牌那条路仍走 `_cookie_value`（不动既有行为），会话这条路逐个试。
+    """
+    named: dict[str, list[str]] = {AUTH_COOKIE: [], LEGACY_COOKIE: []}
+    for part in (cookie_header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if v and k in named:
+            named[k].append(v)
+    return named[AUTH_COOKIE] + named[LEGACY_COOKIE]
 
 
 def _same(a: str, b: str) -> bool:
@@ -412,7 +442,9 @@ def parse_accounts(raw: str | None) -> dict[str, dict]:
         email = email.strip().lower()
         if not email or not sep:
             continue
-        names = {s.strip() for s in scope.split(",") if s.strip()}
+        # 项目名按小写归一：项目标识就是目录名，而 geolib.SLUG_OK 只允许小写。
+        # 写成 `Proj-A` 今天的结果是「登进来了但什么都看不到」且没有任何报错。
+        names = {s.strip().lower() for s in scope.split(",") if s.strip()}
         if "*" in names:
             out[email] = {"admin": True, "projects": set()}
         elif names:
@@ -421,7 +453,12 @@ def parse_accounts(raw: str | None) -> dict[str, dict]:
 
 
 def accounts() -> dict[str, dict]:
-    """每次现读 —— 测试要能改环境变量，别在 import 时定死。"""
+    """每次现读 —— 测试要能改环境变量，别在 import 时定死。
+
+    **名单只能靠重启改**（它在进程环境里），而重启会清空 SESSIONS，所以
+    「改了名单旧的会话还活着」这件事不会发生 —— 会话里存的那份 admin/projects
+    快照因此不需要在每个请求上回查名单。
+    """
     return parse_accounts(_env("XGEO_ACCOUNTS"))
 
 
@@ -455,9 +492,16 @@ def email_from_me(payload) -> str:
     return ""
 
 
+# /me 的响应体上限。上游是运维配的地址，这个数字压的是「上游被换掉/被串」
+# 时的放大面：不带上限就是让对端决定我们读多少内存。
+MAX_ME_BYTES = 64 * 1024
+
+
 def _session_ttl() -> int:
+    """会话有效期。**下限 60 秒** —— 写 0 或负数会让登录「成功」又立刻掉线，
+    界面上没有任何错误提示，运维会去查网络。"""
     try:
-        return int(_env("XGEO_SESSION_TTL") or 7 * 24 * 3600)
+        return max(60, int(_env("XGEO_SESSION_TTL") or 7 * 24 * 3600))
     except ValueError:
         return 7 * 24 * 3600
 
@@ -480,21 +524,23 @@ def session_new(email: str, acct: dict) -> str:
 
 
 def session_get(cookie_header: str | None) -> dict | None:
-    digest = _cookie_value(cookie_header)
-    if not digest:
-        return None
-    s = SESSIONS.get(digest)
-    if not s:
-        return None
-    if s.get("exp", 0) < time.time():
-        SESSIONS.pop(digest, None)
-        return None
-    return s
+    for digest in _cookie_values(cookie_header):
+        s = SESSIONS.get(digest)
+        if s is None:
+            continue
+        if s.get("exp", 0) < time.time():
+            SESSIONS.pop(digest, None)
+            continue
+        return s
+    return None
 
 
 def session_drop(cookie_header: str | None) -> bool:
-    digest = _cookie_value(cookie_header)
-    return bool(digest and SESSIONS.pop(digest, None))
+    """删掉 cookie 里**所有**命中的会话。返回是否真删到了东西。"""
+    hit = False
+    for digest in _cookie_values(cookie_header):
+        hit = bool(SESSIONS.pop(digest, None)) or hit
+    return hit
 
 
 def session_cookie(sid: str, secure: bool, max_age: int | None = None) -> str:
@@ -510,7 +556,16 @@ def login_allowed(ip: str, limit: int = 10, window: int = 300) -> bool:
     """进程内限流。凭据是 48 位 hex 不可猜，这里挡的是「拿别人泄露的 key 试」这类。"""
     now = time.time()
     hits = [t for t in LOGIN_HITS.get(ip, []) if now - t < window]
-    LOGIN_HITS[ip] = hits
+    if hits:
+        LOGIN_HITS[ip] = hits
+    else:
+        # 空桶不留键：这是进程级全局，只增不删会一直长（原实现连空列表都建键）
+        LOGIN_HITS.pop(ip, None)
+    if len(LOGIN_HITS) > 4096:
+        # 兜底清扫：只在「对端不是反代」时才可能攒出这么多键，顺手收掉整桶过期的
+        for k, v in list(LOGIN_HITS.items()):
+            if not [t for t in v if now - t < window]:
+                LOGIN_HITS.pop(k, None)
     return len(hits) < limit
 
 
@@ -557,11 +612,19 @@ font-size:14px;cursor:pointer">进入</button>
 async function xgLogin() {{
   const k = document.getElementById('k').value.trim()
   if (!k) return
-  const r = await fetch('/api/auth/login', {{method: 'POST',
-    headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: k}})}})
-  const j = await r.json().catch(() => ({{}}))
-  if (r.ok) {{ location.href = '/'; return }}
-  document.getElementById('e').textContent = j.error || ('HTTP ' + r.status)
+  const out = document.getElementById('e')
+  out.textContent = ''
+  try {{
+    const r = await fetch('/api/auth/login', {{method: 'POST',
+      headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: k}})}})
+    const j = await r.json().catch(() => ({{}}))
+    if (r.ok) {{ location.href = '/'; return }}
+    out.textContent = j.error || ('HTTP ' + r.status)
+  }} catch (e) {{
+    // 没有这一层，fetch 一 reject（网络断了、服务重启）就是「点了没反应」：
+    // 界面不给任何回话，用户只会反复点。
+    out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
+  }}
 }}
 </script></body>"""
 
@@ -574,26 +637,50 @@ class Handler(BaseHTTPRequestHandler):
     _scope: set[str] | None = None    # 本请求命中的令牌的授权范围，_auth 里赋值
     _mode: str = ""                   # 本请求是怎么过的鉴权：token / account / open
     _email: str = ""                  # 账号档下当前登录的邮箱
+    BIND_PUBLIC: bool = False         # run() 注入；绑的地址不是回环时为 True
 
     def log_message(self, *a):  # 静音访问日志
         pass
 
+    # ------------------------------------------------------------ 反向代理
+    # 判据是**对端是不是回环**：仓库自带的 deploy.sh 把 nginx 和看板放同一台机
+    # （proxy_pass http://127.0.0.1:$PORT），只有它会从回环打进来，而且它用
+    # `$remote_addr` 覆写 X-Real-IP，客户端伪造不过去。直连时对端不是回环，
+    # 这两个头一律不认 —— 否则谁都能换掉自己的限流桶、或骗到一个只该在
+    # https 下发的 Secure cookie。
+    def _proxied(self) -> bool:
+        peer = (self.client_address[0] if self.client_address else "") or ""
+        return peer in ("127.0.0.1", "::1", "localhost")
+
+    def _client_ip(self) -> str:
+        """限流用的桶键。不是日志意义上的真实 IP，只要「同一来源稳定落在同一个桶」。
+        反代下取 X-Real-IP，否则所有用户（含管理员）共用一个桶，任何人连错
+        10 次就能把全站登录挡 5 分钟。"""
+        if self._proxied():
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real
+        return (self.client_address[0] if self.client_address else "") or "?"
+
     def _https(self) -> bool:
-        """本次请求是不是 https。nginx 已设 X-Forwarded-Proto；本机 http 不加 Secure，
-        否则浏览器会把 cookie 丢掉。"""
-        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+        """本次请求是不是 https。**只在确认过反代时才信 `X-Forwarded-Proto`** ——
+        否则直连时伪造这个头就能决定 cookie 带不带 Secure；反过来说，运维自写的
+        nginx 若忘了设它，https 站点的会话 cookie 就不带 Secure。两条都靠
+        `_proxied()` 这个前提框住：本机 http 不加 Secure，否则浏览器会丢掉 cookie。"""
+        return self._proxied() and \
+            (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
 
     def _do_login(self, body: dict) -> tuple[dict, int, str | None]:
         """用 FreeModel API Key 换一次本地会话。返回 (响应体, HTTP 码, 会话 id)。
 
         会话 id 单独返回而不是塞进响应体：它是凭据，只该进 Set-Cookie。"""
-        ip = self.client_address[0] if self.client_address else "?"
+        ip = self._client_ip()
         if not login_allowed(ip):
             return {"ok": False, "error": "尝试过于频繁，稍后再试"}, 429, None
         # 登录 CSRF：Origin 存在且与 Host 不同源时拒掉 —— 否则第三方页面能把
         # 受害者「登进攻击者的账号」，之后他上传的东西全落在攻击者名下。
         org = self.headers.get("Origin")
-        if org and (urlparse(org).hostname or "").lower() !=                 (self.headers.get("Host") or "").split(":")[0].lower():
+        if org and (urlparse(org).hostname or "").lower() != host_name(self.headers.get("Host")):
             return {"ok": False, "error": "跨站请求被拒绝"}, 403, None
         if not accounts_enabled():
             return {"ok": False,
@@ -602,19 +689,29 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(cred, str) or not cred.strip():
             return {"ok": False, "error": "请填 FreeModel API Key"}, 400, None
         login_note(ip)
+        # 凭据进上游 query（`?token=`）是 fm-auth 的接口形状，改不了 —— 这条链上
+        # 「凭据不进 URL」只对「浏览器 → 本服务」那一段成立，到 fm-auth 的
+        # access log 里仍会有它。计划里已承认这是过路凭据，别记成已解决。
         try:
-            r = requests.get(f"{_auth_base()}/me", params={"token": cred.strip()}, timeout=8)
+            # 不跟随跳转（上游被换掉时不给它把我们带去别处）、不整包读（对端不该
+            # 决定我们读多少内存），超时 8s。
+            with requests.get(f"{_auth_base()}/me", params={"token": cred.strip()},
+                              timeout=8, allow_redirects=False, stream=True) as r:
+                code = r.status_code
+                raw = r.raw.read(MAX_ME_BYTES + 1, decode_content=True) if code == 200 else b""
         except Exception as e:  # noqa: BLE001
             # 认证服务不可达 ≠ 凭据错。**不自动放行**（那是永久后门），但要说清
             # 可以改走令牌，别让人以为是 key 错了。
             return {"ok": False, "error": f"认证服务不可达（{type(e).__name__}），"
                                           f"可改用访问令牌登录"}, 503, None
-        if r.status_code in (401, 403):
+        if code in (401, 403):
             return {"ok": False, "error": "凭据无效（FreeModel API Key 不对或已失效）"}, 401, None
-        if r.status_code != 200:
-            return {"ok": False, "error": f"认证服务返回 {r.status_code}，稍后再试"}, 503, None
+        if code != 200:
+            return {"ok": False, "error": f"认证服务返回 {code}，稍后再试"}, 503, None
+        if len(raw) > MAX_ME_BYTES:
+            return {"ok": False, "error": "认证服务响应过大"}, 502, None
         try:
-            payload = r.json() or {}
+            payload = json.loads(raw or b"{}") or {}
         except Exception:  # noqa: BLE001
             payload = {}
         email = email_from_me(payload)
@@ -628,8 +725,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "该 FreeModel 账号不在本工作台的允许名单里"}, 403, None
         sid = session_new(email, acct)
         # 凭据不进日志、不落盘、不进记录：本次用它换到邮箱之后就不再需要它
-        return ({"ok": True, "email": email, "admin": bool(acct.get("admin")),
-                 "projects": sorted(acct.get("projects") or [])}, 200, sid)
+        return ({"ok": True, "email": email, "admin": bool(acct.get("admin"))}, 200, sid)
 
     def _host_ok(self) -> bool:
         """默认档（不设令牌）下只接受本机 Host。
@@ -642,12 +738,19 @@ class Handler(BaseHTTPRequestHandler):
         配了令牌就不再限 Host：鉴权已经挡住未认证请求，而且这时用户可能
         故意绑 0.0.0.0 从别的机器访问。
         """
-        if Handler.TOKEN or Handler.SCOPES or accounts_enabled():
-            # 配了账号档就别限 Host：鉴权已经挡住未认证请求，而这时用户一定是
-            # 从别的机器上的浏览器访问的 —— 限 Host 会把登录页本身 403 掉。
+        if Handler.TOKEN or Handler.SCOPES:
             return True
-        h = (self.headers.get("Host") or "").strip().lower()
-        h = h[1:h.index("]")] if h.startswith("[") and "]" in h else h.split(":")[0]
+        if accounts_enabled() and Handler.BIND_PUBLIC:
+            # 账号档 + 绑了非本机地址：用户是从别的机器上的浏览器访问的，
+            # 限 Host 会把登录页本身 403 掉。
+            return True
+        # 只配账号档、仍绑本机时不跳过 Host 校验。令牌档跳过它没关系（攻击者
+        # 拿不到合法令牌），账号档的威胁模型不同：攻击者**自带**合法凭据，能把
+        # 受害者登进自己的账号（之后他上传的东西全落在攻击者名下），而这时唯一
+        # 的防线就是「Origin == Host」—— DNS rebinding 恰好能让浏览器同时伪造
+        # 两者（它以为自己在跟 evil.com 说话）。下面的本机白名单不影响
+        # 127.0.0.1 下打开登录页。
+        h = host_name(self.headers.get("Host"))
         if h not in ("127.0.0.1", "localhost", "::1"):
             self._json({"error": "只接受本机访问：Host 不是本机地址"}, 403)
             return False
@@ -665,8 +768,10 @@ class Handler(BaseHTTPRequestHandler):
         # 账号档也算「配了东西」：只配 XGEO_ACCOUNTS 不配令牌时（全新自托管实例
         # 正是这形态），少这个条件会让 auth_ok(None, {}, …) 返回 True → 所有人放行、
         # 允许名单形同虚设。
+        # 每个请求都从零开始：Handler 实例在 keep-alive 上是复用的，_email 只在
+        # 账号分支赋值，不重置就会把上一个请求的身份带到 /api/auth/me 的响应里。
+        self._scope, self._mode, self._email = None, "", ""
         if not Handler.TOKEN and not Handler.SCOPES and not accounts_enabled():
-            self._scope = None
             self._mode = "open"
             return True
         u = urlparse(self.path)
@@ -675,7 +780,13 @@ class Handler(BaseHTTPRequestHandler):
         if qt and _match_token(Handler.TOKEN, Handler.SCOPES, None, query_token=qt):
             # 令牌换 cookie 后跳回干净地址，别让令牌留在地址栏和访问日志里
             self.send_response(302)
-            self.send_header("Location", u.path or "/")
+            loc = u.path or "/"
+            # 只接受站内绝对路径。`GET /\evil.com?token=…` 的 u.path 就是
+            # `/\evil.com`，浏览器按 WHATWG 会把反斜杠归一成 `/` → `//evil.com`
+            # → 跳到外站（预存在问题，改到这行顺手收掉；要有效令牌才触发）。
+            if not loc.startswith("/") or loc.startswith("//") or loc.startswith("/\\"):
+                loc = "/"
+            self.send_header("Location", loc)
             self.send_header("Set-Cookie", f"{AUTH_COOKIE}={_token_digest(qt)}; "
                                            "HttpOnly; SameSite=Strict; Path=/")
             self.send_header("Content-Length", "0")
@@ -701,6 +812,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET":
             self._send(401, _login_html().encode("utf-8"), "text/html; charset=utf-8")
         else:
+            # 先读走请求体再回 401：带着未读数据关 socket 的 RST 会把 401 吞掉，
+            # 客户端只看到「连接被中止」（见 _drain）。
+            self._drain()
             self._json({"error": "未授权：需要 X-Xgeo-Token 头或先在浏览器登录"}, 401)
         return False
 
@@ -759,18 +873,50 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, target.read_bytes(), ctype)
 
     MAX_BODY = 8 * 1024 * 1024   # 请求体上限：接口全在本机，8MB 够贴一篇长文
+    # 登录/登出单独设上限：它们**未认证可达**，8MB 的量级足够拿去耗内存与线程
+    # （一连接一线程，读满再限流等于没限）。登录体就是 {"credential": "…"}。
+    AUTH_MAX_BODY = 4 * 1024
 
-    def _body(self) -> dict:
+
+    def _drain(self) -> None:
+        """把还没读的请求体读走丢掉。
+
+        **带着未读数据关 socket 会发 RST**，而 RST 会把已经写出去的响应一起丢掉：
+        客户端读到的是「连接被中止」而不是那个 400/401/403。Windows 上实测约
+        1/3 概率，表现为测试里随机的 `ConnectionAbortedError`、线上表现为
+        「服务端明明回话了，客户端却说断连」。所以每条早退路径（没走到读体那一步
+        就返回的）都要先 drain 一次。
+
+        超过 MAX_BODY 的不读、直接标记关连接：那种量级宁可断，也不能替对端
+        分配内存。chunked 同理（解析它要另写一层）。
+        """
+        if (self.headers.get("Transfer-Encoding") or "").strip().lower() == "chunked":
+            self.close_connection = True
+            return
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > Handler.MAX_BODY:
+            self.close_connection = True
+            return
+        if n:
+            self.rfile.read(n)
+
+    def _body(self, max_bytes: int | None = None) -> dict:
         if (self.headers.get("Transfer-Encoding") or "").strip().lower() == "chunked":
             # 分块体不读走的话字节留在 socket 里，会被当成下一个请求行解析
             self.close_connection = True
-            raise ValueError("不支持 chunked 请求体")
+            raise ValueError("不支持 chunked 请求体")   # 分块体不解析，连接已标记要断
         n = int(self.headers.get("Content-Length", 0))
-        if n > Handler.MAX_BODY:
+        cap = Handler.MAX_BODY if max_bytes is None else max_bytes
+        if n > cap:
             # 不设上限的话，一个声明了超大 Content-Length 的请求就能把内存吃满。
-            # 连带把连接关掉：剩下的请求体不读了，留着会被当成下一个请求解析。
-            self.close_connection = True
-            raise ValueError(f"请求体过大：{n} 字节，上限 {Handler.MAX_BODY // 1024 // 1024}MB")
+            # 这里先把体读走再报错：带着未读数据关连接会让这个 400 被 RST 吞掉
+            # （见 _drain）。超过 MAX_BODY 的它自己会拒读并标记关连接。
+            self._drain()
+            label = f"{cap // 1024 // 1024}MB" if cap >= 1024 * 1024 else f"{cap // 1024}KB"
+            raise ValueError(f"请求体过大：{n} 字节，上限 {label}")
         return json.loads(self.rfile.read(n) or b"{}")
 
     # ------------------------------------------------------------ GET
@@ -886,12 +1032,15 @@ class Handler(BaseHTTPRequestHandler):
                 slug = p[len("/api/expand/"):]
                 return self._json(G.read_json(G.project_dir(slug) / "expand.json", {}) or {})
             if p == "/api/auth/me":
-                # 前端用它渲染侧栏（邮箱 + 登出）、隐藏管理员入口。
-                # 只是体验：真正的判权在服务端每个路由上，前端隐藏不作为边界。
+                # 身份三件套：怎么进来的、是谁、是不是管理员。侧栏按 admin 决定
+                # 要不要给「只有管理员能用」的入口（engines / settings 都读
+                # /api/keys，租户点进去只吃 403）。**这只是体验** —— 真正的判权
+                # 在服务端每个路由上，前端隐藏不作为边界。
+                # projects 不放这里：要在意的项目清单走 /api/projects，那条已经
+                # 按 _scope 过滤过了，两个出口报同一件事只会漂移。
                 return self._json({"ok": True, "mode": self._mode or "token",
                                    "email": self._email,
-                                   "admin": self._scope is None,
-                                   "projects": sorted(self._scope) if self._scope else []})
+                                   "admin": self._scope is None})
 
             if p.startswith("/api/publish/"):
                 import publish as P
@@ -989,13 +1138,35 @@ class Handler(BaseHTTPRequestHandler):
         # 早退路径也要掐连接：请求体还没读，留着会被当成下一个请求行解析，
         # keep-alive 下表现为同一条连接上的下一个正常请求莫名 400。
         if not self._host_ok():
+            # Host/Origin 被拒时它的 403 已经写出去了，但请求体还没读 —— 不读走就关
+            # 连接会发 RST，把那个 403 一起吞掉（见 _drain）。
+            self._drain()
             self.close_connection = True
             return
         p = unquote(urlparse(self.path).path)
         # 登录/登出必须在 _auth() **之前**：登录本来就发生在还没有凭据的时候。
         if p in ("/api/auth/login", "/api/auth/logout"):
-            body = self._body()
+            # 这两个分支**未认证可达**，所以请求体不能有未接住的异常：坏 JSON /
+            # chunked / 超大 Content-Length 三种输入都会让 ValueError 穿出
+            # do_POST，socketserver 只打 traceback 再掐连接、一个字节的响应都不发
+            # （登录页的 fetch 直接 reject，表现成「点了没反应」）。其它路由都在
+            # try 里按同一口径回 JSON，这里补齐；体量按 4KB 卡死（登录体就一句）。
+            try:
+                body = self._body(Handler.AUTH_MAX_BODY)
+            except (ValueError, RuntimeError):
+                self.close_connection = True
+                return self._json({"error": "请求体不合法（要 JSON 对象，且不超过 4KB）"}, 400)
+            if not isinstance(body, dict):
+                return self._json({"error": "请求体要 JSON 对象"}, 400)
             if p == "/api/auth/logout":
+                # 没开账号档就不处理：它清的是 AUTH_COOKIE，而令牌档的凭据正是
+                # 同一个 cookie 名 —— 无条件下发清除就等于给令牌档加了一个
+                # 「任何人一发就把别人登出」的入口。顺带与登录同样校 Origin。
+                if not accounts_enabled():
+                    return self._json({"error": "这个实例没有账号登录"}, 404)
+                org = self.headers.get("Origin")
+                if org and (urlparse(org).hostname or "").lower() != host_name(self.headers.get("Host")):
+                    return self._json({"error": "跨站请求被拒绝"}, 403)
                 session_drop(self.headers.get("Cookie"))
                 # Max-Age=0 让浏览器立刻丢掉它；路径/属性要与下发时一致，否则删不掉
                 self._json({"ok": True}, 200,
@@ -1006,10 +1177,12 @@ class Handler(BaseHTTPRequestHandler):
                        extra={"Set-Cookie": session_cookie(sid, self._https())} if sid else None)
             return
         if not self._auth():
+            self._drain()
             self.close_connection = True
             return
         p = unquote(urlparse(self.path).path)
         if self._deny(path_slug(p)):
+            self._drain()
             self.close_connection = True
             return
         try:
@@ -1358,6 +1531,9 @@ def run(port: int = 8765, open_browser: bool = True,
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
     Handler.SCOPES = scoped
+    # _host_ok 要知道这个实例是不是只服务本机：账号档下「绑本机」与「绑公网」
+    # 的威胁模型不同（见那里的注释），而 host 只在这里知道。
+    Handler.BIND_PUBLIC = host not in ("127.0.0.1", "localhost", "::1")
     J.reap_orphans()  # 回收上次服务留下的 running 僵尸记录，恢复并发保护
     J.prune_jobs()    # 清过期任务记录：列表接口每次要读所有 json，攒多了会越来越慢
     threading.Thread(target=_monitor_loop, daemon=True).start()

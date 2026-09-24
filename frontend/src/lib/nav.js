@@ -54,5 +54,15 @@ export function badgeFor(data, key) {
   }
 }
 
+/** 「只有管理员能用」的入口：这两页都读 /api/keys，租户会话点进去只吃 403。
+ *  隐藏它们纯属体验，判权在服务端每个路由上 —— 身份未知时**不隐藏**。 */
+export const ADMIN_ONLY = new Set(['engines', 'settings'])
+
+/** 按身份过滤后的导航。`admin` 为 true 或未知 → 原样返回。 */
+export function navFor(admin) {
+  if (admin !== false) return NAV
+  return NAV.map((g) => ({ ...g, items: g.items.filter(([k]) => !ADMIN_ONLY.has(k)) }))
+}
+
 export const LANGS = [['zh', '中'], ['en', 'EN'], ['ja', '日']]
 export const NAV_LABELS = (g) => t(g.label)

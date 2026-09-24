@@ -60,6 +60,12 @@ const navCount = await page.locator('#side .navit').count()
 console.log(`侧栏导航项: ${navCount}（应为 16）`)
 if (navCount !== 16) failed++
 
+// 账号块只在账号档渲染。这条档位（默认档）没有账号可说，侧栏必须与加登录之前
+// 逐字一致 —— 令牌档同理，服务端不知道你是谁。
+const whoCount = await page.locator('#side .who, #side .mail, #side .out').count()
+if (whoCount !== 0) failed++
+console.log(`${whoCount === 0 ? '  ok' : 'FAIL'}  账号块       ${whoCount} 个元素（应为 0）`)
+
 for (const r of ROUTES) {
   await page.click(`#side .navit[data-route="${r}"]`)
   await page.waitForTimeout(250)
