@@ -15,7 +15,7 @@ checker 语法（写在工单的 acceptance.check 里）：
   site.en_pages_gte:8             英文有效内容页数达标
   site.lang_balance:0.7           中英页面数差距在阈值内
   pages.static_text               受影响页面正文词数 ≥120（SPA 修复）
-  pages.has_jsonld                受影响页面已挂 JSON-LD
+  pages.has_jsonld                受影响页面已挂 JSON-LD（非网页端点除外）
   pages.block:定义                缺该抽取块的页面数下降 ≥50%
   pages.quotable                  「整页无可引段落」的页面数下降 ≥50%
   pages.wordcount_gte:1000        正文不足 1000 词的页面数下降 ≥40%
@@ -204,13 +204,27 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             # 功能页（登录/联系页等）天然低词数，和 audit 用同一条规则豁免，
             # 否则一张 SPA 空壳工单会被联系页永远卡在未达标
             aff_real = [u for u in aff if not A.FUNC_PAGE.search(urlparse(u).path)]
+            if not aff_real:
+                return True, "受影响页均为功能页（登录/联系页等），不判正文词数", None
             bad = [u for u in aff_real if pages.get(u, {}).get("word_count", 0) < 120]
-            return (not bad), f"{base - len(bad)}/{base} 页已能抓到正文", \
-                {"label": "抓不到正文的页面", "cur": len(bad), "target": 0, "op": "lte", "base": base}
+            # 分母用实际参评的页数：豁免掉的页不该计进「已能抓到正文」的分子，
+            # aff 混了一页登录页时 base 会算出 2/1 这种数
+            return (not bad), f"{len(aff_real) - len(bad)}/{len(aff_real)} 页已能抓到正文", \
+                {"label": "抓不到正文的页面", "cur": len(bad), "target": 0, "op": "lte",
+                 "base": len(aff_real)}
         if expr == "pages.has_jsonld":
-            bad = [u for u in aff if not pages.get(u, {}).get("jsonld_types")]
-            return (not bad), f"{base - len(bad)}/{base} 页已挂 JSON-LD", \
-                {"label": "未挂 JSON-LD 的页面", "cur": len(bad), "target": 0, "op": "lte", "base": base}
+            # JSON-LD 只能挂在 HTML 文档上。/v1/models 这类端点抓到的是 JSON，
+            # audit 归为 non_document（reason 由 _pages_by_url 一并带过来），
+            # 连 jsonld_types 字段都不带 —— 留在 aff 里这张工单永远判未达标。
+            # SPA 外壳是 HTML，仍然要算。
+            aff_real = [u for u in aff
+                        if pages.get(u, {}).get("reason") != G.REASON_NON_DOCUMENT]
+            if not aff_real:
+                return True, "受影响页均为非网页端点（API/文件），JSON-LD 不适用", None
+            bad = [u for u in aff_real if not pages.get(u, {}).get("jsonld_types")]
+            return (not bad), f"{len(aff_real) - len(bad)}/{len(aff_real)} 页已挂 JSON-LD", \
+                {"label": "未挂 JSON-LD 的页面", "cur": len(bad), "target": 0, "op": "lte",
+                 "base": len(aff_real)}
         if expr.startswith("pages.block:"):
             blk = expr.split(":", 1)[1]
             # 基线用生成工单时的真实缺口数；旧工单没有该字段退回 affected 长度
