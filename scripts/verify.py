@@ -81,6 +81,19 @@ def _market_avg(metrics: dict, market: str, field: str):
     return (sum(vals) / len(vals)) if vals else None
 
 
+def _crawl_incomplete(audit: dict) -> str | None:
+    """本轮抓取是否缺页；缺页时返回一句说明，否则 None。
+
+    缺口统计（缺块页数、正文不足词数）都是「在本次抓到的页面里数」，抓取失败的页
+    根本不在集合里 —— 缺口数会因为没抓到而变小。而这类判据写的是「下降 ≥X%」，
+    于是少抓几页就成了「已修复」，工单被自动标 done。缺页时一律不判。
+    """
+    n = audit.get("unreachable_count") or 0
+    if n:
+        return f"本轮有 {n} 页抓取失败，页面统计不完整，先重跑 crawl"
+    return None
+
+
 def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dict | None]:
     """返回 (通过?, 说明, 进度)。通过 None 表示无法自动判定。
 
@@ -100,6 +113,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
 
     try:
         if expr == "site.no_ai_bot_block":
+            # robots.txt 没抓到时 ai_bots_blocked 恒为空，与「真的没封禁」同形。
+            # audit 早就防了这一条（它会把「没抓到」单列一条），verify 这边漏了：
+            # 判据是「没封禁 → 通过」，一次抖动就把这条 P0 工单自动标 done。
+            if site.get("robots_fetched", True) is False:
+                return None, "本次重抓没拿到 robots.txt（超时或被拦），无法判定是否封禁，先重跑 crawl", None
             blocked = site.get("ai_bots_blocked") or []
             return (not blocked), ("robots 未封禁任何 AI 抓取器" if not blocked
                                    else f"仍封禁：{'、'.join(blocked)}"), None
@@ -161,6 +179,10 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             n = site.get("sitemap_noisy_urls")
             if n is None:
                 return None, "本次重抓没有 sitemap 污染统计（旧版抓取结果），先重跑 crawl", None
+            # 抓不到 sitemap 时 noisy 也是 0（数的是空列表），不是「已经干净了」。
+            # 上面那个 is None 只在旧版 evidence 才成立，拦不住这种情况。
+            if not site.get("sitemap_reachable", True):
+                return None, "本次重抓没拿到 sitemap（超时/源站故障），无法判定是否含低价值 URL，先重跑 crawl", None
             return n == 0, (f"sitemap 已无低价值 URL" if n == 0
                             else f"仍有 {n} 条带参数/搜索/翻页 URL"), \
                 {"label": "sitemap 低价值 URL", "cur": n, "target": 0, "op": "lte"}
@@ -246,6 +268,9 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             blk = expr.split(":", 1)[1]
             # 基线用生成工单时的真实缺口数；旧工单没有该字段退回 affected 长度
             base = task.get("baseline_count", len(aff))
+            bad = _crawl_incomplete(audit)
+            if bad:
+                return None, bad, None
             cur = sum(1 for p in audit.get("pages", []) if not p["blocks"].get(blk))
             return cur <= base * 0.5, f"缺「{blk}」页面 {cur}（基线 {base}，目标 ≤{int(base*0.5)}）", \
                 {"label": f"缺「{blk}」块的页面", "cur": cur, "target": int(base * 0.5),
@@ -253,6 +278,9 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
         if expr.startswith("pages.wordcount_gte:"):
             n = int(expr.split(":")[1])
             base = task.get("baseline_count", len(aff))
+            bad = _crawl_incomplete(audit)
+            if bad:
+                return None, bad, None
             cur = sum(1 for p in audit.get("pages", []) if 100 <= p["word_count"] < n)
             return cur <= base * 0.6, f"正文 <{n} 词的页面 {cur}（基线 {base}，目标 ≤{int(base*0.6)}）", \
                 {"label": f"正文不足 {n} 词的页面", "cur": cur, "target": int(base * 0.6),
@@ -294,6 +322,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
 
         if expr.startswith("external.any:"):
             targets = [d.strip() for d in expr.split(":", 1)[1].split(",") if d.strip()]
+            # 本期一条样本都没有时，引用列表必然是空的，判「未达标」等于拿没测过的
+            # 数据下结论。有样本但确实没被引用，才是真的未达标。
+            rows = ((metrics or {}).get("platforms") or {}).values()
+            if not any((r or {}).get("samples") for r in rows):
+                return None, "本期没有采样数据（或样本为空），无法判定引用情况", None
             doms = _cited_domains(metrics)
             hit = [t for t in targets if any(d == t or d.endswith("." + t) for d in doms)]
             return bool(hit), (f"已被引用：{'、'.join(hit)}" if hit

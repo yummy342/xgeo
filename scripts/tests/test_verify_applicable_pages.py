@@ -121,5 +121,73 @@ class StaticTextDenominator(unittest.TestCase):
         self.assertIsNone(ok, f"应当交人工，实际：{why}")
 
 
+class AbsentDataIsNotAPass(unittest.TestCase):
+    """缺数据时判「通过」，和缺数据时判「未达标」一样错。
+
+    前者更隐蔽：判据都是「没问题 → 通过」，字段在抓取失败时默认为空/0，于是
+    一次抖动就把工单自动标 done，写进客户记录；后者至少会有人来看一眼。
+    2026-09-24 系统扫了一遍全部 checker，找出 5 处。
+    """
+
+    def _audit(self, **over):
+        a = {"pages": [], "non_content_pages": [], "site": {}, "unreachable_count": 0}
+        a.update(over)
+        return a
+
+    def _site_audit(self, **site):
+        return self._audit(site=site)
+
+    def test_robots_unknown_does_not_pass_ai_block(self):
+        a = self._site_audit(robots_fetched=False, ai_bots_blocked=[])
+        ok, why, _ = V.check(task("site.no_ai_bot_block", []), a, {})
+        self.assertIsNone(ok, f"一次 robots 抖动就会把这条 P0 自动标 done，实际：{why}")
+
+    def test_robots_read_and_unblocked_passes(self):
+        a = self._site_audit(robots_fetched=True, ai_bots_blocked=[])
+        ok, why, _ = V.check(task("site.no_ai_bot_block", []), a, {})
+        self.assertIs(ok, True, why)
+
+    def test_robots_read_and_blocked_fails(self):
+        a = self._site_audit(robots_fetched=True, ai_bots_blocked=["GPTBot"])
+        ok, why, _ = V.check(task("site.no_ai_bot_block", []), a, {})
+        self.assertIs(ok, False, why)
+
+    def test_sitemap_unreachable_does_not_pass_clean(self):
+        """抓不到 sitemap 时污染数是 0（数的是空列表），不是「已经干净了」。"""
+        a = self._site_audit(sitemap_reachable=False, sitemap_noisy_urls=0)
+        ok, why, _ = V.check(task("site.sitemap_clean", []), a, {})
+        self.assertIsNone(ok, why)
+
+    def test_sitemap_read_and_clean_passes(self):
+        a = self._site_audit(sitemap_reachable=True, sitemap_noisy_urls=0)
+        ok, why, _ = V.check(task("site.sitemap_clean", []), a, {})
+        self.assertIs(ok, True, why)
+
+    def test_missing_pages_do_not_pass_block_check(self):
+        """少抓几页 → 缺口数跟着变小 → 「下降 ≥50%」假通过。"""
+        a = self._audit(unreachable_count=3, pages=[content_page(PAGE, blocks={"FAQ": []})])
+        t = task("pages.block:FAQ", [PAGE])
+        t["baseline_count"] = 20
+        ok, why, _ = V.check(t, a, {})
+        self.assertIsNone(ok, why)
+
+    def test_missing_pages_do_not_pass_wordcount_check(self):
+        a = self._audit(unreachable_count=3, pages=[content_page(PAGE, word_count=100)])
+        t = task("pages.wordcount_gte:1000", [PAGE])
+        t["baseline_count"] = 20
+        ok, why, _ = V.check(t, a, {})
+        self.assertIsNone(ok, why)
+
+    def test_no_samples_does_not_fail_citation_check(self):
+        ok, why, _ = V.check(task("external.any:a.com", []), self._audit(), None)
+        self.assertIsNone(ok, f"没测过不能判未达标，实际：{why}")
+
+    def test_samples_without_citation_still_fails(self):
+        """有样本、确实没被引用 —— 这才是真的未达标。"""
+        m = {"platforms": {"gpt": {"samples": 3, "cited_domains_all": {"b.com": 1}}}}
+        ok, why, _ = V.check(task("external.any:a.com", []), self._audit(), m)
+        self.assertIs(ok, False, why)
+
+
 if __name__ == "__main__":
     unittest.main()

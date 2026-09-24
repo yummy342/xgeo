@@ -28,6 +28,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import audit as A          # noqa: E402
 import crawl as C          # noqa: E402
+import deliverables as D   # noqa: E402
 import geolib as G         # noqa: E402
 import report as R         # noqa: E402
 import tasks as T          # noqa: E402
@@ -290,6 +291,37 @@ class AssetReachability(Base):
         self.assertFalse([i for i in audit["site_issues"] if "sitemap" in i])
         self.assertFalse([t for t in T.from_audit(audit, CFG, itertools.count(1))
                           if "sitemap" in t["title"]])
+
+
+class UnmeasuredRowsAreNotConclusions(Base):
+    """报告与交付物里的「无」不能来自一次抓取失败。
+
+    这两处是给人做决定看的：报告里写「robots 封禁 AI 抓取器：无」、交付物里写
+    「技术底座基本干净」，客户就当真了。而 robots.txt 抓不到时 ai_bots_blocked
+    恒为空 —— 与「一个引擎都没被封」同形。
+    """
+
+    def _site(self, **over):
+        s = dict(SITE)
+        s.update(over)
+        return s
+
+    def test_report_says_unmeasured_not_none(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=False))
+        md = R.build_markdown(CFG, audit, {}, None, None, [])
+        self.assertIn("未测出（robots.txt 抓取失败）", md)
+        self.assertNotIn("| robots 封禁 AI 抓取器 | 无 |", md)
+
+    def test_report_says_none_when_robots_read(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=True))
+        md = R.build_markdown(CFG, audit, {}, None, None, [])
+        self.assertIn("| robots 封禁 AI 抓取器 | 无 |", md)
+
+    def test_deliverable_does_not_claim_clean_baseline(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=False))
+        plan = D.optimization_plan(SLUG)
+        self.assertIn("robots.txt 本次没抓到", plan)
+        self.assertNotIn("技术底座基本干净", plan)
 
 
 if __name__ == "__main__":

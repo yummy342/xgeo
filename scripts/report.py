@@ -174,7 +174,13 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
         else:
             llms_cell = "**无**" if s.get("llms_txt_reachable", True) else "未测出（抓取失败）"
         A(f"| llms.txt | {llms_cell} |")
-        A(f"| robots 封禁 AI 抓取器 | {'、'.join(s.get('ai_bots_blocked') or []) or '无'} |")
+        # 同上：robots.txt 没抓到时 ai_bots_blocked 恒为空，写「无」等于说
+        # 「一个引擎都没被封」，而这一栏恰恰是客户最当真的一栏。
+        if s.get("robots_fetched", True) is False:
+            bots_cell = "未测出（robots.txt 抓取失败）"
+        else:
+            bots_cell = "、".join(s.get("ai_bots_blocked") or []) or "无"
+        A(f"| robots 封禁 AI 抓取器 | {bots_cell} |")
         probe = s.get("ai_ua_probe") or {}
         if probe or s.get("ai_ua_blocked"):
             bad = s.get("ai_ua_blocked") or []
