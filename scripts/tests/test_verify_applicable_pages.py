@@ -84,6 +84,11 @@ class JsonLdSkipsNonDocument(unittest.TestCase):
         self.assertIs(ok, True, why)
         self.assertEqual((prog["cur"], prog["base"]), (0, 1))
 
+    def test_page_not_crawled_defers(self):
+        """本轮没抓到这页（超时/5xx）时 pages 里查不到，不能读成「还是没挂」。"""
+        ok, why, _ = V.check(task("pages.has_jsonld", [PAGE]), audit([], []), {})
+        self.assertIsNone(ok, f"应当交人工，实际：{why}")
+
 
 class StaticTextDenominator(unittest.TestCase):
     def test_func_page_excluded_from_denominator(self):
@@ -110,6 +115,10 @@ class StaticTextDenominator(unittest.TestCase):
         a = audit([content_page(SHELL, word_count=300)], [])
         ok, why, _ = V.check(task("pages.static_text", [SHELL]), a, {})
         self.assertIs(ok, True, why)
+
+    def test_page_not_crawled_defers(self):
+        ok, why, _ = V.check(task("pages.static_text", [PAGE]), audit([], []), {})
+        self.assertIsNone(ok, f"应当交人工，实际：{why}")
 
 
 if __name__ == "__main__":

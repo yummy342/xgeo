@@ -409,7 +409,11 @@ def run(slug: str) -> dict:
     # 「补 sitemap.xml」「上线 /llms.txt」工单。默认 True 让旧 evidence 行为不变。
     if not site.get("has_sitemap") and site.get("sitemap_reachable", True):
         site_issues.append("P0 没有 sitemap.xml，收录效率和覆盖面都会打折")
-    elif site.get("robots_sitemap_declared") is False:
+    elif (site.get("robots_sitemap_declared") is False
+          and site.get("robots_fetched", True) is not False):
+        # robots.txt 没抓到（超时/被拦）时 robots_sitemap_declared 恒为 False，
+        # 与「robots 里真的没写 Sitemap:」同形，结论却相反。实测 09-24 那轮
+        # 就这样报了一条「没有声明 Sitemap」的假 P2 —— 线上 robots.txt 明明有。
         site_issues.append("P2 robots.txt 没有声明 Sitemap: 行，AI 抓取器发现新页面会更慢")
     if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True):
         site_issues.append("P2 没有 /llms.txt，可以低成本给 AI 一份官方事实索引")
@@ -516,7 +520,8 @@ def run(slug: str) -> dict:
             ("fail", "没有 sitemap.xml")
             if not site.get("has_sitemap") and site.get("sitemap_reachable", True) else None,
             ("warn", "robots.txt 未声明 Sitemap: 行")
-            if site.get("has_sitemap") and site.get("robots_sitemap_declared") is False else None,
+            if (site.get("has_sitemap") and site.get("robots_sitemap_declared") is False
+                and site.get("robots_fetched", True) is not False) else None,
             ("warn", "没有 /llms.txt")
             if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True) else None,
             ("warn", f"llms.txt 有 {len(lch['broken'])} 条失效链接") if lch.get("broken") else None,

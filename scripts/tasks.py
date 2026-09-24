@@ -110,7 +110,10 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                       "生成 sitemap.xml，robots.txt 里声明，提交百度/必应/Google/夸克",
                       "开发", "S",
                       {"type": "auto", "check": "site.has_sitemap", "desc": "重抓能取到 sitemap.xml"}))
-    elif site.get("robots_sitemap_declared") is False:
+    elif (site.get("robots_sitemap_declared") is False
+          and site.get("robots_fetched", True) is not False):
+        # robots.txt 没抓到（超时/被拦）时上面那条字段恒为 False，与「真的没写
+        # Sitemap:」同形。据此开工单会开出一张线上早就做完的假工单。
         out.append(_t(next(seq), "P2", "页面技术", "robots.txt 里声明 Sitemap: 行",
                       "sitemap 存在但 robots 没声明，AI 抓取器发现新页面更慢",
                       "在 robots.txt 末尾加一行 `Sitemap: <完整 URL>`", "开发", "S",

@@ -236,9 +236,16 @@ def probe_ai_ua(root: str, home: dict, robots_txt: str, delay: float) -> tuple[d
 LLMS_HTML_RX = re.compile(r"(?i)<!doctype\s+html|<html[\s>]|<head[\s>]|<\s*body[\s>]")
 
 
-def check_llms_txt(root: str, llms_txt: str, robots_txt: str) -> dict | None:
+def check_llms_txt(root: str, llms_txt: str, robots_txt: str,
+                   robots_known: bool = True) -> dict | None:
     """llms.txt 只有指向可抓取的有效页面才有意义：抽样验证里面的链接。"""
     if not llms_txt:
+        return None
+    if not robots_known:
+        # robots.txt 没抓到 = 不知道哪些路径是留给爬虫的，下面那条 /api/ 排除就
+        # 失效了。而 llms.txt 里写 API 基址（GET 打到 POST-only 路由返回 404）是
+        # 正确做法——一次网络抖动会变成「1/N 条抽样链接打不开」的假 P1。
+        # 宁可不判，也不拿一次抓取失败去说人家链接失效。
         return None
     urls = []
     for u in re.findall(r"https?://[^\s)\]>\"'`]+", llms_txt):
@@ -441,7 +448,7 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     blocked, partial = check_robots(robots_txt, [urlparse(p["url"]).path or "/" for p in pages[:12]])
     # WAF/CDN 差异封锁：robots 说放行不代表真放行，换 AI 爬虫的 UA 实测一次
     ua_probe, ua_blocked = probe_ai_ua(root, home, robots_txt, delay)
-    llms_check = check_llms_txt(root, llms_txt, robots_txt)
+    llms_check = check_llms_txt(root, llms_txt, robots_txt, robots_reachable)
 
     # 索引污染：sitemap 里的带参/搜索/翻页 URL 会把低质片段灌进检索索引，
     # 稀释实体表征——sitemap 该只装值得被引用的规范页

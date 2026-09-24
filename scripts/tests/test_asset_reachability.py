@@ -27,6 +27,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
 import audit as A          # noqa: E402
+import crawl as C          # noqa: E402
 import geolib as G         # noqa: E402
 import report as R         # noqa: E402
 import tasks as T          # noqa: E402
@@ -178,6 +179,68 @@ class UnreachablePageNotScored(Base):
         for pseudo in ("不可访问", "noindex", "canonical", "JSON-LD"):
             self.assertFalse([t for t in todos if pseudo in t["action"]],
                              f"「{pseudo}」是 502 错误页带出来的伪工单")
+
+
+class RobotsUnknownIsNotAnAbsence(Base):
+    """robots.txt 没抓到 ≠ robots 里没写 Sitemap、≠ llms.txt 的链接失效。
+
+    2026-09-24 同一轮实测：robots.txt 抓取失败（CF 抖动），立刻多报两条假结论
+    ——「P2 robots.txt 没有声明 Sitemap: 行」（线上末尾明明有 Sitemap 行），
+    以及「P1 llms.txt 里 1/6 条抽样链接打不开」（那条是 /api/gateway/v1，一个
+    GET 返回 404 的 POST 端点，llms.txt 写它的基址是正确做法；这条排除平时靠
+    robots 里 Disallow: /api/ 生效，robots 一没拿到，排除也就没了）。
+    """
+
+    def _site(self, **over):
+        s = dict(SITE)
+        s.update({"has_sitemap": True, "sitemap_url_count": 2,
+                  "robots_sitemap_declared": False})
+        s.update(over)
+        return s
+
+    def test_unfetched_robots_is_not_a_sitemap_claim(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=False))
+        self.assertFalse([i for i in audit["site_issues"] if "Sitemap" in i])
+        orient = next(l for l in audit["layers"] if l["key"] == "orient")
+        self.assertFalse([t for t in orient["issues"] if "Sitemap" in t])
+        self.assertFalse([t for t in T.from_audit(audit, CFG, itertools.count(1))
+                          if "Sitemap" in t["title"]])
+
+    def test_fetched_but_undeclared_is_still_reported(self):
+        """真没写 Sitemap 行的时候，工单该开还得开。"""
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=True))
+        self.assertTrue([i for i in audit["site_issues"] if "Sitemap" in i])
+        self.assertTrue([t for t in T.from_audit(audit, CFG, itertools.count(1))
+                         if "Sitemap" in t["title"]])
+
+    def test_verify_defers_when_robots_unreachable(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=False))
+        ok, why, _ = V.check(task("site.robots_sitemap_declared"), audit, {})
+        self.assertIsNone(ok, f"应当交人工而不是判未达标，实际：{why}")
+
+    def test_verify_fails_when_really_undeclared(self):
+        audit = self.run_audit([page("docs/")], self._site(robots_fetched=True))
+        ok, _, _ = V.check(task("site.robots_sitemap_declared"), audit, {})
+        self.assertIs(ok, False)
+
+
+class LlmsLinkSampling(Base):
+    """llms.txt 的链接抽样：robots 规则拿不到时不做判定。"""
+
+    ROBOTS = "User-agent: *\nAllow: /\nDisallow: /api/\n"
+    LLMS = ("# Example\n\n## Endpoints\n"
+            "- API base URL: https://example.test/api/gateway/v1\n"
+            "- Docs: https://example.test/docs/\n")
+
+    def test_api_base_url_is_not_sampled(self):
+        with mock.patch.object(G, "fetch", return_value={"status": 200, "html": "ok"}):
+            out = C.check_llms_txt(ROOT_URL, self.LLMS, self.ROBOTS, True)
+        self.assertEqual(out["broken"], [], "/api/ 被 robots 排除，不该拿它判链接失效")
+        self.assertEqual(out["total_links"], 1)
+
+    def test_unknown_robots_skips_the_check(self):
+        out = C.check_llms_txt(ROOT_URL, self.LLMS, "", False)
+        self.assertIsNone(out, "robots 没拿到时排除规则失效，宁可不判")
 
 
 class AssetReachability(Base):

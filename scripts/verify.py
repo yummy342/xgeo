@@ -111,6 +111,10 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             return (not bad), ("AI 爬虫 UA 探测首页全部放行" if not bad
                                else f"仍被拒：{'、'.join(bad)}"), None
         if expr == "site.robots_sitemap_declared":
+            # 同 site.has_sitemap：重抓没拿到 robots.txt 时该字段恒为 False，
+            # 拿它判「仍未声明」就是把一次抓取失败记成工单没做。
+            if site.get("robots_fetched", True) is False:
+                return None, "本次重抓没拿到 robots.txt（超时或被拦），无法判定 Sitemap 声明，先重跑 crawl", None
             ok = bool(site.get("robots_sitemap_declared"))
             return ok, ("robots.txt 已声明 Sitemap" if ok else "robots.txt 仍未声明 Sitemap"), None
         if expr == "site.llms_txt_valid":
@@ -120,7 +124,9 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                 return False, "llms.txt 缺失", None
             lch = site.get("llms_txt_check") or {}
             if not lch:
-                return None, "本次重抓没有 llms.txt 校验数据（旧版抓取结果），先重跑 crawl", None
+                # 三种来路：旧版抓取结果、robots.txt 没抓到（那时无法判断哪些
+                # 路径是留给爬虫的，crawl 主动不判）、llms.txt 本身是空的。
+                return None, "本次重抓没有 llms.txt 链接校验数据（robots.txt 没抓到，或旧版抓取结果），先重跑 crawl", None
             nbad = len(lch.get("broken", [])) + len(lch.get("robots_blocked", []))
             return nbad == 0, (f"抽样 {lch.get('checked', 0)} 条链接全部有效" if nbad == 0
                               else f"仍有 {nbad} 条失效/被封链接"), \
@@ -206,6 +212,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             aff_real = [u for u in aff if not A.FUNC_PAGE.search(urlparse(u).path)]
             if not aff_real:
                 return True, "受影响页均为功能页（登录/联系页等），不判正文词数", None
+            missing = [u for u in aff_real if u not in pages]
+            if missing:
+                # 这页本轮没被抓到（超时/5xx），不是「还是空壳」。同 pages.quotable。
+                return None, (f"{len(missing)}/{len(aff_real)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
             bad = [u for u in aff_real if pages.get(u, {}).get("word_count", 0) < 120]
             # 分母用实际参评的页数：豁免掉的页不该计进「已能抓到正文」的分子，
             # aff 混了一页登录页时 base 会算出 2/1 这种数
@@ -221,6 +232,12 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                         if pages.get(u, {}).get("reason") != G.REASON_NON_DOCUMENT]
             if not aff_real:
                 return True, "受影响页均为非网页端点（API/文件），JSON-LD 不适用", None
+            missing = [u for u in aff_real if u not in pages]
+            if missing:
+                # 本轮没抓到这页时 pages 里查不到，jsonld_types 读成空 → 判未达标：
+                # 一次抓取失败被写成「工单没做」。同 pages.quotable。
+                return None, (f"{len(missing)}/{len(aff_real)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
             bad = [u for u in aff_real if not pages.get(u, {}).get("jsonld_types")]
             return (not bad), f"{len(aff_real) - len(bad)}/{len(aff_real)} 页已挂 JSON-LD", \
                 {"label": "未挂 JSON-LD 的页面", "cur": len(bad), "target": 0, "op": "lte",
