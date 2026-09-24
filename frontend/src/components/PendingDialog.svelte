@@ -1,5 +1,6 @@
 <script>
   import { hasPublished, isPrepared } from '../lib/publishstate.js'
+  import { safeUrl } from '../lib/url.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
 
@@ -33,7 +34,14 @@
                   · {p.platform_name} {(p.at || '').slice(0, 10)} <span class="prep">{t('Prepared — not published yet')}</span>
                 {:else}
                   ✓ {p.platform_name} {(p.at || '').slice(0, 10)}
-                  {#if p.url}<a href={p.url} target="_blank" class="link">{p.url.slice(0, 40)}</a>{/if}
+                  <!-- 这里的 url 可能是人工回填的（用户输入）或 webhook 端点回的，
+                       必须有守卫：不带守卫的话一条 javascript: 在这就变成可点的链接。
+                       非 http(s) 一律当文本显示。 -->
+                  {#if safeUrl(p.url)}
+                    <a href={safeUrl(p.url)} target="_blank" class="link">{p.url.slice(0, 40)}</a>
+                  {:else if p.url}
+                    <span class="link">{p.url.slice(0, 40)}</span>
+                  {/if}
                 {/if}
               </div>
             {/each}

@@ -938,6 +938,9 @@ export const zh = {
   'Pending item discarded': '待办已作废',
   'Discard this pending item': '作废这条待办',
   'Later': '稍后',
+  'Fell back to semi — missing {l}': '已回退半自动——缺 {l}',
+  'Channel config incomplete — the publish page fell back to a generic entry:': '渠道配置不全——发布页只能给通用入口，缺：',
+  'Open the channel backend': '打开渠道后台',
   'Why some channels are semi-automatic: their rules forbid an app from posting on your behalf. Weibo requires OAuth2 user authorisation for its publishing API, bans apps that sync to multiple platforms, and states outright that an app must not share information to your account without an explicit choice. So the tool prepares the title, body, tags and back-link, opens the official publishing page, and <b>you click publish</b>. That is not a compromise — it is the only form those platforms allow. <b>We still never simulate a logged-in session to post.</b> You will find the one-click prepare-and-copy flow in the per-article publish dialog.':
     '为什么有些渠道是半自动的：这些平台的规则不允许应用代你发布。以微博为例——发布接口要求用户 OAuth2.0 授权，「多微博平台同步类」应用禁止或难以过审，而且明文规定不得在未经明确选择的情况下把使用信息分享到你的账号。所以工具只备好标题、正文、标签与回链，打开发布页，<b>发布那一下由你点</b>。这不是妥协，是这些平台唯一允许的形态。<b>我们仍然不做模拟登录代发。</b>一键「备好并复制」入口在逐篇文章的发布弹窗里。',
 }

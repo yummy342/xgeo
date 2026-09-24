@@ -9,7 +9,13 @@
 // state 取值：published（对外可见）/ prepared（备好待人工）/ draft（渠道里是草稿）/
 //            ""（09-22 之前的旧记录，那时不分草稿与发布，按已发布处理，不制造假警报）
 
-export const isPublished = (r) => ((r && r.state) || 'published') === 'published'
+// 空字符串 = 09-22 之前的旧记录（那时不分草稿与发布），按已发布处理；
+// 但**未知**的 state 不能跟着一起算已发布 —— 那会让将来新增的状态（比如
+// state='failed'）静默显示成发布成功，正是这个文件要防的方向。
+export const isPublished = (r) => {
+  const s = (r && r.state) || ''
+  return s === '' || s === 'published'
+}
 export const isPrepared = (r) => !!r && r.state === 'prepared'
 
 export const hasPublished = (recs) => (recs || []).some(isPublished)

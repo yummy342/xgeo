@@ -921,21 +921,27 @@ class Handler(BaseHTTPRequestHandler):
 
             # 半自动：备好（**不外发**）与回填。必须排在下面那条 /api/publish/<slug> 之前，
             # 否则 slug 会取成 "alpha/prepare"（那条不管后缀，整个尾串都当 slug）。
-            # path_slug 取第一段，所以项目隔离照旧由入口那层 _deny 兜住，不用另写。
-            if p.startswith("/api/publish/") and p.endswith("/prepare"):
+            # 用 partition 取尾段而不是 endswith：项目 slug 恰好叫 prepare/manual 时
+            # `/api/publish/prepare` 没有尾段，endswith 会把它当成 slug="prepare" 的
+            # prepare 请求（slug 被切成空串），那次真发布就永远发不出去。
+            _pub_rest = p[len("/api/publish/"):] if p.startswith("/api/publish/") else ""
+            _pub_slug, _sep, _pub_tail = _pub_rest.partition("/")
+            if _pub_slug and _sep and _pub_tail in ("prepare", "manual"):
                 import publish as P
-                slug = p[len("/api/publish/"):-len("/prepare")]
-                r = P.prepare(slug, body.get("platform", ""), body.get("path", ""),
-                              body.get("title", ""), force=body.get("force"))
-                return self._json(r, 200 if r.get("ok") else 400)
-
-            if p.startswith("/api/publish/") and p.endswith("/manual"):
-                # 回填 = 人工发布完成后登记公开链接（或作废待办）。写入不算外发动作。
-                import publish as P
-                slug = p[len("/api/publish/"):-len("/manual")]
-                r = P.record_manual(slug, body.get("platform", ""), body.get("path", ""),
-                                    body.get("id", ""), url=body.get("url", ""),
-                                    note=body.get("note", ""), cancel=bool(body.get("cancel")))
+                # platform 必须是字符串：body 里塞 dict/list 会让 `code not in PUBLISHERS`
+                # 抛 TypeError（不可哈希）→ 500。这里挡成 400。
+                plat = body.get("platform") or ""
+                if not isinstance(plat, str):
+                    return self._json({"ok": False, "error": "platform 要是字符串"}, 400)
+                rel = body.get("path") or ""
+                if _pub_tail == "prepare":
+                    r = P.prepare(_pub_slug, plat, rel, body.get("title") or "",
+                                  force=body.get("force"))
+                else:
+                    # 回填 = 人工发布完成后登记公开链接（或作废待办）。写入不算外发动作。
+                    r = P.record_manual(_pub_slug, plat, rel, body.get("id") or "",
+                                        url=body.get("url") or "", note=body.get("note") or "",
+                                        cancel=bool(body.get("cancel")))
                 return self._json(r, 200 if r.get("ok") else 400)
 
             if p.startswith("/api/publish/"):
@@ -954,14 +960,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not qid or not ch:
                     return self._json({"ok": False, "error": "缺 qid / channel"}, 400)
                 path = G.project_dir(slug) / "distribution.json"
-                dist = G.read_json(path, {})
-                if body.get("on"):
-                    dist.setdefault(qid, {})[ch] = G.now_iso()
-                else:
-                    dist.get(qid, {}).pop(ch, None)
-                    if not dist.get(qid):
-                        dist.pop(qid, None)
-                G.write_json(path, dist)
+                # 读-改-写必须持锁：半自动回填（publish.record_manual）也写这个文件，
+                # 两个标签页并发打勾同样会后写覆盖先写。之前这里没锁，会丢掉
+                # 「回填时顺带勾上的那一项」——现象是打勾了但刷新后没了。
+                with G.project_lock(slug):
+                    dist = G.read_json(path, {})
+                    if body.get("on"):
+                        dist.setdefault(qid, {})[ch] = G.now_iso()
+                    else:
+                        dist.get(qid, {}).pop(ch, None)
+                        if not dist.get(qid):
+                            dist.pop(qid, None)
+                    # 写也在锁内：光把读-改圈进去只把窗口变窄，另一个写者仍可能在这
+                    # 之后读到旧快照再写回，把这一次的改动吃掉。
+                    G.write_json(path, dist)
                 return self._json({"ok": True, "distribution": dist})
 
             if p == "/api/questions-add":

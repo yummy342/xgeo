@@ -412,14 +412,25 @@ def _print_prepared(r: dict, slug: str) -> None:
 def cmd_publish(a):
     import publish
 
+    via = getattr(a, "via", None)
+    paths = publish.paths_of(a.platform)
+    # 指了 --via 但那条通路不存在时要明说。否则「--via api 打在只有半自动的渠道上」
+    # 会安静地走半自动、退出码 0，用户以为发到 API 了。
+    if via and via not in paths:
+        G.die(f"「{publish.PUBLISHERS[a.platform]['name']}」没有 {via} 通路"
+              f"（可选：{'/'.join(paths) or '无'}）")
     # 半自动渠道不进发布流程，只备好并打印。**这不是失败**，所以不能用 G.die。
-    if publish.resolve_path(a.platform, a.slug, force=getattr(a, "via", None)) == "semi":
-        r = publish.prepare(a.slug, a.platform, a.path, a.title or "")
+    if publish.resolve_path(a.platform, a.slug, force=via) == "semi":
+        # force 必须一路传下去：不传的话，用户明明指了 --via semi，
+        # prepare 里会按默认（凭证齐 → api）再判一次，回一句
+        # 「当前走自动发布通路，用 geo.py publish 即可」—— 正是他刚敲的那条命令。
+        r = publish.prepare(a.slug, a.platform, a.path, a.title or "", force=via)
         if not r.get("ok"):
             G.die(f"备好失败：{r.get('error')}")
         _print_prepared(r, a.slug)
         return
-    r = publish.publish(a.slug, a.platform, a.path, a.title or "", publish_now=a.published)
+    r = publish.publish(a.slug, a.platform, a.path, a.title or "",
+                        publish_now=a.published, force=via)
     if r.get("ok"):
         G.info(f"已发布：{r.get('url') or r.get('note') or 'ok'}")
     else:

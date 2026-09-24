@@ -3,6 +3,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
+  import { safeUrl } from '../lib/url.js'
 
   // 半自动发布：给没有自动发布通路的渠道（Reddit / 搜狐号 / 头条号 / 知乎 / CSDN /
   // 百家号 / 微博 / 什么值得买）备好内容，人复制粘贴发布，再回填公开链接。
@@ -35,9 +36,8 @@
     return () => { cancelled = true }
   })
 
-  // 只放行 http(s)：发布页地址来自注册表（数据），但它会被拼进 window.open ——
-  // 数据写错一个 javascript: 就是执行。同 Publishing.svelte 的 safeUrl 口径。
-  const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '')
+  // 发布页地址来自注册表（数据），但它会被拼进 window.open —— 数据写错一个
+  // javascript: 就是执行。守卫收在 lib/url.js。
 
   async function copyText(text, okMsg) {
     try {
@@ -45,9 +45,28 @@
       toast(okMsg || t('Copied'))
       return true
     } catch {
-      // 非安全上下文（自建纯 http 域名）没有 clipboard API：退回选中预览节点
-      return selectAndCopy()
+      // 非安全上下文（自建纯 http 域名）没有 clipboard API 时的兜底。
+      // 注意不能用「选中预览节点」顶替：复制标题/标签时预览里是**正文**，
+      // 用户会粘出完全不相干的东西，而且界面还提示「已复制」。
+      const ok = copyViaTemp(text)
+      toast(ok ? (okMsg || t('Copied')) : t('Copy failed — select the text and copy it manually'),
+            ok ? '' : 'err')
+      return ok
     }
+  }
+
+  function copyViaTemp(text) {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text || ''
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      ta.remove()
+      return ok
+    } catch { return false }
   }
 
   async function copyRich() {
@@ -65,6 +84,7 @@
     }
   }
 
+  // 富文本复制用：ClipboardItem 不可用时只能选中渲染出来的节点（拿不到文本内容）
   function selectAndCopy() {
     if (!previewEl) { toast(t('Copy failed — select the text and copy it manually'), 'err'); return false }
     const r = document.createRange()
@@ -122,6 +142,10 @@
       {#each payload.warnings || [] as w}
         <p class="warn">⚠ {w}</p>
       {/each}
+      {#if (payload.missing_placeholders || []).length}
+        <p class="warn">⚠ {t('Channel config incomplete — the publish page fell back to a generic entry:')}
+          {payload.missing_placeholders.join(', ')}</p>
+      {/if}
 
       <ol class="steps">
         {#each payload.steps || [] as s}<li>{s}</li>{/each}
@@ -185,6 +209,12 @@
         {#if safeUrl(payload.publish_url)}
           <a class="btn btn-ghost" href={safeUrl(payload.publish_url)} target="_blank" rel="noreferrer">
             {t('Open publish page')}
+          </a>
+        {:else if safeUrl(payload.login_url)}
+          <!-- 百家号/什么值得买这类没有可预置的发布页地址，只有后台入口 ——
+               没有这个分支时「打开发布页」干脆不出现，用户不知道去哪贴 -->
+          <a class="btn btn-ghost" href={safeUrl(payload.login_url)} target="_blank" rel="noreferrer">
+            {t('Open the channel backend')}
           </a>
         {/if}
       </div>

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import posixpath
 import re
 
 import requests
@@ -269,6 +270,24 @@ def _cfg(slug: str, code: str) -> dict:
 # 公众号/WordPress 要 HTML。只做最小转换（标题/加粗/链接/列表/代码块/段落），
 # 不引第三方库；表格等复杂结构原样进 <p>，发布前在渠道后台肉眼过一遍。
 
+def _esc(s: str) -> str:
+    """HTML 转义（文本与属性共用，含引号）。发布这条链唯一的转义入口。"""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _linkable(url: str) -> bool:
+    """能不能当链接目标：只认 http(s) 与站内相对路径。
+
+    为什么要拦 scheme（而不只是转义字符）：`[x](javascript:…)` 出来的 `<a href>`
+    会被前端 `{@html}` 渲染成可点链接，也会发到 WordPress 正文、公众号草稿、
+    webhook 接收端。转义只挡住「拼出属性」，挡不住 scheme 本身 —— 而
+    `content/*.md` 是能经 `POST /api/content/` 写入的，等于把 XSS 交给内容作者。
+    百分号编码也绕不过：Chromium 执行前会解码 `javascript:`。
+    """
+    return bool(re.match(r"^(https?://|/)", str(url or "").strip(), re.I))
+
+
 def md2html(md: str) -> str:
     md = G.strip_comments(md)
     out, in_code, in_list = [], False, False
@@ -278,11 +297,15 @@ def md2html(md: str) -> str:
         # `[x](https://a.com/?q=1" onmouseover="alert(1))` 能往 <a> 注入属性，
         # 而这段 HTML 会发到 WordPress 正文、公众号草稿和 webhook 接收端。
         # report.py 那条链走 html.escape（含引号），只有发布这条链漏了。
-        s = (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-              .replace('"', "&quot;"))
+        s = _esc(s)
         s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
-        return s
+
+        def _link(m):
+            label, url = m.group(1), m.group(2).strip()
+            # 认不出 scheme 就退化成纯文本（标签 + 括号里的地址），别丢信息
+            return f'<a href="{url}">{label}</a>' if _linkable(url) else f"{label}（{url}）"
+
+        return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _link, s)
 
     for line in md.splitlines():
         if line.strip().startswith("```"):
@@ -652,6 +675,16 @@ def record_id() -> str:
     return os.urandom(4).hex()
 
 
+def _norm_rel(rel: str) -> str:
+    """归一化相对路径。
+
+    `content/a.md` / `content//a.md` / `content/./a.md` 是同一个文件，但 `_open_record`
+    按字符串比 —— 不归一化时同一份文件能备出好几条待办（「反复点不刷待办」失效，
+    回填该用哪个 id 也说不清）。穿越形态（`../x`）留给 `_read_source` 的归属校验去拒。
+    """
+    return posixpath.normpath(str(rel or "").strip())
+
+
 def paths_of(code: str) -> list[str]:
     """该渠道现在有哪几条路，按优先级。api 看 _IMPL 有没有实现，semi 看规格在不在。"""
     out = []
@@ -663,25 +696,37 @@ def paths_of(code: str) -> list[str]:
 
 
 def resolve_path(code: str, slug: str | None = None, force: str | None = None) -> str:
-    """这个渠道这次走哪条路。
+    """这个渠道这次走哪条路：api / semi / ""（两条都不通）。
 
-    优先级用「能不能自动发」来定，不用「哪条高级」：API 通路要求 _IMPL 有实现、
-    规格里没标 blocked、凭证齐。凭证或必备 cfg 缺任一，**有半自动就降级半自动**；
-    没有半自动的渠道照旧走 api —— 让它去撞真实错误（「缺 repo」这类信息比一句
-    「没有可用发布通路」有用得多，那是今天之前的行为，不该被我这次改动吃掉）。
-    两条都不通返回 ""。
+    判据是**能力**，不是**就绪** —— 这条线一开始被我写混了：
+      · 「有没有 api 通路」看 _IMPL 有没有实现、规格里有没有标 blocked。
+      · 「凭证/cfg 齐不齐」是**就绪**，该由 publish() 去报（「缺凭证：WP_USER」比
+        「没有可用的发布通路」有用得多），前端另有 missing 字段表达。
+    所以只有 api 通路的渠道**恒返回 api**，让它去撞真实错误；缺凭证时 path 不该变成空
+    （那会让 GET 里 paths=["api"] 与 path="" 自相矛盾，也会把 prepare 的拒绝理由说错）。
+
+    双路渠道（Reddit/公众号）例外：凭证或必备 cfg 缺时**让位给半自动** —— 那正是
+    半自动存在的理由（不联网发布也能把内容铺出去）。
     """
     paths = paths_of(code)
     if force in paths:
         return force
-    spec = (PUBLISHERS.get(code) or {}).get("semi") or {}
-    if "api" in paths and (spec.get("api") or {}).get("status") != "blocked" \
-            and not missing_env(code):
-        cfg_keys = [k for k, _ in (PUBLISHERS[code].get("cfg") or [])]
-        cfg = _cfg(slug, code) if slug else {}
-        if all(str(cfg.get(k) or "").strip() for k in cfg_keys) or "semi" not in paths:
-            return "api"
-    return "semi" if "semi" in paths else ""
+    blocked = ((PUBLISHERS.get(code) or {}).get("semi") or {}).get("api", {}).get("status") == "blocked"
+    if "api" not in paths or blocked:
+        return "semi" if "semi" in paths else ""
+    if "semi" not in paths:
+        return "api"
+    if missing_env(code):
+        return "semi"
+    # 注：这里把「注册表声明了 cfg」当作「cfg 必需」。对现有渠道成立（reddit 的
+    # subreddit 是真必需），但注册表里也有可选键（devto 的 tags/canonical_url、x 的
+    # link_url）。今天不出错是因为那些渠道没有半自动规格、走不到这里；哪天给它们加
+    # semi 规格时，得先给 cfg 加「必需/可选」的标记，否则没填可选项就会被静默降级。
+    cfg_keys = [k for k, _ in (PUBLISHERS[code].get("cfg") or [])]
+    if not cfg_keys:
+        return "api"
+    cfg = _cfg(slug, code) if slug else {}
+    return "api" if all(str(cfg.get(k) or "").strip() for k in cfg_keys) else "semi"
 
 
 def semi_spec(code: str, slug: str | None = None) -> dict | None:
@@ -727,18 +772,23 @@ def _prepare_payload(code: str, spec: dict, text: str, title: str, rel: str,
                      cfg: dict, recs: list, proj: dict) -> dict:
     """按规格把一篇成稿组装成可以直接粘贴的形态。不外发，纯组装。"""
     form = spec.get("body_form")
+    head = (title or "").strip()
+    src = text
+    if spec.get("title_inline"):
+        # 这类渠道没有独立标题栏，标题要并进正文首行；而 markdown 正文的第一行往往
+        # 就是同一个 H1，md2text/md2html 会把文字留着（只去掉 # 号）—— 不摘掉它就会
+        # 「标题 / 标题 / 正文」。摘一行就好，别做全文去重（正文里重复提到标题是正常的）。
+        src = re.sub(r"\A\s*#{1,6}[ \t]+[^\n]*\n?", "", text, count=1)
     if form == "markdown":
-        body = text
+        body = src
     elif form == "html":
-        body = md2html(text)
+        body = md2html(src)
     else:                       # text / tbd：纯文本最不容易坏
-        body = md2text(text)
+        body = md2text(src)
 
     warn: list[str] = []
-    head = (title or "").strip()
-    if spec.get("title_inline"):
-        # 微博这类没有独立标题栏：标题并入正文首行，别让它丢
-        body = (head + "\n\n" + body).strip() if head else body
+    if spec.get("title_inline") and head:
+        body = (head + "\n\n" + body).strip()
     tmax = spec.get("title_max")
     if isinstance(tmax, int):
         if len(head) > tmax:
@@ -759,7 +809,13 @@ def _prepare_payload(code: str, spec: dict, text: str, title: str, rel: str,
         backlink = (cfg.get("link_url") or "").strip() or _latest_public_url(recs, rel)
         if backlink:
             if form == "html":
-                body = body.rstrip() + f'\n<p>原文：<a href="{backlink}">{backlink}</a></p>'
+                # 这里必须转义 + 认 scheme：backlink 来自 cfg.link_url（界面可填）
+                # 或渠道响应里的 url（webhook 接收端可控），而这段会进 {@html} ——
+                # 不转的话 `<img src=x onerror=…>` 是不用点击的 XSS。
+                esc = _esc(backlink)
+                body = (body.rstrip() + f'\n<p>原文：<a href="{esc}">{esc}</a></p>'
+                        if _linkable(backlink)
+                        else body.rstrip() + f"\n<p>原文：{esc}</p>")
             else:
                 body = body.rstrip() + f"\n\n原文：{backlink}"
     return {"title": head, "body": body, "body_form": form or "text",
@@ -786,8 +842,11 @@ def _open_record(rows: list, code: str, rel: str) -> dict | None:
 
 def prepare(slug: str, code: str, rel: str, title: str = "", force: str | None = None) -> dict:
     """备好一篇待人工发布的内容。**不外发**，写一条 state=prepared 的待办。"""
-    if code not in PUBLISHERS:
-        return {"ok": False, "error": f"未知渠道 {code}"}
+    if not isinstance(code, str) or code not in PUBLISHERS:
+        # isinstance 那半是防 body 里塞 dict/list：`{"a":1} not in PUBLISHERS`
+        # 会抛 TypeError（不可哈希）→ HTTP 500。调用方也该挡，这里是兜底。
+        return {"ok": False, "error": f"未知渠道 {code!r}"}
+    rel = _norm_rel(rel)
     if resolve_path(code, slug, force) != "semi":
         return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」当前走自动发布通路，"
                                      f"用发布按钮或 geo.py publish 即可"}
@@ -829,6 +888,9 @@ def record_manual(slug: str, code: str, rel: str, rid: str, url: str = "",
     回填的 URL 是 X 自动回链与分发清单的唯一来源 —— 跳过这一步，那条内容在系统里
     就永远停在「已备好」。
     """
+    if not isinstance(code, str):
+        return {"ok": False, "error": f"未知渠道 {code!r}"}
+    rel = _norm_rel(rel) if rel else ""
     with G.project_lock(slug):
         rows = records(slug)
         ent = next((r for r in rows
@@ -843,6 +905,12 @@ def record_manual(slug: str, code: str, rel: str, rid: str, url: str = "",
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "回填需要一条公开链接"}
+        # 只收 http(s)。这条 URL 是用户输入，会进 publish.json 并渲染成链接
+        # （发布记录表、待发布清单），还会被 _latest_public_url 拿去当回链 ——
+        # 存进去一个 javascript: 就等于在别人的待发布清单里放了一个可点的脚本。
+        # 前端有 safeUrl 守卫，但守的是渲染；入口这里也要挡一道。
+        if not re.match(r"^https?://", url, re.I):
+            return {"ok": False, "error": "回填的链接要以 http:// 或 https:// 开头（公开页面地址）"}
         ent.update({"state": "published", "url": url, "at": G.now_iso(),
                     "note": note or "人工发布并回填", "error": ""})
         ticked: list[str] = []
@@ -866,7 +934,8 @@ def record_manual(slug: str, code: str, rel: str, rid: str, url: str = "",
     return {"ok": True, "id": rid, "url": url, "state": "published", "dist_ticked": ticked}
 
 
-def publish(slug: str, code: str, rel: str, title: str = "", publish_now: bool = False) -> dict:
+def publish(slug: str, code: str, rel: str, title: str = "", publish_now: bool = False,
+            force: str | None = None) -> dict:
     if code not in PUBLISHERS:
         return {"ok": False, "error": f"未知渠道 {code}"}
     miss = missing_env(code)
@@ -876,7 +945,7 @@ def publish(slug: str, code: str, rel: str, title: str = "", publish_now: bool =
                  if PUBLISHERS[code].get("semi") else "")
         return {"ok": False, "error": "缺凭证：" + "、".join(miss) + extra}
     # 通路判定放在读文件之前：半自动渠道压根没有可外发的实现，读一遍文件再报错是白读。
-    _mode = resolve_path(code, slug)
+    _mode = resolve_path(code, slug, force)
     if _mode == "semi":
         return {"ok": False, "mode": "semi",
                 "error": f"「{PUBLISHERS[code]['name']}」没有可用的自动发布通路"

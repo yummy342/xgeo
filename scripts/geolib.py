@@ -111,7 +111,7 @@ def project_lock(slug: str):
     """
     d = project_dir(slug)
     d.mkdir(parents=True, exist_ok=True)
-    with (d / ".lock").open("w") as fd:
+    with _open_lock_file(d / ".lock") as fd:
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -123,6 +123,24 @@ def project_lock(slug: str):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             else:
                 _win_unlock(fd)
+
+
+def _open_lock_file(path, timeout: float = 10.0):
+    """打开锁文件。Windows 上要重试。
+
+    msvcrt 的锁记在字节区间上：另一个句柄持有首字节时，`open("w")` **这一步本身**
+    就抛 PermissionError（不是加锁那一步、也轮不到这里的轮询）。实测同进程 8 线程
+    并发走 publish.json 的读-改-写，只有 1 个成功、其余 7 个裸抛 —— 落到 HTTP 层
+    就是 500。POSIX 的 flock 没这个问题，所以只在 Windows 上看得见。
+    """
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            return path.open("w")
+        except PermissionError:
+            if time.monotonic() >= end:
+                die(f"等锁超时：{path} 一直被别的进程占着")
+            time.sleep(0.05)
 
 
 def _win_lock(fd):

@@ -6,7 +6,8 @@
   import PublishDialog from '../components/PublishDialog.svelte'
   import { api } from '../lib/api.js'
   import { hasPublished, isPrepared, stateOf as stateOfRecords } from '../lib/publishstate.js'
-  import { project } from '../lib/stores/project.svelte.js'
+  import { safeUrl } from '../lib/url.js'
+  import { loadProject, project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
 
@@ -26,9 +27,7 @@
   let pub = $state(null)
 
   // 发布记录里的 url 是渠道响应直接落库的：webhook 端点可以回 `javascript:...`，
-  // 绑到 href 上点一下就执行。只放行 http(s)，其余当纯文本显示。
-  const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '')
-
+  // 绑到 href 上点一下就执行。守卫收在 lib/url.js（三处渲染共用）。
   const pubs = $derived((pub && pub.publishers) || [])
   const recs = $derived(((pub && pub.records) || []).slice().reverse())
   const pend = $derived(contentPub.filter((f) => !hasPublished(f.published)))
@@ -103,7 +102,15 @@
             {#if x.path === 'semi'}
               <!-- 半自动渠道不要凭证，「Missing X」对它没意义；要说明的是它的原生 API 通不通 -->
               <span class="chan-state" title={x.semi?.api?.note || ''}>
-                {x.semi?.api?.status === 'blocked' ? t('No automatic path — prepare and publish yourself') : t('Native API unverified')}
+                {#if x.semi?.api?.status === 'blocked'}
+                  {t('No automatic path — prepare and publish yourself')}
+                {:else if x.missing.length}
+                  <!-- 双路渠道（Reddit/公众号）凭证或 cfg 缺才会落到这；说「待核实」
+                       是把真因盖掉 —— 这两个恰恰最可能补齐后改走自动通路 -->
+                  {t('Fell back to semi — missing {l}').replace('{l}', x.missing.join(', '))}
+                {:else}
+                  {t('Native API unverified')}
+                {/if}
               </span>
             {:else}
               <span class="chan-state" class:ok={!x.missing.length}>
@@ -186,7 +193,14 @@
 {#if manualRec}
   <ManualPublishDialog rel={manualRec.path} code={manualRec.code} id={manualRec.id}
                        onclose={() => (manualRec = null)}
-                       ondone={() => api('/api/publish/' + slug).then((r) => { if (r && !r.error) { pub = r } })} />
+                       ondone={async () => {
+                         // 两处都要刷：pub 供记录表，project.data 供 KPI/待发布清单
+                         // （contentPub 全部派生自 project.data）。只刷 pub 的话，
+                         // 回填成功后顶部还写着「N 已备好」、清单里还写「尚未发布」。
+                         const r = await api('/api/publish/' + slug)
+                         if (r && !r.error) pub = r
+                         await loadProject(slug, true)
+                       }} />
 {/if}
 
 {#if configTarget}

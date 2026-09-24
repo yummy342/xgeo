@@ -108,9 +108,14 @@ class TestSpec(Base):
         self.assertEqual(spec["missing_placeholders"], ["subreddit"])
         self.assertEqual(spec["publish_url"], "https://www.reddit.com/submit")
 
-    def test_tags_capped_by_channel_max(self):
+    def test_tags_actually_capped_in_the_payload(self):
+        """断言落在组装结果上，不是把注册表常量抄一遍 —— 抄一遍的断言永远红不了。
+
+        fixture 的 keywords 有 6 项，CSDN 上限 5，所以出来的标签必须正好 5 个。
+        """
         spec = P.semi_spec("csdn", SLUG)
-        self.assertEqual(spec["tags"]["max"], 5)
+        r = P.prepare(SLUG, "csdn", "content/a.md")
+        self.assertEqual(len(r["tags_text"].split(",")), spec["tags"]["max"])
 
     def test_weibo_has_no_title_field(self):
         spec = P.semi_spec("weibo", SLUG)
@@ -120,10 +125,17 @@ class TestSpec(Base):
 
 class TestPrepare(Base):
     def test_prepare_makes_no_request(self):
-        """备好这条链不许有任何外发请求 —— 这是它与「自动发布」的分界。"""
-        with mock.patch.object(P.requests, "request", side_effect=AssertionError("不该发请求")), \
-                mock.patch.object(P.requests, "get", side_effect=AssertionError("不该发请求")), \
-                mock.patch.object(P.requests, "post", side_effect=AssertionError("不该发请求")):
+        """备好这条链不许有任何外发请求 —— 这是它与「自动发布」的分界。
+
+        把整个 requests 换成「取任何属性都炸」的桩，而不是只 patch get/post：
+        只 patch 三个方法时，将来接上只走 `requests.put`（或 Session、httpx）的实现
+        照样溜过去，这条测试就成了摆设。
+        """
+        class _NoNet:
+            def __getattr__(self, name):
+                raise AssertionError(f"备好不许发请求，却碰了 requests.{name}")
+
+        with mock.patch.object(P, "requests", _NoNet()):
             r = P.prepare(SLUG, "toutiao", "content/a.md")
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["mode"], "semi")
@@ -152,6 +164,47 @@ class TestPrepare(Base):
         self.assertTrue(r["body"].startswith("标题在这"))
         self.assertTrue(r["tags_text"].startswith("#"), "微博话题要 # 包起来")
 
+    def test_title_inline_channel_does_not_repeat_the_headline(self):
+        """微博这类把标题并进正文首行，而正文首行往往就是同一个 H1 —— 摘掉它。
+
+        不摘的话每次备好都是「标题 / 标题 / 正文」（md2text 只去掉 # 号、文字留着）。
+        上一版测试抓到不这个，因为它传的 title 与文章 H1 不同字。
+        """
+        r = P.prepare(SLUG, "weibo", "content/a.md")     # 不传 title，走 _title_of 取 H1
+        self.assertEqual(r["title"], "一个标题")
+        head_lines = [l for l in r["body"].split("\n") if l.strip() == "一个标题"]
+        self.assertEqual(len(head_lines), 1, r["body"][:120])
+
+    def test_force_semi_works_on_a_credentialed_channel(self):
+        """--via semi 打在凭证齐的双路渠道上要真的备好，而不是回一句「用自动通路」。
+
+        之前 force 没往下传，prepare 按默认（凭证齐 → api）再判一次就拒了 ——
+        拒的理由还是让用户去执行他刚敲的那条命令。
+        """
+        env = {"REDDIT_CLIENT_ID": "a", "REDDIT_CLIENT_SECRET": "b",
+               "REDDIT_USERNAME": "c", "REDDIT_PASSWORD": "d"}
+        cfg = json.loads((self.pdir / "geo.json").read_text("utf-8"))
+        cfg["publishing"]["reddit"] = {"subreddit": "LocalLLaMA"}
+        (self.pdir / "geo.json").write_text(json.dumps(cfg, ensure_ascii=False), "utf-8")
+        with mock.patch.dict("os.environ", env):
+            self.assertEqual(P.resolve_path("reddit", SLUG), "api")
+            r = P.prepare(SLUG, "reddit", "content/a.md", force="semi")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["mode"], "semi")
+
+    def test_path_is_normalized_for_idempotency(self):
+        """`content//a.md` 与 `content/a.md` 是同一个文件，不该备出两条待办。"""
+        a = P.prepare(SLUG, "sohu", "content/a.md")
+        b = P.prepare(SLUG, "sohu", "content//./a.md")
+        self.assertEqual(a["id"], b["id"])
+        self.assertEqual(len(self.records()), 1)
+
+    def test_non_string_platform_is_rejected_not_crashed(self):
+        """body 里塞 dict/list 不能把 500 抛出去（不可哈希 → TypeError）。"""
+        self.assertFalse(P.prepare(SLUG, {"a": 1}, "content/a.md")["ok"])
+        self.assertFalse(P.record_manual(SLUG, ["sohu"], "content/a.md", "x",
+                                        url="https://a.test/")["ok"])
+
     def test_api_channel_refuses_to_prepare(self):
         with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "x"}):
             r = P.prepare(SLUG, "github", "content/a.md")
@@ -179,6 +232,25 @@ class TestRefill(Base):
     def test_refill_requires_a_url(self):
         r = P.prepare(SLUG, "toutiao", "content/a.md")
         self.assertFalse(P.record_manual(SLUG, "toutiao", "content/a.md", r["id"])["ok"])
+
+    def test_refill_rejects_a_non_http_url(self):
+        """回填的链接会渲染成可点链接、还会被当回链 —— 只收 http(s)。
+
+        存进去一个 `javascript:` 等于在别人的待发布清单里放了个可点的脚本；
+        渲染侧有守卫，但入口这里也要挡一道（守卫守的是渲染，不是数据）。
+        """
+        r = P.prepare(SLUG, "sohu", "content/a.md")
+        m = P.record_manual(SLUG, "sohu", "content/a.md", r["id"], url="javascript:alert(1)")
+        self.assertFalse(m["ok"])
+        self.assertIn("http", m["error"])
+        self.assertEqual(self.records()[-1]["state"], P.SEMI_STATE, "被拒之后仍该是待回填")
+
+    def test_refill_accepts_http_and_https(self):
+        for u in ("http://a.test/x", "https://a.test/x"):
+            with self.subTest(u=u):
+                r = P.prepare(SLUG, "zhihu", "content/a.md")
+                m = P.record_manual(SLUG, "zhihu", "content/a.md", r["id"], url=u)
+                self.assertTrue(m["ok"], m)
 
     def test_refill_ticks_the_distribution_list(self):
         """回填顺带勾分发清单：原来那是另一条没有 URL 的人工链，两条并成一条。"""
@@ -212,6 +284,52 @@ class TestMd2Text(unittest.TestCase):
         out = P.md2text("```py\nprint(1)\n```")
         self.assertIn("print(1)", out)
         self.assertNotIn("```", out)
+
+
+class TestHtmlSafety(unittest.TestCase):
+    """md2html 的产物会被前端 {@html} 渲染，也会发到 WordPress/公众号/webhook。
+
+    所以「链接目标认不认 scheme」是安全边界，不是格式偏好：
+    `content/*.md` 能经 `POST /api/content/` 写入，转义只挡得住「拼出属性」。
+    """
+
+    def test_javascript_link_is_not_emitted_as_a_link(self):
+        out = P.md2html("点[这里](javascript:alert(1))看看")
+        self.assertNotIn("<a href", out)
+        self.assertIn("这里", out, "信息别丢：退化成纯文本")
+
+    def test_percent_encoded_javascript_link_is_also_refused(self):
+        """Chromium 执行前会解码，所以百分号编码不是绕过口。"""
+        out = P.md2html("[x](javascript:fetch%28%27//evil/%27%29)")
+        self.assertNotIn("<a href", out)
+
+    def test_data_uri_is_refused(self):
+        self.assertNotIn("<a href", P.md2html("[x](data:text/html,<script>1</script>)"))
+
+    def test_http_and_relative_links_still_work(self):
+        self.assertIn('<a href="https://a.test/x">t</a>', P.md2html("[t](https://a.test/x)"))
+        self.assertIn('<a href="/docs/">d</a>', P.md2html("[d](/docs/)"))
+
+    def test_backlink_is_escaped_in_the_prepared_body(self):
+        """回链来自 cfg.link_url（界面可填）或渠道响应 url —— 不转义就是免点击 XSS。
+
+        走 html 型渠道（sohu/头条/百家号/公众号）时它会直接进 {@html} 渲染的正文。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = Path(tmp) / SLUG
+            (pdir / "content").mkdir(parents=True)
+            local = json.loads(json.dumps(CFG))
+            local["publishing"] = {"sohu": {"link_url": '<img src=x onerror="alert(1)">'}}
+            (pdir / "geo.json").write_text(json.dumps(local, ensure_ascii=False), "utf-8")
+            (pdir / "content" / "a.md").write_text(ARTICLE, "utf-8")
+            old = G.WORK
+            G.WORK = Path(tmp)
+            try:
+                r = P.prepare(SLUG, "sohu", "content/a.md")
+            finally:
+                G.WORK = old
+        self.assertNotIn("<img", r["body"], "回链里的标签必须被转义")
+        self.assertIn("&lt;img", r["body"])
 
 
 class TestStateRegistry(unittest.TestCase):

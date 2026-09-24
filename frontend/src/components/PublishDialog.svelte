@@ -4,6 +4,7 @@
   import { project, loadProject } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
+  import { safeUrl } from '../lib/url.js'
   import ManualPublishDialog from './ManualPublishDialog.svelte'
 
   // 取代 ui.html:2103 pubModal + 2130 doPublishSel。
@@ -60,11 +61,13 @@
 
   const readyOf = (code) => !((pubs.find((x) => x.code === code) || {}).missing || []).length
 
-  function lastDone(code, onlyPublished = false) {
-    // 半自动渠道要 onlyPublished：它的记录里「已备好（prepared）」也是 ok:true，
-    // 直接拿来标「✓ sent」会把「备好了还没贴」说成发出去了。
+  function lastDone(code) {
+    // 排除「已备好（prepared）」：它的记录也是 ok:true，拿来标「✓ sent」会把
+    // 「备好了还没贴」说成发出去了。两条路都要排 —— 之前只给半自动那列传了
+    // onlyPublished，自动那列没传，于是「先按半自动备好、后来补齐凭证转回自动」
+    // 的渠道（reddit/公众号）会显示成已发出。
     const hits = records.filter((r) => r.path === rel && r.ok && r.platform === code
-      && (!onlyPublished || (r.state || 'published') === 'published'))
+      && r.state !== 'prepared')
     return hits[hits.length - 1]
   }
 
@@ -152,7 +155,7 @@
         <span class="muted note">{t('Platform rules forbid auto-posting. The tool prepares the content and opens the page; you publish it.')}</span>
       </div>
       {#each semis as x (x.code)}
-        {@const done = lastDone(x.code, true)}
+        {@const done = lastDone(x.code)}
         <div class="row chan semi">
           <span class="cname">
             {x.name}<span class="muted note">{x.note}</span>
@@ -171,7 +174,7 @@
           <div class="pline" class:ok={p.state === 'ok'} class:fail={p.state === 'fail'}>
             {#if p.state === 'ok'}
               ✓ {p.name} {p.draft ? t('Draft — confirm it in the channel console') : t('published')}
-              {#if p.url} <a href={p.url} target="_blank" class="plink">{p.url.slice(0, 50)}</a>{:else} {p.note}{/if}
+              {#if safeUrl(p.url)} <a href={safeUrl(p.url)} target="_blank" class="plink">{p.url.slice(0, 50)}</a>{:else if p.url} <span class="plink">{p.url.slice(0, 50)}</span>{:else} {p.note}{/if}
             {:else if p.state === 'fail'}
               ✗ {p.name} {t('failed:')} {p.text}
             {:else}
