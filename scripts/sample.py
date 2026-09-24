@@ -578,6 +578,24 @@ def brand_in_question(question: str, cfg: dict) -> bool:
     return any(_alias_spans(ql, n.lower()) for n in names if n)
 
 
+def declared_probe_ids(cfg: dict) -> set:
+    """问题库里显式声明为品牌认知探测的题号。
+
+    为什么不用 brand_in_question 兜底：那是拿问题原文去撞别名表，别名表又刻意
+    不含裸词（防同名竞品），于是「What is FreeModel?」这种一眼就是点名题的问题
+    反而撞不上 —— 2026-09-24 实测 4 道品牌验证题里只认出 1 道。问题库自己声明的
+    才是真相：写 probe: true 的那几道，答案必然出现品牌名，不能算进可见性。
+    """
+    return {q.get("id") for q in (cfg.get("questions") or []) if q.get("probe")}
+
+
+def is_probe_question(q: dict, cfg: dict) -> bool:
+    """采样那一刻就定好这题算不算品牌认知探测，免得聚合时再猜一遍。"""
+    if q.get("probe"):
+        return True
+    return brand_in_question(q.get("text") or "", cfg)
+
+
 def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dict:
     names, alias = entities_of(cfg)   # 先它：brand.name 缺失时它给的是可读的报错
     brand = cfg["brand"]["name"]
@@ -660,8 +678,20 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
         is_web = key != plat
         # 点名品牌的问题（品牌验证类）不能算进可见性——答案必然复述品牌名。
         # 它们单独统计成「品牌认知」：AI 到底知不知道这个品牌、说得对不对。
-        probe = [r for r in all_rs if r.get("brand_in_question")
-                 or brand_in_question(r.get("question", ""), cfg)]
+        # 2026-09-24：判据改成「问题库怎么声明的」（declared_probe_ids），不再靠
+        # 撞别名表。实测后者只认出 4 道品牌验证题里的 1 道 —— q024「What is
+        # FreeModel?」撞不上，因为裸词 FreeModel 09-20 起刻意不在别名表里（防六个
+        # 同名站）。另外 3 道就留在提及率分母里，答案必然出现品牌名却永远命中不了，
+        # 把提及率一直往下拖；同时 probe 只剩 1 个样本，比率成了噪声。
+        probe_ids = declared_probe_ids(cfg)
+
+        def _is_probe(r: dict) -> bool:
+            if r.get("question_id") in probe_ids:
+                return True
+            # 没在问题库里声明的（人工导入、旧样本）才退回文本匹配
+            return bool(r.get("brand_in_question")) or brand_in_question(r.get("question", ""), cfg)
+
+        probe = [r for r in all_rs if _is_probe(r)]
         rs = [r for r in all_rs if r not in probe]
         # 绝不回退：某平台只采了点名题时，可见性指标就是「未测」（None），
         # 不能把点名样本塞回去凑出 mention_rate=1.0 的假阳性。
@@ -768,7 +798,7 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
             "evidence_level": "B_api_可复现",
             "search_enabled": res.get("searched", PROVIDERS[plat].get("search", False)),
             "question_id": q.get("id"), "question": q["text"], "round": rnd,
-            "brand_in_question": brand_in_question(q["text"], cfg),
+            "brand_in_question": is_probe_question(q, cfg),
             "ok": res["ok"], "error": res.get("error"),
             "usage": res.get("usage"),
             "elapsed_ms": elapsed_ms,
