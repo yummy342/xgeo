@@ -1368,25 +1368,40 @@ def run(slug: str, which: list[str] | None = None, with_draft: bool = False,
     if with_draft and outlines:
         d = adir / "drafts"
         d.mkdir(parents=True, exist_ok=True)
-        for o in outlines[:draft_limit]:
-            qid_o = o["question_id"]
-            dst = d / f"{qid_o}.md"
-            # pick 选定的人工稿也落在同一个路径上。无条件覆盖会把它冲掉，而且
-            # 没有任何备份 —— 发布/交付链只认这个文件，_index.json 里的 picked
-            # 却还指向已被替换的文本。
-            if dst.exists() and "由 pick" in dst.read_text("utf-8")[:200]:
-                G.info(f"  跳过 {qid_o}：已有人工选定稿（要重生成先删掉它）")
-                made.append(f"assets/drafts/{qid_o}.md")
-                continue
-            G.info(f"起草 {qid_o} · {o['target_question'][:30]}…")
-            text = draft(slug, o)
-            if text:
-                dst.write_text(
-                    f"<!-- 初稿，需人工核实所有事实后再发布 · {G.today()} -->\n\n" + text, "utf-8")
-                made.append(f"assets/drafts/{qid_o}.md")
-            else:
-                G.info("  没有可用的 LLM API Key，跳过起草")
-                break
+        # 「一个 Key 都没有」是全局条件，先判一次；单篇失败则继续。
+        # 原来两种情况共用一句 break：一批 27 篇里只要有一篇拿回空（限流、超时、
+        # 单次 API 错），后面全部静默不写 —— 目录看着像「跑完了」，实际只出了前几篇。
+        import sample as _S
+        if not _S.pick_llm():
+            G.info(f"  没有可用的 LLM API Key（候选链：{'/'.join(_S.LLM_PREFS)}），整批跳过起草")
+        else:
+            failed: list[str] = []
+            for o in outlines[:draft_limit]:
+                qid_o = o["question_id"]
+                dst = d / f"{qid_o}.md"
+                # pick 选定的人工稿也落在同一个路径上。无条件覆盖会把它冲掉，而且
+                # 没有任何备份 —— 发布/交付链只认这个文件，_index.json 里的 picked
+                # 却还指向已被替换的文本。
+                if dst.exists() and "由 pick" in dst.read_text("utf-8")[:200]:
+                    G.info(f"  跳过 {qid_o}：已有人工选定稿（要重生成先删掉它）")
+                    made.append(f"assets/drafts/{qid_o}.md")
+                    continue
+                G.info(f"起草 {qid_o} · {o['target_question'][:30]}…")
+                try:
+                    text = draft(slug, o)
+                except Exception as e:  # noqa: BLE001
+                    G.info(f"  {qid_o} 起草抛错，跳过：{type(e).__name__}: {e}")
+                    text = ""
+                if text:
+                    dst.write_text(
+                        f"<!-- 初稿，需人工核实所有事实后再发布 · {G.today()} -->\n\n" + text, "utf-8")
+                    made.append(f"assets/drafts/{qid_o}.md")
+                else:
+                    failed.append(qid_o)
+                    G.info(f"  {qid_o} 没拿到正文，继续下一篇（不中断整批）")
+            if failed:
+                G.info(f"  本批 {len(failed)} 篇没出稿：{'、'.join(failed)}。"
+                       f"重跑同一条命令会补上（已有的会被覆盖）")
         rep = lint_all(slug)
         if rep.get("total_issues"):
             G.info(f"初稿风险检查：{rep['total_issues']} 项（高风险 {rep['high']} 项）"
