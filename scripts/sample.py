@@ -57,10 +57,13 @@ PROVIDERS = {
         # 通→不通→通都出现过），新开通后别急着判定失败，隔几分钟再测一轮。
         # 模型名写错会得到和「未开通」几乎一样的报错，别把名字问题当成权限问题。
         #
-        # 走普通 chat/completions 而不再挂 protocol="ark"：responses + web_search
-        # 那条路当前直接回 InternalServiceError（内容插件未生效），秒错不是超时。
-        # 所以这一档测的是参数化知识，口径同 glm/deepseek，报告里标「不联网」。
-        # 一旦开通内容插件，把 protocol 加回 "ark" 即可恢复联网+引用。
+        # 2026-09-25 01:08 「联网内容插件」开通成功（资源 CC_content_plugin2000000985461627458），
+        # 所以 protocol 挂回 "ark"：走 responses + web_search，答案带回引用。这是国内
+        # 唯一一条能测到引用层的通道 —— 另外五个国内引擎都不给引用。
+        # 插件只支持 Responses API，chat/completions 那条不带联网；tools 与 caching
+        # 不能同时传（400）；插件开启时 function calling 不生效。账号级 5 QPS。
+        # 计费：联网资源每月 2 万次免费，超出 4 元/千次；头条/抖音/墨迹 6 元/千次
+        # 无免费额度（别往 tools.sources 里加它们）。
         # 取 lite 不取 pro：pro 实测单条 198s，是整轮里最慢的档。注册表一贯的规矩
         # 是「用各家的轻量档，测的是模型认不认识这个品牌，不是推理质量」——
         # 这一条在豆包这里尤其要紧，思考链一长，一题就能吃掉十分钟。
@@ -69,9 +72,10 @@ PROVIDERS = {
         "model": "doubao-seed-2-1-lite-260915",
         "model_env": "ARK_MODEL",
         "key_env": "ARK_API_KEY",
-        "timeout": 300,          # 实测单条 119s，120s 的默认值会误判成超时
-        "search": False,
-        "note": "方舟 chat 端点，不联网；要测豆包联网行为需先开通内容插件再挂回 ark 协议",
+        "protocol": "ark",
+        "timeout": 300,          # 联网后更慢；注册表值优先于 ask() 的默认 120s
+        "search": True,
+        "note": "方舟 responses + web_search，联网并返回引用；账号没插件时会自动降级成不联网对话",
     },
     "deepseek": {
         "name": "DeepSeek", "market": "cn",
