@@ -33,6 +33,14 @@ const store = {
 };
 
 function serverUrl() { return $("#server").value.trim().replace(/\/$/, "") || "http://127.0.0.1:8765"; }
+
+// 看板那侧的凭据。两种档都靠这个头：管理员令牌（XGEO_TOKEN）与分项目令牌。
+// **账号档例外** —— 那是浏览器里的事，助手进不去；本机开了账号档就给看板也配一个
+// 令牌，否则助手所有请求都会 401（README 里写明了）。
+function authHeaders() {
+  const t = $("#token").value.trim();
+  return t ? { "X-Xgeo-Token": t } : {};
+}
 function slug() { return $("#slug").value; }
 
 // 清掉「上一次提取」的全部痕迹。换题、换平台、换项目都要调 ——
@@ -46,7 +54,10 @@ function resetExtract() {
 }
 
 async function apiGet(path) {
-  const r = await fetch(serverUrl() + path);
+  const r = await fetch(serverUrl() + path, { headers: authHeaders() });
+  // 401 单独说清怎么办：看板配了凭据而助手没带令牌时，所有读取都会走到这里，
+  // 只说 HTTP 401 的话用户会去查网络。
+  if (r.status === 401) throw new Error("看板要求凭据：把访问令牌填到上面那一栏");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -362,7 +373,8 @@ $("#upload").onclick = async () => {
   if (!SAMPLES.length) { $("#upmsg").textContent = "还没有已采集的样本"; return; }
   try {
     const r = await fetch(`${serverUrl()}/api/collect/${slug()}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
       body: JSON.stringify({ records: SAMPLES }),
     });
     const j = await r.json();
@@ -403,6 +415,13 @@ async function loadSampleBuffer() {
 }
 
 (async () => {
+  // 地址与令牌都要存：换一次就得重填的字段，用户下次打开就会以为助手坏了
+  const savedServer = await store.get("server", "");
+  if (savedServer) $("#server").value = savedServer;
+  $("#token").value = await store.get("token", "");
+  for (const id of ["server", "token"]) {
+    $("#" + id).addEventListener("change", () => store.set(id, $("#" + id).value.trim()));
+  }
   await loadProjects();
   $("#session").value = await store.get("session", "sandbox");
   GROUPS = await store.get("groups", []);

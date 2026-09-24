@@ -56,6 +56,11 @@ button:disabled{opacity:.45;cursor:default}
 <div class="card">
   <div class="row"><input id="server" placeholder="http://127.0.0.1:8765" value="http://127.0.0.1:8765">
     <select id="slug" style="width:40%"></select></div>
+  <!-- 看板配了访问令牌（或账号档）时，无凭据的请求一律 401。令牌存 chrome.storage.local，
+       与看板的 X-Xgeo-Token 头对应；不填就是原来的匿名行为（本机没配凭据时够用）。 -->
+  <div class="row" style="margin-top:6px">
+    <input id="token" type="password" placeholder="访问令牌（看板配了 XGEO_TOKEN 才需要）">
+  </div>
   <div class="row" style="margin-top:6px">
     <button id="load" class="primary">载入队列</button>
     <span id="qmeta" class="small"></span></div>
