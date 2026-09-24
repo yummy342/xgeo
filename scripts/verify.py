@@ -15,7 +15,7 @@ checker 语法（写在工单的 acceptance.check 里）：
   site.en_pages_gte:8             英文有效内容页数达标
   site.lang_balance:0.7           中英页面数差距在阈值内
   pages.static_text               受影响页面正文词数 ≥120（SPA 修复）
-  pages.has_jsonld                受影响页面已挂 JSON-LD
+  pages.has_jsonld                受影响页面已挂 JSON-LD（非网页端点除外）
   pages.block:定义                缺该抽取块的页面数下降 ≥50%
   pages.quotable                  「整页无可引段落」的页面数下降 ≥50%
   pages.wordcount_gte:1000        正文不足 1000 词的页面数下降 ≥40%
@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 
 import audit as A
 import geolib as G
+import sample as S
 import tasks as T
 
 
@@ -47,7 +48,16 @@ def report_key(f: Path) -> tuple[str, str]:
 
 
 def _pages_by_url(audit: dict) -> dict:
-    return {p["url"]: p for p in audit.get("pages", [])}
+    """按 URL 索引页面，含非内容页。
+
+    非内容页不在 audit["pages"] 里（不参与评分），但 SPA 空壳工单的受影响列表恰恰
+    全是它们。少了这一份，`pages.static_text` 会拿不到 url → word_count 记 0 →
+    修复了也永远判未达标，工单变成死题。修好之后该页会变成内容页回到 pages 里。
+    """
+    out = {p["url"]: p for p in audit.get("pages", [])}
+    for p in audit.get("non_content_pages", []):
+        out.setdefault(p["url"], p)
+    return out
 
 
 def _cited_domains(metrics: dict, market: str | None = None) -> dict[str, int]:
@@ -64,12 +74,28 @@ def _cited_domains(metrics: dict, market: str | None = None) -> dict[str, int]:
     return out
 
 
-def _market_avg(metrics: dict, market: str, field: str):
+def _market_avg(metrics: dict, market: str, field: str, only_searching: bool = False):
     # None = 该平台本期未测（只采了点名题），不参与平均；全 None 返回 None，
     # 调用方按「无数据」处理，绝不能默认 0 误判「未达标」。
-    vals = [m[field] for m in (metrics or {}).get("platforms", {}).values()
-            if m.get("market", "cn") == market and m.get(field) is not None]
+    # only_searching：引用类指标只在国内/海外「联网通道」上算，不联网的通道拿不到
+    # 引用，算进来只会稀释成一个恒低的数（见 sample.searches）。
+    vals = [m[field] for p, m in (metrics or {}).get("platforms", {}).items()
+            if m.get("market", "cn") == market and m.get(field) is not None
+            and (S.searches(p) or not only_searching)]
     return (sum(vals) / len(vals)) if vals else None
+
+
+def _crawl_incomplete(audit: dict) -> str | None:
+    """本轮抓取是否缺页；缺页时返回一句说明，否则 None。
+
+    缺口统计（缺块页数、正文不足词数）都是「在本次抓到的页面里数」，抓取失败的页
+    根本不在集合里 —— 缺口数会因为没抓到而变小。而这类判据写的是「下降 ≥X%」，
+    于是少抓几页就成了「已修复」，工单被自动标 done。缺页时一律不判。
+    """
+    n = audit.get("unreachable_count") or 0
+    if n:
+        return f"本轮有 {n} 页抓取失败，页面统计不完整，先重跑 crawl"
+    return None
 
 
 def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dict | None]:
@@ -91,6 +117,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
 
     try:
         if expr == "site.no_ai_bot_block":
+            # robots.txt 没抓到时 ai_bots_blocked 恒为空，与「真的没封禁」同形。
+            # audit 早就防了这一条（它会把「没抓到」单列一条），verify 这边漏了：
+            # 判据是「没封禁 → 通过」，一次抖动就把这条 P0 工单自动标 done。
+            if site.get("robots_fetched", True) is False:
+                return None, "本次重抓没拿到 robots.txt（超时或被拦），无法判定是否封禁，先重跑 crawl", None
             blocked = site.get("ai_bots_blocked") or []
             return (not blocked), ("robots 未封禁任何 AI 抓取器" if not blocked
                                    else f"仍封禁：{'、'.join(blocked)}"), None
@@ -102,14 +133,22 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             return (not bad), ("AI 爬虫 UA 探测首页全部放行" if not bad
                                else f"仍被拒：{'、'.join(bad)}"), None
         if expr == "site.robots_sitemap_declared":
+            # 同 site.has_sitemap：重抓没拿到 robots.txt 时该字段恒为 False，
+            # 拿它判「仍未声明」就是把一次抓取失败记成工单没做。
+            if site.get("robots_fetched", True) is False:
+                return None, "本次重抓没拿到 robots.txt（超时或被拦），无法判定 Sitemap 声明，先重跑 crawl", None
             ok = bool(site.get("robots_sitemap_declared"))
             return ok, ("robots.txt 已声明 Sitemap" if ok else "robots.txt 仍未声明 Sitemap"), None
         if expr == "site.llms_txt_valid":
+            if not site.get("llms_txt_reachable", True):
+                return None, "本次重抓没拿到 /llms.txt 的结论（超时/源站故障），先重跑 crawl", None
             if not site.get("has_llms_txt"):
                 return False, "llms.txt 缺失", None
             lch = site.get("llms_txt_check") or {}
             if not lch:
-                return None, "本次重抓没有 llms.txt 校验数据（旧版抓取结果），先重跑 crawl", None
+                # 三种来路：旧版抓取结果、robots.txt 没抓到（那时无法判断哪些
+                # 路径是留给爬虫的，crawl 主动不判）、llms.txt 本身是空的。
+                return None, "本次重抓没有 llms.txt 链接校验数据（robots.txt 没抓到，或旧版抓取结果），先重跑 crawl", None
             nbad = len(lch.get("broken", [])) + len(lch.get("robots_blocked", []))
             return nbad == 0, (f"抽样 {lch.get('checked', 0)} 条链接全部有效" if nbad == 0
                               else f"仍有 {nbad} 条失效/被封链接"), \
@@ -144,6 +183,10 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             n = site.get("sitemap_noisy_urls")
             if n is None:
                 return None, "本次重抓没有 sitemap 污染统计（旧版抓取结果），先重跑 crawl", None
+            # 抓不到 sitemap 时 noisy 也是 0（数的是空列表），不是「已经干净了」。
+            # 上面那个 is None 只在旧版 evidence 才成立，拦不住这种情况。
+            if not site.get("sitemap_reachable", True):
+                return None, "本次重抓没拿到 sitemap（超时/源站故障），无法判定是否含低价值 URL，先重跑 crawl", None
             return n == 0, (f"sitemap 已无低价值 URL" if n == 0
                             else f"仍有 {n} 条带参数/搜索/翻页 URL"), \
                 {"label": "sitemap 低价值 URL", "cur": n, "target": 0, "op": "lte"}
@@ -157,9 +200,15 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             return cur >= tgt, f"hreflang 覆盖 {lc2.get('hreflang_pages', 0)}/{total} 页（{cur:.0%} / 目标 {tgt:.0%}）", \
                 {"label": "hreflang 覆盖率", "cur": round(cur, 2), "target": tgt, "op": "gte", "pct": True}
         if expr == "site.has_sitemap":
+            # 重抓时没能确认（超时/5xx）不能判「仍缺失」——那会把一次网络抖动
+            # 记成「工单没做」，交人工。同 rules 见 site.has_llms_txt。
+            if not site.get("sitemap_reachable", True):
+                return None, "本次重抓没拿到 sitemap 的结论（超时/源站故障），先重跑 crawl", None
             ok = bool(site.get("has_sitemap"))
             return ok, f"sitemap {'已上线（%d 条 URL）' % site.get('sitemap_url_count', 0) if ok else '仍缺失'}", None
         if expr == "site.has_llms_txt":
+            if not site.get("llms_txt_reachable", True):
+                return None, "本次重抓没拿到 /llms.txt 的结论（超时/源站故障），先重跑 crawl", None
             ok = bool(site.get("has_llms_txt"))
             return ok, ("llms.txt 已上线" if ok else "llms.txt 仍缺失"), None
         if expr.startswith("site.avg_score_gte:"):
@@ -187,17 +236,45 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             # 功能页（登录/联系页等）天然低词数，和 audit 用同一条规则豁免，
             # 否则一张 SPA 空壳工单会被联系页永远卡在未达标
             aff_real = [u for u in aff if not A.FUNC_PAGE.search(urlparse(u).path)]
+            if not aff_real:
+                return True, "受影响页均为功能页（登录/联系页等），不判正文词数", None
+            missing = [u for u in aff_real if u not in pages]
+            if missing:
+                # 这页本轮没被抓到（超时/5xx），不是「还是空壳」。同 pages.quotable。
+                return None, (f"{len(missing)}/{len(aff_real)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
             bad = [u for u in aff_real if pages.get(u, {}).get("word_count", 0) < 120]
-            return (not bad), f"{base - len(bad)}/{base} 页已能抓到正文", \
-                {"label": "抓不到正文的页面", "cur": len(bad), "target": 0, "op": "lte", "base": base}
+            # 分母用实际参评的页数：豁免掉的页不该计进「已能抓到正文」的分子，
+            # aff 混了一页登录页时 base 会算出 2/1 这种数
+            return (not bad), f"{len(aff_real) - len(bad)}/{len(aff_real)} 页已能抓到正文", \
+                {"label": "抓不到正文的页面", "cur": len(bad), "target": 0, "op": "lte",
+                 "base": len(aff_real)}
         if expr == "pages.has_jsonld":
-            bad = [u for u in aff if not pages.get(u, {}).get("jsonld_types")]
-            return (not bad), f"{base - len(bad)}/{base} 页已挂 JSON-LD", \
-                {"label": "未挂 JSON-LD 的页面", "cur": len(bad), "target": 0, "op": "lte", "base": base}
+            # JSON-LD 只能挂在 HTML 文档上。/v1/models 这类端点抓到的是 JSON，
+            # audit 归为 non_document（reason 由 _pages_by_url 一并带过来），
+            # 连 jsonld_types 字段都不带 —— 留在 aff 里这张工单永远判未达标。
+            # SPA 外壳是 HTML，仍然要算。
+            aff_real = [u for u in aff
+                        if pages.get(u, {}).get("reason") != G.REASON_NON_DOCUMENT]
+            if not aff_real:
+                return True, "受影响页均为非网页端点（API/文件），JSON-LD 不适用", None
+            missing = [u for u in aff_real if u not in pages]
+            if missing:
+                # 本轮没抓到这页时 pages 里查不到，jsonld_types 读成空 → 判未达标：
+                # 一次抓取失败被写成「工单没做」。同 pages.quotable。
+                return None, (f"{len(missing)}/{len(aff_real)} 个受影响 URL 未出现在本次抓取"
+                              f"（如 {str(missing[0])[:60]}），无法判定"), None
+            bad = [u for u in aff_real if not pages.get(u, {}).get("jsonld_types")]
+            return (not bad), f"{len(aff_real) - len(bad)}/{len(aff_real)} 页已挂 JSON-LD", \
+                {"label": "未挂 JSON-LD 的页面", "cur": len(bad), "target": 0, "op": "lte",
+                 "base": len(aff_real)}
         if expr.startswith("pages.block:"):
             blk = expr.split(":", 1)[1]
             # 基线用生成工单时的真实缺口数；旧工单没有该字段退回 affected 长度
             base = task.get("baseline_count", len(aff))
+            bad = _crawl_incomplete(audit)
+            if bad:
+                return None, bad, None
             cur = sum(1 for p in audit.get("pages", []) if not p["blocks"].get(blk))
             return cur <= base * 0.5, f"缺「{blk}」页面 {cur}（基线 {base}，目标 ≤{int(base*0.5)}）", \
                 {"label": f"缺「{blk}」块的页面", "cur": cur, "target": int(base * 0.5),
@@ -205,6 +282,9 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
         if expr.startswith("pages.wordcount_gte:"):
             n = int(expr.split(":")[1])
             base = task.get("baseline_count", len(aff))
+            bad = _crawl_incomplete(audit)
+            if bad:
+                return None, bad, None
             cur = sum(1 for p in audit.get("pages", []) if 100 <= p["word_count"] < n)
             return cur <= base * 0.6, f"正文 <{n} 词的页面 {cur}（基线 {base}，目标 ≤{int(base*0.6)}）", \
                 {"label": f"正文不足 {n} 词的页面", "cur": cur, "target": int(base * 0.6),
@@ -220,7 +300,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                  "op": "gte", "pct": True}
         if expr.startswith("metrics.own_cite_gte:"):
             _, mk, tgt = expr.split(":")
-            cur = _market_avg(metrics, mk, "own_domain_cite_rate")
+            rows = (metrics or {}).get("platforms", {}) or {}
+            if not any(m.get("market", "cn") == mk and S.searches(p) for p, m in rows.items()):
+                return None, (f"{mk} 市场本期没有联网通道（不联网的通道不产生引用），"
+                              "引用率无从判定"), None
+            cur = _market_avg(metrics, mk, "own_domain_cite_rate", only_searching=True)
             if cur is None:
                 return None, f"{mk} 市场本期无采样数据", None
             return cur >= float(tgt), f"{mk} 引用官网率 {cur:.1%} / 目标 {float(tgt):.0%}", \
@@ -232,6 +316,12 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             # 那条把「点名时引不到」和「不点名时引不到」混在一起算平均，
             # 一个平台的品牌认知问题会被市场均值抹平。
             _, plat, tgt = expr.split(":")
+            # 不联网的通道测的是「模型知不知道这个品牌」，答案里不会有任何真实
+            # 引用，引用官网率恒为 0 —— 那不是内容缺陷，是通道属性。2026-09-24
+            # 实测：api2d 三个通道抽出的「引用域名」全是示例代码里的占位符。
+            if not S.searches(plat):
+                return None, (f"{plat} 是不联网通道（测参数化知识，不产生引用），"
+                              "引用率无从判定"), None
             row = ((metrics or {}).get("platforms", {}) or {}).get(plat)
             pr = (row or {}).get("probe") or {}
             if not pr.get("samples"):
@@ -246,6 +336,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
 
         if expr.startswith("external.any:"):
             targets = [d.strip() for d in expr.split(":", 1)[1].split(",") if d.strip()]
+            # 本期一条样本都没有时，引用列表必然是空的，判「未达标」等于拿没测过的
+            # 数据下结论。有样本但确实没被引用，才是真的未达标。
+            rows = ((metrics or {}).get("platforms") or {}).values()
+            if not any((r or {}).get("samples") for r in rows):
+                return None, "本期没有采样数据（或样本为空），无法判定引用情况", None
             doms = _cited_domains(metrics)
             hit = [t for t in targets if any(d == t or d.endswith("." + t) for d in doms)]
             return bool(hit), (f"已被引用：{'、'.join(hit)}" if hit

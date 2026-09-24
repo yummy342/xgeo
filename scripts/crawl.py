@@ -38,22 +38,32 @@ def _same_site_url(root: str, u: str) -> bool:
     return bool(base) and (host == base or host.endswith("." + base))
 
 
-def discover_sitemap(root: str, limit: int = 300) -> list[str]:
+def discover_sitemap(root: str, limit: int = 300) -> tuple[list[str], bool]:
+    """返回 (URL 列表, 是否拿到了结论)。
+
+    第二个值是「这次到底问清楚没有」：所有 sitemap 请求要么 200 要么 404 才算有结论。
+    任何一条 fetch_text 返回 None（超时/5xx）就说明这轮问了但没答上来，调用方
+    不能据此断言「站点没有 sitemap」——那是一句会变成 P0 工单的话。
+    """
     urls: list[str] = []
     seen_maps = set()
     queue = [G.normalize_url(root, "/sitemap.xml"), G.normalize_url(root, "/sitemap_index.xml")]
 
-    robots = G.fetch_text(G.normalize_url(root, "/robots.txt"))
+    robots = G.fetch_text(G.normalize_url(root, "/robots.txt")) or ""
     for m in re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots):
         queue.append(m.strip())
 
     # 最多只跟 8 个 sitemap 文件：有些站的 sitemap index 挂着上百个分片，会把抓取拖死
+    probed = True
     while queue and len(urls) < limit and len(seen_maps) < 8:
         sm = queue.pop(0)
         if not sm or sm in seen_maps:
             continue
         seen_maps.add(sm)
         xml = G.fetch_text(sm)
+        if xml is None:
+            # 这轮问不到答案。已经拿到的 URL 仍然算数，一条都没有才是「没结论」。
+            return urls, bool(urls)
         if not xml:
             continue
         # 只留同站 http(s) 的 loc：sitemap 托管在 CDN、多站 sitemap index、
@@ -66,7 +76,7 @@ def discover_sitemap(root: str, limit: int = 300) -> list[str]:
             queue.extend(locs[:20])
         else:
             urls.extend(locs)
-    return urls
+    return urls, probed
 
 
 def discover_links(root: str, html: str, limit: int = 200) -> list[str]:
@@ -133,6 +143,9 @@ def analyze_page(url: str, res: dict) -> dict:
         "status": res["status"],
         "ua_fallback": res.get("ua_fallback", False),
         "error": res["error"],
+        # content_type 参与「是不是内容页」的判定（G.non_content_reason）。
+        # 非网页响应在 fetch 里就被拦下、html 为空，光看 url 分不出来。
+        "content_type": res.get("content_type", ""),
         "title": (soup.title.get_text(" ", strip=True) if soup.title else ""),
         "meta_description": (desc.get("content", "") if desc else ""),
         "meta_robots": (robots_meta.get("content", "") if robots_meta else ""),
@@ -223,9 +236,16 @@ def probe_ai_ua(root: str, home: dict, robots_txt: str, delay: float) -> tuple[d
 LLMS_HTML_RX = re.compile(r"(?i)<!doctype\s+html|<html[\s>]|<head[\s>]|<\s*body[\s>]")
 
 
-def check_llms_txt(root: str, llms_txt: str, robots_txt: str) -> dict | None:
+def check_llms_txt(root: str, llms_txt: str, robots_txt: str,
+                   robots_known: bool = True) -> dict | None:
     """llms.txt 只有指向可抓取的有效页面才有意义：抽样验证里面的链接。"""
     if not llms_txt:
+        return None
+    if not robots_known:
+        # robots.txt 没抓到 = 不知道哪些路径是留给爬虫的，下面那条 /api/ 排除就
+        # 失效了。而 llms.txt 里写 API 基址（GET 打到 POST-only 路由返回 404）是
+        # 正确做法——一次网络抖动会变成「1/N 条抽样链接打不开」的假 P1。
+        # 宁可不判，也不拿一次抓取失败去说人家链接失效。
         return None
     urls = []
     for u in re.findall(r"https?://[^\s)\]>\"'`]+", llms_txt):
@@ -233,6 +253,11 @@ def check_llms_txt(root: str, llms_txt: str, robots_txt: str) -> dict | None:
         if G.same_site(root, u) and G.is_fetchable(u) and u not in urls:
             urls.append(u)
     groups = G.robots_parse(robots_txt)
+    # robots 通用组明确 Disallow 的路径（如 /api/）不是给爬虫抓的页面。llms.txt
+    # 里写 API 基址是正确做法（那是给 agent 的端点，不是文档页），拿它做
+    # 「链接能不能打开」的校验只会产出假 P1。只对允许抓取的路径做可用性抽样。
+    urls = [u for u in urls
+            if G.robots_decision(groups, "*", urlparse(u).path or "/")[0]]
     broken, robots_blocked = [], []
     sample = urls[:6]
     for u in sample:
@@ -299,13 +324,14 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     cfg = G.load_config(slug)
     if not G.has_site(cfg):
         G.info("无自有网站项目：跳过抓取（采样、竞品、阵地、内容、验收不受影响）")
-        return {"slug": slug, "no_site": True, "pages_crawled": 0, "pages_ok": 0}
+        return {"slug": slug, "no_site": True, "pages_crawled": 0, "pages_ok": 0,
+                "non_content_pages": 0}
     root = cfg["brand"]["site"].rstrip("/")
     limit = max_pages or cfg.get("pages", {}).get("max", 25)
     outdir = G.project_dir(slug) / "evidence"
     (outdir / "html").mkdir(parents=True, exist_ok=True)
 
-    G.info(f"抓取 {root}（上限 {limit} 页）")
+    G.info(f"抓取 {root}（内容页上限 {limit}，非内容页不占名额）")
 
     # 用 G.fetch 而不是 fetch_text：要区分「站点没有 robots.txt」和「这次没抓
     # 到」。两者的结论正相反 —— 前者是「无封禁」，后者根本不能下结论，一次
@@ -317,24 +343,36 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     rstatus = robots_res["status"]
     robots_reachable = rstatus in (200, 404)
     robots_txt = robots_res["html"] if rstatus == 200 else ""
-    llms_txt = G.fetch_text(G.normalize_url(root, "/llms.txt"))
-    sitemap_urls = discover_sitemap(root)
+    # llms.txt 同理走 G.fetch：fetch_text 分不出「站点没有」与「这次没抓到」，
+    # 实测线上 /llms.txt 返回 200 / 2849 字节，audit 却报「没有 /llms.txt」——
+    # 那条假 P2 直接变成一张「上线 /llms.txt」工单。
+    # 「拿到了正文」与「404 确实没有」都算有结论；200 但正文被 ctype 拦下也算没结论。
+    llms_res = G.fetch(G.normalize_url(root, "/llms.txt"))
+    llms_reachable = llms_res["status"] == 404 or bool(llms_res["html"])
+    llms_txt = llms_res["html"] if llms_res["status"] == 200 else ""
+    sitemap_urls, sitemap_probed = discover_sitemap(root)
 
     home = G.fetch(root)
     link_urls = discover_links(root, home["html"]) if home["html"] else []
 
     seeds = [u for u in cfg.get("pages", {}).get("seed", []) if u]
-    candidates = rank(seeds + sitemap_urls + link_urls, root)[:limit]
+    # 候选不按 limit 截断：非内容页（API 端点、SPA 外壳）不占槽位，要往下顺延补位。
+    # 实测教训 —— /console 与 /v1/models 挂在全站导航里，必被内链捞进来，各占一槽，
+    # 把 sitemap 里的 /legal/privacy/ 等三个真内容页挤出 25 页上限，那三页从没被抓过。
+    candidates = rank(seeds + sitemap_urls + link_urls, root)
 
     def crawl_one(i: int, u: str) -> dict:
         try:
             res = home if u.rstrip("/") == root else G.fetch(u)
             # 只在 200 时落快照：404/500 的错误页存下来没有价值，还会被
             # 人工核查时当成真实页面内容。
-            if res["status"] == 200 and res["html"]:
+            saved = bool(res["status"] == 200 and res["html"])
+            if saved:
                 (outdir / "html" / f"{i:03d}.html").write_text(res["html"], "utf-8")
             page = analyze_page(u, res)
-            page["snapshot"] = f"evidence/html/{i:03d}.html"
+            # snapshot 只在真落了盘时才写。无条件写会留下指向不存在文件的路径
+            # （2026-09-23 那轮 27 页写了 27 条路径，盘中只有 26 个文件）。
+            page["snapshot"] = f"evidence/html/{i:03d}.html" if saved else ""
             return page
         except Exception as e:  # noqa: BLE001
             # 一页的解析/落盘异常不能带走整轮：异常经 pool.map 冒到 run()，
@@ -353,33 +391,64 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
                 "text": "", "fetched_at": G.now_iso(), "snapshot": "",
             }
 
-    # 按 host 分组：组内串行保持礼貌延迟，组间并发（不同站点互不打扰）。
-    # 多 host 来源：sitemap/内链里可能混着 chat./docs. 这类子域。
-    groups: "OrderedDict[str, list[tuple[int, str]]]" = OrderedDict()
-    for i, u in enumerate(candidates, 1):
-        groups.setdefault(urlparse(u).netloc.lower(), []).append((i, u))
+    def crawl_window(window: list[str], base: int) -> list[dict]:
+        """抓一批候选，按传入顺序返回（快照编号用 base 续上，跨批不重号）。
 
-    def crawl_group(items: list[tuple[int, str]]) -> dict[int, dict]:
-        out = {}
-        for i, u in items:
-            page = crawl_one(i, u)
-            out[i] = page
-            G.info(f"  [{i}/{len(candidates)}] {page['status']} {u}")
-            time.sleep(delay)
-        return out
+        按 host 分组：组内串行保持礼貌延迟，组间并发（不同站点互不打扰）。
+        多 host 来源：sitemap/内链里可能混着 chat./docs. 这类子域。
+        """
+        groups: "OrderedDict[str, list[tuple[int, str]]]" = OrderedDict()
+        for i, u in enumerate(window):
+            groups.setdefault(urlparse(u).netloc.lower(), []).append((base + i, u))
 
-    pages_by_idx: dict[int, dict] = {}
-    with ThreadPoolExecutor(max_workers=max(1, min(3, len(groups)))) as pool:
-        for out in pool.map(crawl_group, groups.values()):
-            pages_by_idx.update(out)
-    pages = [pages_by_idx[i] for i in range(1, len(candidates) + 1)]
+        def crawl_group(items: list[tuple[int, str]]) -> dict[int, dict]:
+            out = {}
+            for i, u in items:
+                page = crawl_one(i, u)
+                out[i] = page
+                G.info(f"  [{i}] {page['status']} {u}")
+                time.sleep(delay)
+            return out
+
+        by_idx: dict[int, dict] = {}
+        with ThreadPoolExecutor(max_workers=max(1, min(3, len(groups)))) as pool:
+            for out in pool.map(crawl_group, groups.values()):
+                by_idx.update(out)
+        return [by_idx[base + i] for i in range(len(window))]
+
+    # 内容页填满 limit 个槽位就停。碰到非内容页不下锚，往下顺延——否则几个应用入口
+    # 就能把真内容页顶掉，报告里「页面数」和均分都建立在一批读不出字的页上。
+    # 抓取失败的页同理不占槽位：它同样没给出可评价的内容。
+    # 试抓总数封在 2×limit：源站整体挂掉时，若还按「槽位没填满就继续」跑，
+    # 会把候选里的上百条 URL 全试一遍，每条都带重试。
+    pages: list[dict] = []
+    content_n = 0
+    cursor = 0
+    while cursor < len(candidates) and content_n < limit and len(pages) < limit * 2:
+        window = candidates[cursor:cursor + (limit - content_n)]
+        cursor += len(window)
+        for page in crawl_window(window, base=len(pages) + 1):
+            pages.append(page)
+            if (page.get("status") or 0) != 200:
+                G.info(f"    抓取失败（{page.get('status')}），槽位顺延 {page['url']}")
+                continue
+            reason = G.non_content_reason(page)
+            if reason:
+                page["non_content_reason"] = reason
+                G.info(f"    非内容页（{G.NON_CONTENT_REASON_LABEL[reason]}），槽位顺延 {page['url']}")
+            else:
+                content_n += 1
+    content_pages = [p for p in pages if not p.get("non_content_reason")]
+    skipped_n = len(pages) - len(content_pages)
 
     # AI 抓取器是否被 robots 拦截（GEO 的第一道门槛）。
     # 按 RFC 9309 语义判：通配符组封禁、多 UA 共享组、specificity 覆盖都能检出。
-    blocked, partial = check_robots(robots_txt, [urlparse(u).path or "/" for u in candidates[:12]])
+    # 抽样用真抓到的那些路径，不用候选前 12 条：补位逻辑会把抓取范围往 rank 后面推，
+    # 两条线错开之后，robots 判定抽的就不再是被体检的页面了。
+    blocked, partial = check_robots(robots_txt, [urlparse(p["url"]).path or "/" for p in pages[:12]])
     # WAF/CDN 差异封锁：robots 说放行不代表真放行，换 AI 爬虫的 UA 实测一次
     ua_probe, ua_blocked = probe_ai_ua(root, home, robots_txt, delay)
-    llms_check = check_llms_txt(root, llms_txt, robots_txt)
+    llms_check = check_llms_txt(root, llms_txt, robots_txt, robots_reachable)
 
     # 索引污染：sitemap 里的带参/搜索/翻页 URL 会把低质片段灌进检索索引，
     # 稀释实体表征——sitemap 该只装值得被引用的规范页
@@ -393,7 +462,9 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
         "has_robots": bool(robots_txt),
         "robots_fetched": robots_reachable,
         "has_llms_txt": bool(llms_txt),
+        "llms_txt_reachable": llms_reachable,
         "has_sitemap": bool(sitemap_urls),
+        "sitemap_reachable": sitemap_probed,
         "sitemap_url_count": len(sitemap_urls),
         "robots_sitemap_declared": bool(re.search(r"(?im)^\s*sitemap:", robots_txt or "")),
         "sitemap_noisy_urls": len(noisy),
@@ -403,17 +474,22 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
         "ai_ua_probe": ua_probe,
         "ai_ua_blocked": ua_blocked,
         "llms_txt_check": llms_check,
-        "pages_crawled": len(pages),
-        "pages_ok": sum(1 for p in pages if p["status"] == 200),
+        # 页面数按内容页算，非内容页单列 —— 后面的均分、等级、块缺口、工单都用
+        # 同一个口径，报告里不会出现「25 页均分」其实含两页读不出字的页。
+        "pages_crawled": len(content_pages),
+        "pages_ok": sum(1 for p in content_pages if p["status"] == 200),
+        "non_content_pages": skipped_n,
         "ua_fallback_pages": sum(1 for p in pages if p.get("ua_fallback")),
     }
     if site["ua_fallback_pages"]:
         G.info(f"注意：{site['ua_fallback_pages']} 页是换纯浏览器 UA 才抓到的——"
                "WAF 在拦带工具标记的抓取，AI 引擎的爬虫很可能同样被拦，建议加白名单")
     G.write_json(outdir / "site.json", site)
+    # pages.jsonl 存全量（含非内容页）：它是抓取证据，由审计层决定谁参与评分
     G.write_jsonl(outdir / "pages.jsonl", pages)
-    G.info(f"完成：{site['pages_ok']}/{len(pages)} 页可访问 → {outdir}")
-    check_crawl_health(pages)
+    extra = f"（另有 {skipped_n} 个非内容页未参与体检）" if skipped_n else ""
+    G.info(f"完成：{site['pages_ok']}/{len(content_pages)} 内容页可访问 → {outdir}{extra}")
+    check_crawl_health(content_pages)
     return site
 
 

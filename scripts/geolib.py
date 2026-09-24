@@ -349,33 +349,49 @@ def fetch(url: str, timeout: int = 12, retries: int = 1, ua: str | None = None) 
             "x_robots_tag": "", "elapsed": 0, "error": last}
 
 
-def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000) -> str:
+def fetch_text(url: str, timeout: int = 8, max_bytes: int = 8_000_000,
+               retries: int = 2) -> str | None:
     """站点级小文件（robots.txt / llms.txt / sitemap）的读取。
 
     带体积上限：大站的 sitemap 常有几十 MB，不带 stream 会把整个 body 读进
     内存，apparent_encoding 还要对全量字节跑一遍编码探测。
+
+    三种返回要分清（这是本函数存在的全部理由）：
+      200  → 文件内容
+      404  → ""，站点确实没有这个文件
+      其余（超时 / 连接错 / 5xx / 403）→ None，「这次没拿到」，不下任何结论
+
+    以前失败也返回 ""，调用方分不出「没有」和「没抓到」，一次抖动就写成
+    「站点没有 /llms.txt」这种假 P2。robots.txt 那侧早已改用 fetch 区分
+    （见 crawl.run 里的注释），其余三个调用点一直没跟上——2026-09-24 实测
+    llms.txt 在线上 200 / 2849 字节，audit 却报「没有 /llms.txt」。
+    404 是真不存在，不重试；其余非 200 与网络错按退避重试。
     """
-    try:
-        r = requests.get(url, timeout=timeout, headers={"User-Agent": UA}, stream=True)
+    for attempt in range(retries + 1):
         try:
-            if r.status_code != 200:
-                return ""
-            raw = b""
-            for chunk in r.iter_content(65536):
-                raw += chunk
-                if len(raw) >= max_bytes:
-                    break
-        finally:
-            r.close()
-        # header 声明的 charset 优先，没有就找正文里的声明，最后退回 utf-8。
-        enc = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
-        if not enc:
-            m = re.search(rb'charset=["\']?([\w\-]+)', raw[:4000], re.I)
-            enc = m.group(1).decode("ascii", "ignore") if m else "utf-8"
-        return raw.decode(enc, "replace")
-    except Exception:  # noqa: BLE001
-        pass
-    return ""
+            r = requests.get(url, timeout=timeout, headers={"User-Agent": UA}, stream=True)
+            try:
+                if r.status_code == 404:
+                    return ""
+                if r.status_code != 200:
+                    raise requests.HTTPError(f"HTTP {r.status_code}")
+                raw = b""
+                for chunk in r.iter_content(65536):
+                    raw += chunk
+                    if len(raw) >= max_bytes:
+                        break
+            finally:
+                r.close()
+            # header 声明的 charset 优先，没有就找正文里的声明，最后退回 utf-8。
+            enc = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else None
+            if not enc:
+                m = re.search(rb'charset=["\']?([\w\-]+)', raw[:4000], re.I)
+                enc = m.group(1).decode("ascii", "ignore") if m else "utf-8"
+            return raw.decode(enc, "replace")
+        except Exception:  # noqa: BLE001
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    return None
 
 
 # ---------------------------------------------------------------- robots.txt
@@ -537,6 +553,45 @@ def word_count(text: str) -> int:
     cjk = len(CJK.findall(text)) + len(KANA.findall(text))
     latin = len(re.findall(r"[A-Za-z][A-Za-z'\-]*", text))
     return int(cjk / 1.6 + latin)
+
+
+# 内容页判据：「这页是不是给人读的内容页」。抓取层用它决定槽位怎么分，
+# 审计层用它决定算不算内容质量——一个判据两处共用，不然阈值改一处漏一处。
+FUNC_PAGE_PATH = re.compile(
+    r"/(login|signin|signup|register|cart|checkout|account|auth|contact)(/|$)", re.I)
+MIN_CONTENT_WORDS = 120
+
+REASON_NON_DOCUMENT = "non_document"
+REASON_SPA_SHELL = "spa_shell"
+
+NON_CONTENT_REASON_LABEL = {
+    REASON_NON_DOCUMENT: "非网页内容（API / 文件端点）",
+    REASON_SPA_SHELL: "SPA 外壳（静态 HTML 无正文）",
+}
+
+
+def non_content_reason(page: dict) -> str:
+    """非内容页的原因；是内容页返回空串。
+
+    1) status 非 200 的页不在这里判：它们走「抓取失败」那条路，原因不同，
+       混进来会把「这次没抓到」静默改写成「这页不是内容页」。
+    2) non_document：响应不是网页（application/json 这类 API 端点）。
+       AI 读 JSON 比读 HTML 更顺，这是资产不是缺陷，所以不给 issue_codes。
+    3) spa_shell：静态 HTML 里没有正文（纯前端渲染），curl 拿到的是空壳，
+        AI 抓取器同样读不到——这条是真缺陷，调用方据此出工单。
+    4) 登录/注册/购物车这类功能页内容少属正常，不算非内容页，仍走原有的
+       LOW_CONTENT_PAGE 口径。
+    """
+    if (page.get("status") or 0) != 200:
+        return ""
+    ctype = page.get("content_type") or ""
+    if ctype and not any(k in ctype.lower() for k in ("html", "text/plain", "xml")):
+        return REASON_NON_DOCUMENT
+    if (page.get("word_count") or 0) >= MIN_CONTENT_WORDS:
+        return ""
+    if FUNC_PAGE_PATH.search(urlparse(page.get("url") or "").path):
+        return ""
+    return REASON_SPA_SHELL
 
 
 def strip_comments(text: str) -> str:

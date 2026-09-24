@@ -88,17 +88,28 @@ def optimization_plan(slug: str) -> str:
             gate.append("robots 封禁了 AI 抓取器")
         if site.get("ai_ua_blocked"):
             gate.append(f"WAF/CDN 对 {'、'.join(site['ai_ua_blocked'])} 的 UA 拒绝访问（浏览器里看不出来）")
-        if not site.get("has_sitemap"):
+        # 交付物是给客户的，一句「无 llms.txt」写错了要改口很难——只有真问到了
+        # 404 才写。抓取失败（*_reachable 为 False）时宁可不写这一条。
+        if not site.get("has_sitemap") and site.get("sitemap_reachable", True):
             gate.append("无 sitemap")
-        if not site.get("has_llms_txt"):
+        if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True):
             gate.append("无 llms.txt")
         elif (site.get("llms_txt_check") or {}).get("broken"):
             gate.append("llms.txt 里有失效链接")
+        # 没抓到就是没测出，不能落成「技术底座基本干净」——这一行客户会当结论读。
+        if site.get("robots_fetched", True) is False:
+            gate.append("robots.txt 本次没抓到，是否封禁 AI 抓取器未测出")
+        nux = audit.get("unreachable_count") or 0
+        if nux:
+            gate.append(f"{nux} 个页面本次抓取失败，内容层面的结论不完整")
     spa = sum(1 for p in audit.get("pages", [])
               # (or []) 不能省：issue_codes 显式为 null 时 `in None` 直接抛
               # TypeError，三份交付物全出不来，后面那个 None 兜底分支也走不到。
               if "SPA_SHELL" in (p.get("issue_codes") or [])
               or (p.get("word_count", 0) < 120 and not p.get("issue_codes")))
+    # SPA 空壳页已不参与评分（不进 pages），从非内容页名单里补回计数，口径同 tasks.py
+    spa += sum(1 for p in audit.get("non_content_pages", [])
+               if "SPA_SHELL" in (p.get("issue_codes") or []))
     if spa:
         gate.append(f"{spa} 个页面静态 HTML 无正文")
     if audit.get("no_site"):

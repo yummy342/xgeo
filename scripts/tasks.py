@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 import geolib as G
+import sample as S
 
 PACKAGES = ["实体消歧", "页面技术", "内容矩阵", "标题体系", "知识库", "外部证据", "监测闭环"]
 OWNERS = ["开发", "内容", "市场", "GEO顾问", "法务", "设计"]
@@ -102,19 +103,24 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                       "内容页被误伤的改规则放行", "开发", "S",
                       {"type": "manual",
                        "desc": "封禁是刻意为之（低价值页）而非误伤内容页，需人工确认"}))
-    if not site.get("has_sitemap"):
+    # 抓取失败（*_reachable 为 False）时不下「没有这个文件」的判断，也不开工单：
+    # 「补 sitemap.xml」这种工单在重抓时必然自证清白，白占一次人工。
+    if not site.get("has_sitemap") and site.get("sitemap_reachable", True):
         out.append(_t(next(seq), "P0", "页面技术", "补 sitemap.xml 并提交各搜索引擎",
                       "无 sitemap，收录效率和覆盖面打折（method.md 可抓取性）",
                       "生成 sitemap.xml，robots.txt 里声明，提交百度/必应/Google/夸克",
                       "开发", "S",
                       {"type": "auto", "check": "site.has_sitemap", "desc": "重抓能取到 sitemap.xml"}))
-    elif site.get("robots_sitemap_declared") is False:
+    elif (site.get("robots_sitemap_declared") is False
+          and site.get("robots_fetched", True) is not False):
+        # robots.txt 没抓到（超时/被拦）时上面那条字段恒为 False，与「真的没写
+        # Sitemap:」同形。据此开工单会开出一张线上早就做完的假工单。
         out.append(_t(next(seq), "P2", "页面技术", "robots.txt 里声明 Sitemap: 行",
                       "sitemap 存在但 robots 没声明，AI 抓取器发现新页面更慢",
                       "在 robots.txt 末尾加一行 `Sitemap: <完整 URL>`", "开发", "S",
                       {"type": "auto", "check": "site.robots_sitemap_declared",
                        "desc": "robots.txt 含 Sitemap: 声明"}))
-    if not site.get("has_llms_txt"):
+    if not site.get("has_llms_txt") and site.get("llms_txt_reachable", True):
         out.append(_t(next(seq), "P1", "知识库", "上线 /llms.txt 官方事实索引",
                       "低成本给 AI 一份人工整理的官方索引，国内很多站没做（content-patterns.md 第 7 节）",
                       "用 `geo.py generate --asset llms` 产出后部署到网站根目录", "开发", "S",
@@ -171,7 +177,11 @@ def from_audit(audit: dict, cfg: dict, seq) -> list[dict]:
                            "desc": "中英页面数差距 ≤ 70%"}))
 
     # —— 页面级：按缺口类型聚合成一条工单，而不是一页一条 ——
+    # SPA 空壳页已被 audit 移出 pages（不参与评分），但它是真缺陷，从非内容页名单里取回来。
+    # 只取 SPA 那类：API 端点（application/json）同样不参与评分，但那不是问题，不出工单。
     spa = [p["url"] for p in pages if _has_issue(p, "SPA_SHELL", "静态 HTML 里几乎没有正文")]
+    spa += [p["url"] for p in audit.get("non_content_pages", [])
+            if "SPA_SHELL" in (p.get("issue_codes") or []) and p["url"] not in spa]
     if spa:
         t = _t(next(seq), "P0", "页面技术", "修复前端渲染空壳页（SSR / 预渲染）",
                "静态 HTML 无正文，多数 AI 抓取器看到的是空白页——国内官网最常见致命伤（method.md 可抓取性）",
@@ -285,7 +295,11 @@ def from_metrics(metrics: dict, cfg: dict, seq) -> list[dict]:
                               "GEO顾问", "L",
                               {"type": "auto", "check": f"metrics.mention_rate_gte:{mk}:{target}",
                                "desc": f"{mk_name}平均无提示提及率 ≥ {target:.0%}"}, market=mk))
-        own = [m["own_domain_cite_rate"] for m in rows.values() if m.get("own_domain_cite_rate") is not None]
+        # 引用官网率只在联网通道上算：不联网的通道（api2d 三个）测的是参数化
+        # 知识，答案里不可能有真引用，算进来只会把均值稀释成一个恒低的数，
+        # 然后开出一条永远做不完的「让官网进得了检索结果」。
+        own = [m["own_domain_cite_rate"] for p, m in rows.items()
+               if m.get("own_domain_cite_rate") is not None and S.searches(p)]
         if own and sum(own) / len(own) < 0.1:
             out.append(_t(next(seq), "P1", "外部证据",
                           f"{mk_name}让官网进得了 AI 的检索结果",
@@ -298,6 +312,10 @@ def from_metrics(metrics: dict, cfg: dict, seq) -> list[dict]:
         # 这比「完全不提及」更糟——AI 知道你是谁，却找不到可引用的官方内容。
         # （原来这里只有一句 continue，这个 P0 从来没产出过。）
         for plat, m in rows.items():
+            # 不联网的通道开不出这条工单：它测的是「模型知不知道这个品牌」，
+            # 引用官网率对它恒为 0，是通道属性不是内容缺陷（同 verify 侧判据）。
+            if not S.searches(plat):
+                continue
             pr = m.get("probe") or {}
             if not (pr.get("samples") and (pr.get("own_domain_cite_rate") or 0) == 0):
                 continue

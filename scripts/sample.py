@@ -29,9 +29,10 @@ import geolib as G
 
 # 阿里云百炼 MaaS（新加坡区）的 OpenAI 兼容端点。2026-09-22 起国内三家引擎改走这里：
 # 本机没有智谱/月之暗面/DeepSeek 的官方 key，百炼转发的是同一家模型，测品牌认知口径不变。
-# 端点里的 workspace id 属于账号，换账号要连 URL 一起换。
+# 端点里的 workspace id 属于账号，换账号要连 URL 一起改。
 BAILIAN_BASE = ("https://ws-iey2cz9rzkqklxb5.ap-southeast-1.maas.aliyuncs.com"
                 "/compatible-mode/v1")
+
 
 # 平台注册表：code -> 配置。market 决定这个平台该问哪一套问题库。
 # 观测集合（2026-07 定）：国内 = 智谱GLM/豆包/DeepSeek/Kimi/MiniMax/纳米AI/百度AI；
@@ -221,6 +222,18 @@ PROVIDERS = {
     },
 }
 
+def searches(platform: str) -> bool:
+    """该通道采样时是否联网检索 —— 决定引用层指标对它有没有意义。
+
+    不联网的通道（api2d 三个）测的是模型参数化知识，答案里不可能出现真实引用，
+    引用官网率恒为 0。拿它判「点名提问时引不到官网」是拿一件测不出来的事当判据，
+    2026-09-24 实测确认：api2d 三个通道抽出来的「引用域名」全是
+    your-api-base.example.com / localhost:8000 / api.yourdomain.com 这类示例代码
+    里的占位符，一条真引用都没有（对照 sonar 同期 289 个真实域名）。
+    """
+    return bool((PROVIDERS.get(platform) or {}).get("search"))
+
+
 # 没有公开联网问答 API 的平台，只能浏览器/人工采
 MANUAL_ONLY = {
     "nano_ai": ("纳米AI搜索（360）", "cn"),
@@ -322,10 +335,7 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
                 refs = [c for c in refs if not (c["url"] in seen or seen.add(c["url"]))]
                 return {"ok": True, "answer": answer, "citations": refs,
                         "raw_model": _p_model(p), "usage": _usage_of(d), "searched": True}
-        elif "ToolNotOpen" not in r.text and "ModelNotOpen" not in r.text:
-            # ModelNotOpen 也放行到降级分支：responses 端点和 chat/completions 的
-            # 开通状态不一定一致（实测 doubao-seed-2-1-turbo 只在 chat 侧通），
-            # 在这里返回失败等于把一条能采的链路直接掐掉。能不能用交给降级那次去判。
+        elif "ToolNotOpen" not in r.text:
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except Exception:  # noqa: BLE001
         pass  # 降级重试
@@ -449,9 +459,6 @@ def _refs_from(data: dict) -> list[dict]:
 
 def ask(platform: str, question: str, timeout: int = 120) -> dict:
     p = PROVIDERS[platform]
-    # 注册表可按平台放宽：豆包带思考链，实测单条 73~198s，卡在 120s 默认值上
-    # 会先超时、再重试两轮，一题吃掉十分钟。慢是它的常态，不是异常。
-    timeout = p.get("timeout") or timeout
     key = os.environ.get(p["key_env"])
     if not key:
         return {"ok": False, "answer": "", "error": f"缺少环境变量 {p['key_env']}"}
@@ -462,12 +469,8 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
     body = {
         "model": _p_model(p),
         "messages": [{"role": "user", "content": question}],
+        "temperature": 0.7,
     }
-    # kimi-k3 这类模型直接拒收 temperature（400 invalid_parameter_error）。
-    # 注册表标了 skip_temperature 就不带这个参数，而不是去猜一个「它能接受的值」——
-    # 采样测的是品牌认知，温度不参与口径，少一个参数不影响可比性。
-    if not p.get("skip_temperature"):
-        body["temperature"] = 0.7
     body.update(p.get("extra", {}))
     delays = (1, 3)  # 超时/429/5xx 指数退避重试 2 次；其他错误（4xx 等）不重试
     for attempt in range(len(delays) + 1):
@@ -578,6 +581,7 @@ UNKNOWN_CUES = re.compile(
     re.IGNORECASE)
 
 
+
 def _alias_spans(text: str, alias: str) -> list[tuple[int, int]]:
     """别名命中区间。
 
@@ -634,6 +638,24 @@ def brand_in_question(question: str, cfg: dict) -> bool:
     return any(_alias_spans(ql, n.lower()) for n in names if n)
 
 
+def declared_probe_ids(cfg: dict) -> set:
+    """问题库里显式声明为品牌认知探测的题号。
+
+    为什么不用 brand_in_question 兜底：那是拿问题原文去撞别名表，别名表又刻意
+    不含裸词（防同名竞品），于是「What is FreeModel?」这种一眼就是点名题的问题
+    反而撞不上 —— 2026-09-24 实测 4 道品牌验证题里只认出 1 道。问题库自己声明的
+    才是真相：写 probe: true 的那几道，答案必然出现品牌名，不能算进可见性。
+    """
+    return {q.get("id") for q in (cfg.get("questions") or []) if q.get("probe")}
+
+
+def is_probe_question(q: dict, cfg: dict) -> bool:
+    """采样那一刻就定好这题算不算品牌认知探测，免得聚合时再猜一遍。"""
+    if q.get("probe"):
+        return True
+    return brand_in_question(q.get("text") or "", cfg)
+
+
 THINK_RE = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 
 
@@ -685,16 +707,14 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     own = urlparse(cfg["brand"]["site"]).netloc.lower().removeprefix("www.") if G.has_site(cfg) else ""
 
     # 疑似负面：品牌每个命中点前 80 / 后 160 字符窗口内的负面线索词
-    # 同一窗口策略也用来判「不认识」：措辞必须落在品牌名邻域，
-    # 全文搜会把「另一家公司没有公开信息」这种无关句子算进来。
     neg, unk = set(), set()
     if present.get(brand):
         for a in alias[brand]:
             for s, e in _alias_spans(answer, a):
-                rng = answer[max(0, s - 80):e + 160]
-                for mm in NEG_CUES.finditer(rng):
+                _rng = answer[max(0, s - 80):e + 160]
+                for mm in NEG_CUES.finditer(_rng):
                     neg.add(mm.group(0).lower())
-                for mm in UNKNOWN_CUES.finditer(rng):
+                for mm in UNKNOWN_CUES.finditer(_rng):
                     unk.add(mm.group(0).lower())
 
     return {
@@ -743,8 +763,20 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
         is_web = key != plat
         # 点名品牌的问题（品牌验证类）不能算进可见性——答案必然复述品牌名。
         # 它们单独统计成「品牌认知」：AI 到底知不知道这个品牌、说得对不对。
-        probe = [r for r in all_rs if r.get("brand_in_question")
-                 or brand_in_question(r.get("question", ""), cfg)]
+        # 2026-09-24：判据改成「问题库怎么声明的」（declared_probe_ids），不再靠
+        # 撞别名表。实测后者只认出 4 道品牌验证题里的 1 道 —— q024「What is
+        # FreeModel?」撞不上，因为裸词 FreeModel 09-20 起刻意不在别名表里（防六个
+        # 同名站）。另外 3 道就留在提及率分母里，答案必然出现品牌名却永远命中不了，
+        # 把提及率一直往下拖；同时 probe 只剩 1 个样本，比率成了噪声。
+        probe_ids = declared_probe_ids(cfg)
+
+        def _is_probe(r: dict) -> bool:
+            if r.get("question_id") in probe_ids:
+                return True
+            # 没在问题库里声明的（人工导入、旧样本）才退回文本匹配
+            return bool(r.get("brand_in_question")) or brand_in_question(r.get("question", ""), cfg)
+
+        probe = [r for r in all_rs if _is_probe(r)]
         rs = [r for r in all_rs if r not in probe]
         # 绝不回退：某平台只采了点名题时，可见性指标就是「未测」（None），
         # 不能把点名样本塞回去凑出 mention_rate=1.0 的假阳性。
@@ -775,9 +807,7 @@ def aggregate(rows: list[dict], cfg: dict) -> dict:
             # 判成没引用，那条工单永远无法闭环。
             "cited_domains_all": dict(sorted(dom.items(), key=lambda x: -x[1])),
             "top_cited_domains": dict(sorted(dom.items(), key=lambda x: -x[1])[:15]),
-            # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网。
-            # 「复述了品牌名」不等于「认识」——点名题里答案必然复述，所以还要
-            # 排除本轮明确说了「没有关于它的信息」的那些样本（brand_unknown）。
+            # 品牌认知：直接点名品牌时，AI 认不认识、有没有引到官网
             "probe": {
                 "samples": len(probe),
                 "recognized_rate": round(sum(
@@ -856,7 +886,7 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
             "evidence_level": "B_api_可复现",
             "search_enabled": res.get("searched", PROVIDERS[plat].get("search", False)),
             "question_id": q.get("id"), "question": q["text"], "round": rnd,
-            "brand_in_question": brand_in_question(q["text"], cfg),
+            "brand_in_question": is_probe_question(q, cfg),
             "ok": res["ok"], "error": res.get("error"),
             "usage": res.get("usage"),
             "elapsed_ms": elapsed_ms,
