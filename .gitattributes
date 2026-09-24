@@ -1,0 +1,13 @@
+# 2026-09-24：两条线合并时发现 18 个脚本只是行尾不同（ohio 侧 CRLF、CN 侧 LF），
+# 去掉 CR 后逐字相同 —— 无关历史下它们全被判成冲突。这里把文本文件钉成 LF，
+# 免得以后再因为这个撞一次。
+*.py   text eol=lf
+*.sh   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
