@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 
 import audit as A
 import geolib as G
+import sample as S
 import tasks as T
 
 
@@ -73,11 +74,14 @@ def _cited_domains(metrics: dict, market: str | None = None) -> dict[str, int]:
     return out
 
 
-def _market_avg(metrics: dict, market: str, field: str):
+def _market_avg(metrics: dict, market: str, field: str, only_searching: bool = False):
     # None = 该平台本期未测（只采了点名题），不参与平均；全 None 返回 None，
     # 调用方按「无数据」处理，绝不能默认 0 误判「未达标」。
-    vals = [m[field] for m in (metrics or {}).get("platforms", {}).values()
-            if m.get("market", "cn") == market and m.get(field) is not None]
+    # only_searching：引用类指标只在国内/海外「联网通道」上算，不联网的通道拿不到
+    # 引用，算进来只会稀释成一个恒低的数（见 sample.searches）。
+    vals = [m[field] for p, m in (metrics or {}).get("platforms", {}).items()
+            if m.get("market", "cn") == market and m.get(field) is not None
+            and (S.searches(p) or not only_searching)]
     return (sum(vals) / len(vals)) if vals else None
 
 
@@ -296,7 +300,11 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
                  "op": "gte", "pct": True}
         if expr.startswith("metrics.own_cite_gte:"):
             _, mk, tgt = expr.split(":")
-            cur = _market_avg(metrics, mk, "own_domain_cite_rate")
+            rows = (metrics or {}).get("platforms", {}) or {}
+            if not any(m.get("market", "cn") == mk and S.searches(p) for p, m in rows.items()):
+                return None, (f"{mk} 市场本期没有联网通道（不联网的通道不产生引用），"
+                              "引用率无从判定"), None
+            cur = _market_avg(metrics, mk, "own_domain_cite_rate", only_searching=True)
             if cur is None:
                 return None, f"{mk} 市场本期无采样数据", None
             return cur >= float(tgt), f"{mk} 引用官网率 {cur:.1%} / 目标 {float(tgt):.0%}", \
@@ -308,6 +316,12 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             # 那条把「点名时引不到」和「不点名时引不到」混在一起算平均，
             # 一个平台的品牌认知问题会被市场均值抹平。
             _, plat, tgt = expr.split(":")
+            # 不联网的通道测的是「模型知不知道这个品牌」，答案里不会有任何真实
+            # 引用，引用官网率恒为 0 —— 那不是内容缺陷，是通道属性。2026-09-24
+            # 实测：api2d 三个通道抽出的「引用域名」全是示例代码里的占位符。
+            if not S.searches(plat):
+                return None, (f"{plat} 是不联网通道（测参数化知识，不产生引用），"
+                              "引用率无从判定"), None
             row = ((metrics or {}).get("platforms", {}) or {}).get(plat)
             pr = (row or {}).get("probe") or {}
             if not pr.get("samples"):

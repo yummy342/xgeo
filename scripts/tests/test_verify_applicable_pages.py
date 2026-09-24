@@ -16,6 +16,7 @@ SPA 外壳（spa_shell）是 HTML，仍然要算，否则空壳页的工单会�
 
 from __future__ import annotations
 
+import itertools
 import sys
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS))
 
+import tasks as T          # noqa: E402
 import verify as V         # noqa: E402
 
 ROOT = "https://example.test"
@@ -187,6 +189,93 @@ class AbsentDataIsNotAPass(unittest.TestCase):
         m = {"platforms": {"gpt": {"samples": 3, "cited_domains_all": {"b.com": 1}}}}
         ok, why, _ = V.check(task("external.any:a.com", []), self._audit(), m)
         self.assertIs(ok, False, why)
+
+
+class ChannelCapabilityGatesMetrics(unittest.TestCase):
+    """引用类指标只在联网通道上判。
+
+    2026-09-24 实测：geo.json 那 4 条通道里 3 条是 api2d 中转、不联网（PROVIDERS
+    里 search: False）。它们 26 个样本里抽出来的「引用域名」是
+    your-api-base.example.com / localhost:8000 / api.yourdomain.com 这类示例代码
+    占位符，一条真引用都没有（同期 sonar 是 289 个真实域名）。拿它们判「点名
+    提问时引不到官网」，指标恒为 0，工单永远闭不了环 —— 三条 P0 死题就是这么来的。
+    """
+
+    def _m(self, **plats):
+        return {"platforms": plats}
+
+    CFG = {"brand": {"name": "Example", "site": "https://example.test"},
+           "market": "global", "targets": {"mention_rate": 0.3}}
+
+    def test_probe_cite_on_non_searching_channel_defers(self):
+        m = self._m(**{"api2d-gpt": {"market": "global", "samples": 26,
+                                     "probe": {"samples": 1, "own_domain_cite_rate": 0.0}}})
+        ok, why, _ = V.check(task("metrics.probe_own_cite_gte:api2d-gpt:0.1", []), {}, m)
+        self.assertIsNone(ok, f"不联网通道不该判引用率，实际：{why}")
+        self.assertIn("不联网", why)
+
+    def test_probe_cite_on_searching_channel_still_fails(self):
+        """联网通道上「点名了还是引不到」是真信号，该判未达标。"""
+        m = self._m(**{"openrouter-sonar": {"market": "global", "samples": 26,
+                                            "probe": {"samples": 1,
+                                                      "own_domain_cite_rate": 0.0}}})
+        ok, why, _ = V.check(task("metrics.probe_own_cite_gte:openrouter-sonar:0.1", []), {}, m)
+        self.assertIs(ok, False, why)
+
+    def test_market_cite_ignores_non_searching_channels(self):
+        """不联网通道的 0 不该把联网通道的 15% 稀释成 7.5%。"""
+        m = self._m(**{
+            "api2d-gpt": {"market": "global", "own_domain_cite_rate": 0.0},
+            "openrouter-sonar": {"market": "global", "own_domain_cite_rate": 0.15},
+        })
+        ok, why, prog = V.check(task("metrics.own_cite_gte:global:0.1", []), {}, m)
+        self.assertIs(ok, True, why)
+        self.assertAlmostEqual(prog["cur"], 0.15, places=3)
+
+    def test_market_cite_without_any_searching_channel_defers(self):
+        """说明里要写清「没有联网通道」，不能落成「本期无采样数据」——
+        后者会让人去找采样，而采样明明跑了，跑的是不联网的通道。"""
+        m = self._m(**{"api2d-gpt": {"market": "global", "own_domain_cite_rate": 0.0}})
+        ok, why, _ = V.check(task("metrics.own_cite_gte:global:0.1", []), {}, m)
+        self.assertIsNone(ok, f"没有联网通道时不该判，实际：{why}")
+        self.assertIn("联网通道", why)
+
+    def test_mention_rate_still_uses_all_channels(self):
+        """提及率不受影响：不联网通道照样能说明「模型认不认识这个品牌」。"""
+        m = self._m(**{
+            "api2d-gpt": {"market": "global", "mention_rate": 0.2},
+            "openrouter-sonar": {"market": "global", "mention_rate": 0.0},
+        })
+        ok, why, prog = V.check(task("metrics.mention_rate_gte:global:0.1", []), {}, m)
+        self.assertIs(ok, True, why)
+        self.assertAlmostEqual(prog["cur"], 0.1, places=3)
+
+    def test_market_cite_ticket_uses_only_searching_channels(self):
+        """联网通道 15% 已经达标，不该被不联网通道的 0 拉成 7.5% 后又开一张单。"""
+        m = self._m(**{
+            "api2d-gpt": {"market": "global", "label": "GPT(api2d)", "samples": 26,
+                          "mention_rate": 0.5, "own_domain_cite_rate": 0.0},
+            "openrouter-sonar": {"market": "global", "label": "Perplexity(OpenRouter)",
+                                 "samples": 26, "mention_rate": 0.5,
+                                 "own_domain_cite_rate": 0.15},
+        })
+        titles = [t["title"] for t in T.from_metrics(m, self.CFG, itertools.count(1))]
+        self.assertFalse([x for x in titles if "进得了 AI 的检索结果" in x], titles)
+
+    def test_no_probe_ticket_for_non_searching_channel(self):
+        """开工单那一侧同样要挡：挡了判据却照旧开单，就是开出一张判不了的工单。"""
+        m = self._m(**{"api2d-gpt": {"market": "global", "label": "GPT(api2d)",
+                                     "samples": 26, "mention_rate": 0.0,
+                                     "probe": {"samples": 1, "own_domain_cite_rate": 0.0}}})
+        titles = [t["title"] for t in T.from_metrics(m, self.CFG, itertools.count(1))]
+        self.assertFalse([x for x in titles if "引不到官网" in x], titles)
+
+    def test_probe_ticket_still_opened_for_searching_channel(self):
+        m = self._m(**{"openrouter-sonar": {"market": "global", "label": "Perplexity(OpenRouter)",
+                                            "samples": 26, "mention_rate": 0.0,
+                                            "probe": {"samples": 1, "own_domain_cite_rate": 0.0}}})
+        titles = [t["title"] for t in T.from_metrics(m, self.CFG, itertools.count(1))]
+        self.assertTrue([x for x in titles if "引不到官网" in x], titles)
 
 
 if __name__ == "__main__":

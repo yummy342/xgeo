@@ -966,8 +966,94 @@ AI_REFERRERS = {
 }
 
 
+_LOG_COUNT_SH = r"""#!/bin/sh
+# AI 流量归因：在站点服务器的日志目录里跑。
+#   sh log-count.sh                 # 默认当前目录
+#   sh log-count.sh /var/log/nginx
+#
+# 三条纪律（都是实际踩出来的）：
+#   1. 来源会话只看 referrer 字段、且只比**主机名**：
+#      · 整行匹配会把爬虫抓取算成用户来源（ClaudeBot 的 UA 里就带 claude.ai）；
+#      · 整串匹配会把自家 URL 上的 utm 值当成来源 —— 实测 242 条「AI 来源」里
+#        227 条的 referer 是 https://freemodel.online/?utm_source=chatgpt.com，
+#        来源其实是自己。真正的 referer 只有 15 条。utm 那条单独数。
+#   2. 爬虫分 检索型 / 训练型 / 用户触发：检索型才是引用变多的前置信号，
+#      训练型只是被喂进模型，混在一起看不出趋势。
+#   3. 按 UA 匹配会把漏洞扫描器一起数进来（它们轮换 UA 去打 /.env、/wp-config.php）。
+#      所以脚本自己报一条「疑似扫描」计数与占比 —— 噪声必须在报告里一眼可见，
+#      否则交付物上写的就是「AI 抓了你的 .env」。
+#
+# 口径：算出来的是下界（App 内打开常不带 referer），报告写「可归因 ≥ N」。
+
+D=${1:-.}
+AIREF='__REF__'
+
+for f in "$D"/access.log*; do
+  [ -f "$f" ] || continue
+  case "$f" in
+    *.gz) gzip -dc "$f" 2>/dev/null ;;
+    *)    cat "$f" 2>/dev/null ;;
+  esac
+done | awk -v refrx="$AIREF" '
+function kind(u) {
+  if (u ~ /OAI-SearchBot|PerplexityBot|Claude-Web|Baiduspider|YisouSpider|PetalBot/) return "检索型"
+  if (u ~ /ChatGPT-User/) return "用户触发"
+  if (u ~ /GPTBot|ClaudeBot|anthropic-ai|Google-Extended|Applebot-Extended|Bytespider/) return "训练型"
+  return ""
+}
+function engine(u) {
+  if (match(u, /GPTBot|OAI-SearchBot|ChatGPT-User|ClaudeBot|Claude-Web|anthropic-ai|PerplexityBot|Google-Extended|Applebot-Extended|Bytespider|Baiduspider|YisouSpider|PetalBot/))
+    return substr(u, RSTART, RLENGTH)
+  return ""
+}
+function is_scan(p) {
+  return (p ~ /\/\.env|wp-config|\/\.git|\/\.ssh|secrets\.json|\/\.aws|admin\.php|xmlrpc\.php|\.sql$|\.bak$|\.old$|\.swp$|\/\.DS_Store/)
+}
+function host(u) {
+  h = u; sub(/^[A-Za-z]+:\/\//, "", h); sub(/^\/\//, "", h)
+  sub(/[:\/?#].*$/, "", h)
+  return h
+}
+{
+  if (split($0, a, "\"") < 7) next
+  req = a[2]; rf = a[4]; ua = a[6]
+  if (rf != "-" && rf != "") {
+    h = host(rf)
+    if (h != "" && tolower(h) ~ tolower(refrx)) { refs[h]++; nref++ }
+  }
+  p = ""
+  if (req != "") { split(req, q, " "); p = q[2]; if (p == "") p = q[1] }
+  if (p ~ /[?&]utm_source=/) {
+    u2 = p; sub(/^.*[?&]utm_source=/, "", u2); sub(/[& ].*$/, "", u2)
+    if (u2 != "" && tolower(u2) ~ tolower(refrx)) { utms[u2]++; nutm++ }
+  }
+  e = engine(ua)
+  if (e == "") next
+  cnt[kind(ua)]++; bots[e]++; nbot++
+  if (p != "" && is_scan(p)) nscan++
+}
+END {
+  printf "AI 爬虫抓取共 %d 条\n", nbot
+  printf "  检索型 %d   训练型 %d   用户触发 %d\n", cnt["检索型"], cnt["训练型"], cnt["用户触发"]
+  printf "\n按引擎：\n"
+  for (e in bots) printf "  %-18s %6d\n", e, bots[e]
+  printf "\nAI 来源会话（referer 主机名命中）共 %d 条：\n", nref
+  if (nref == 0) printf "  （0 条也正常：App 内打开不带 referer，别据此说没人从 AI 过来）\n"
+  for (r in refs) printf "  %-28s %6d\n", r, refs[r]
+  printf "\n自报来源（URL 上的 utm_source 命中，与 referer 分开）共 %d 条：\n", nutm
+  if (nutm == 0) printf "  （无。要按渠道归因就在对外链接上带 utm_source，别靠猜）\n"
+  for (u2 in utms) printf "  %-28s %6d\n", u2, utms[u2]
+  printf "\n噪声检查：疑似漏洞扫描 %d 条", nscan
+  if (nbot > 0) printf "（占爬虫计数 %.0f%%）", 100 * nscan / nbot
+  printf "\n  这些不是 AI：扫描器轮换 UA 去打 /.env、/wp-config.php。占比高就说明\n"
+  printf "  爬虫计数被污染了，报告里不能直接引用这个数。\n"
+}
+'
+"""
+
+
 def gen_attribution(slug: str) -> dict[str, str]:
-    """AI 流量归因配置包：GA4 渠道组正则 + 日志分析命令 + 接入说明。"""
+    """AI 流量归因配置包：日志分析脚本 + GA4 渠道组正则 + 接入说明。"""
     cfg = G.load_config(slug)
     market = cfg.get("market", "cn")
     doms = (AI_REFERRERS["cn"] if market == "cn"
@@ -976,18 +1062,23 @@ def gen_attribution(slug: str) -> dict[str, str]:
     rx = "|".join(d.replace(".", r"\.") for d in doms)
     ga4 = (f"AI 来源渠道组（GA4 · 来源 匹配正则）\n\n{rx}\n\n"
            "配置路径：管理 → 数据显示 → 渠道组 → 新建渠道「AI 引擎」，条件：来源 与正则匹配。\n"
-           "注意：测到的是下界（App 内打开常不带 referrer），报告口径写「可归因的 AI 会话 ≥ N」。\n")
-    log_cmd = ("#!/bin/sh\n# AI 来源会话 / AI 爬虫抓取量（在服务器上对 access.log 运行）\n"
-               f"echo 'AI 来源会话：'; grep -icE '{rx}' access.log\n"
-               "echo 'AI 爬虫抓取：'; grep -icE 'GPTBot|OAI-SearchBot|ClaudeBot|PerplexityBot|Bytespider' access.log\n"
-               "# 抓取变多通常先于引用变多，是前置信号；两条命令都可加日期过滤按周对比\n")
+           "注意：测到的是下界（App 内打开常不带 referrer），报告口径写「可归因的 AI 会话 ≥ N」。\n"
+           "如果站点根本没装分析 SDK（隐私页往往明写了这一点），这一条不适用，只用日志那条；\n"
+           "装之前先看隐私页怎么写的 —— 交付物里的承诺不能自己打自己。\n")
+    # awk 里这个正则是「字符串当动态正则」，\. 会触发 "escape sequence treated as
+    # plain ." 警告，用 [.] 写等价的字面点，警告没了、语义还更准。
+    log_cmd = _LOG_COUNT_SH.replace("__REF__", rx.replace(r"\.", "[.]"))
     readme = ("# AI 流量归因接入说明\n\n"
-              "1. `ga4-channel.txt`：GA4 建「AI 引擎」渠道组的匹配正则\n"
-              "2. `log-count.sh`：服务器日志统计 AI 来源会话与 AI 爬虫抓取量\n"
+              "1. `log-count.sh`：**主路**。在站点服务器上跑，统计 AI 爬虫抓取量与 AI 来源会话。\n"
+              "2. `ga4-channel.txt`：站点有 GA4 时才用（没有就别装，见下）。\n"
               "3. 转化事件（注册/留资/下单）里保存来源快照：点击 ID > UTM > referrer > 直接/未知\n\n"
-              "纪律（详见 references/attribution.md）：referrer 清单是「常见」口径，"
-              "先在自己日志里核对；测到的 AI 流量是下界，不外推；"
-              "公开内容不堆 UTM（带参 URL 会稀释规范 URL 的引用份额）。\n")
+              "纪律（详见 references/attribution.md）：\n"
+              "- **只跑日志，不装第三方分析** 也能出数：日志里有 referer、有爬虫 UA、有按周趋势。\n"
+              "  装 GA4 会与「本站无 analytics SDK」这类隐私承诺冲突，先核对隐私页再决定。\n"
+              "- 爬虫计数会被轮换 UA 的漏洞扫描器污染，脚本会自己报「疑似扫描」占比；\n"
+              "  占比高时那个数不能进报告。\n"
+              "- referrer 清单是「常见」口径，先在自己日志里核对；测到的是下界，不外推；\n"
+              "  公开内容不堆 UTM（带参 URL 会稀释规范 URL 的引用份额）。\n")
     return {"ga4-channel.txt": ga4, "log-count.sh": log_cmd, "README.md": readme}
 
 

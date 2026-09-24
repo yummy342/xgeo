@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 import geolib as G
+import sample as S
 
 PACKAGES = ["实体消歧", "页面技术", "内容矩阵", "标题体系", "知识库", "外部证据", "监测闭环"]
 OWNERS = ["开发", "内容", "市场", "GEO顾问", "法务", "设计"]
@@ -294,7 +295,11 @@ def from_metrics(metrics: dict, cfg: dict, seq) -> list[dict]:
                               "GEO顾问", "L",
                               {"type": "auto", "check": f"metrics.mention_rate_gte:{mk}:{target}",
                                "desc": f"{mk_name}平均无提示提及率 ≥ {target:.0%}"}, market=mk))
-        own = [m["own_domain_cite_rate"] for m in rows.values() if m.get("own_domain_cite_rate") is not None]
+        # 引用官网率只在联网通道上算：不联网的通道（api2d 三个）测的是参数化
+        # 知识，答案里不可能有真引用，算进来只会把均值稀释成一个恒低的数，
+        # 然后开出一条永远做不完的「让官网进得了检索结果」。
+        own = [m["own_domain_cite_rate"] for p, m in rows.items()
+               if m.get("own_domain_cite_rate") is not None and S.searches(p)]
         if own and sum(own) / len(own) < 0.1:
             out.append(_t(next(seq), "P1", "外部证据",
                           f"{mk_name}让官网进得了 AI 的检索结果",
@@ -307,6 +312,10 @@ def from_metrics(metrics: dict, cfg: dict, seq) -> list[dict]:
         # 这比「完全不提及」更糟——AI 知道你是谁，却找不到可引用的官方内容。
         # （原来这里只有一句 continue，这个 P0 从来没产出过。）
         for plat, m in rows.items():
+            # 不联网的通道开不出这条工单：它测的是「模型知不知道这个品牌」，
+            # 引用官网率对它恒为 0，是通道属性不是内容缺陷（同 verify 侧判据）。
+            if not S.searches(plat):
+                continue
             pr = m.get("probe") or {}
             if not (pr.get("samples") and (pr.get("own_domain_cite_rate") or 0) == 0):
                 continue

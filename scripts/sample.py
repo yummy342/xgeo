@@ -184,6 +184,18 @@ PROVIDERS = {
     },
 }
 
+def searches(platform: str) -> bool:
+    """该通道采样时是否联网检索 —— 决定引用层指标对它有没有意义。
+
+    不联网的通道（api2d 三个）测的是模型参数化知识，答案里不可能出现真实引用，
+    引用官网率恒为 0。拿它判「点名提问时引不到官网」是拿一件测不出来的事当判据，
+    2026-09-24 实测确认：api2d 三个通道抽出来的「引用域名」全是
+    your-api-base.example.com / localhost:8000 / api.yourdomain.com 这类示例代码
+    里的占位符，一条真引用都没有（对照 sonar 同期 289 个真实域名）。
+    """
+    return bool((PROVIDERS.get(platform) or {}).get("search"))
+
+
 # 没有公开联网问答 API 的平台，只能浏览器/人工采
 MANUAL_ONLY = {
     "nano_ai": ("纳米AI搜索（360）", "cn"),
