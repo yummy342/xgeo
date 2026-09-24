@@ -913,11 +913,15 @@ def lint_draft(slug: str, path: Path) -> list[dict]:
     # finditer 因此每行只产出一个匹配 —— 实测「价格是 199 元、299 元和 399 元」
     # 只报 199 元，同一行里其余编造数字全部漏报。
     for m in _re.finditer(
-            r"\d[\d,\.]*\s*(?:%|％|万|亿|倍|元|美元|港币|HK\$|\$|人|家|天|小时|分钟)", text):
+            r"(?P<num>\d[\d,\.]*)\s*(?:%|％|万|亿|倍|元|美元|港币|HK\$|\$|人|家|天|小时|分钟"
+            r"|models?|providers?|tokens?|requests?|items?|entries?|ms|seconds?|minutes?|hours?|days?|USD)", text):
         val = m.group(0).strip()
+        # 只拿数字部分去比事实卡：原来拿整段（"477 models"）比，而卡里存的是 "477"，
+        # 于是合规数字也被判成「未核实」——英文稿更是整类漏检。
+        num = m.group("num")
         # 等值比较，不用双向子串：双向子串会把编造数字认成已核实
         # （实测 "200 元" in "1200 元" 为 True），而夸大数据正是最常见的编造形态。
-        if _norm_num(val) in known_norm:
+        if _norm_num(num) in known_norm or _norm_num(val) in known_norm:
             continue
         # 「待确认」只看数字附近，不看整行：按整行判的话，行内任何位置出现
         # 「待补」都会把这一行的所有数字一起放过。
@@ -929,10 +933,17 @@ def lint_draft(slug: str, path: Path) -> list[dict]:
                        "excerpt": ctx.replace("\n", " ").strip()[:90]})
 
     year = G.today()[:4]
-    for m in _re.finditer(r"20\d{2}\s*年", text):
-        if m.group(0).strip() != f"{year}年":
-            issues.append({"level": "低", "type": "年份存疑", "detail": f"出现 {m.group(0)}，当前是 {year} 年",
-                           "excerpt": text[max(0, m.start() - 25):m.end() + 25].replace("\n", " ")})
+    # 中文的「20XX 年」和英文的裸年份都要看。原来只匹配带「年」的，
+    # 英文稿里的 2024 / 2025 一律漏检（实测 27 篇英文初稿报 0 问题就是这个原因）。
+    seen_years = set()
+    for m in _re.finditer(r"(20\d{2})\s*年|(?<![\d.])(20\d{2})(?![\d])", text):
+        got = m.group(1) or m.group(2)
+        if got == year or got in seen_years:
+            continue
+        seen_years.add(got)
+        issues.append({"level": "低", "type": "年份存疑",
+                       "detail": f"出现 {got} 年（当前是 {year} 年，非当年年份需人工确认）",
+                       "excerpt": text[max(0, m.start() - 25):m.end() + 25].replace("\n", " ")})
     # 同类问题合并，避免刷屏
     seen, out = set(), []
     for i in issues:
