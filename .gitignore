@@ -15,3 +15,6 @@ work/
 
 # 时间戳改动备份，回滚已交给 git
 *.bak-*
+
+# macOS
+.DS_Store
