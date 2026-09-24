@@ -25,13 +25,15 @@ const COOKIE = 'xgeo_auth'      // 服务端 AUTH_COOKIE，会话与令牌共用
 const rawGet = (pathname, cookie) => new Promise((resolve, reject) => {
   const u = new URL(BASE)
   const req = http.request({
-    host: u.hostname, port: u.port || 80, path: pathname,
+    host: u.hostname, port: u.port || 80, path: pathname, timeout: 5000,
     headers: cookie ? { Cookie: cookie } : {},
   }, (res) => {
     res.resume()
     resolve(res.statusCode)
   })
   req.on('error', reject)
+  // 没有超时的话服务端卡住就等于脚本卡住（这条路径本来就是网络被挂住的场景）
+  req.on('timeout', () => req.destroy(new Error('rawGet 超时 5s')))
   req.end()
 })
 
@@ -89,7 +91,9 @@ const consoleErrors = []
 const pageErrors = []
 page.on('console', (m) => {
   if (m.type() !== 'error') return
-  if (/Failed to load resource.*40[13]/.test(m.text())) return
+  // 401 的导航是本流程的正常组成；net::ERR_FAILED 来自 2b 那次**故意** abort
+  // （验证登录页在请求发不出去时有回话）。两者都不是页面出错。
+  if (/Failed to load resource.*(40[13]|net::ERR_FAILED)/.test(m.text())) return
   consoleErrors.push(m.text())
 })
 page.on('pageerror', (e) => pageErrors.push(e.message))
@@ -108,8 +112,30 @@ try {
   await page.waitForFunction(() => document.getElementById('e').textContent.trim() !== '',
                              null, { timeout: 10000 })
   const err = (await page.textContent('#e')).trim()
+  if (/没有配账号登录/.test(err)) {
+    // 这条是环境问题，不是行为错误：直接说清怎么起实例，别让它以一条
+    // 看不出原因的断言失败收场
+    console.error('\n这个实例没配账号档，账号登录这条路是关着的。按文件头起一个：')
+    console.error(`  XGEO_ACCOUNTS='${EMAIL}:*;${TENANT_EMAIL}:<项目标识>' \\`)
+    console.error(`  XGEO_AUTH_BASE=http://127.0.0.1:${AUTH_PORT}/api/auth \\`)
+    console.error('    python scripts/geo.py ui --port 8801 --no-open')
+    await browser.close()
+    auth.close()
+    process.exit(1)
+  }
   check('错 key 有明确回话', /无效|Invalid/.test(err), err)
   check('错 key 不给会话', page.url().startsWith(BASE) && await page.locator('#k').count() === 1)
+
+  /* ── 2b) 登录请求根本发不出去（网络断了/服务重启）：页面必须回话 ──
+        没有 catch 时 fetch 一 reject 就是「点了没反应」，而这条分支此前零覆盖。 */
+  await page.route('**/api/auth/login', (r) => r.abort())
+  await page.fill('#k', 'sk-fm-good')
+  await page.click('#go')
+  await page.waitForFunction(() => document.getElementById('e').textContent.trim() !== '',
+                             null, { timeout: 10000 })
+  const netErr = (await page.textContent('#e')).trim()
+  check('请求发不出去时页面有回话', /连不上/.test(netErr), netErr)
+  await page.unroute('**/api/auth/login')
 
   /* ── 3) 对的 key：进看板，侧栏出现邮箱 ── */
   await page.fill('#k', KEY)
@@ -119,6 +145,16 @@ try {
   const mail = await page.textContent('#side .who .mail')
   check('侧栏显示登录邮箱', mail.trim() === EMAIL, mail.trim())
   check('侧栏有登出', await page.locator('#side .who .out').count() === 1)
+
+  /* ── 3b) 登出失败：要说清，且**不能**把人送回看板装作已经登出 ── */
+  await page.route('**/api/auth/logout', (r) => r.fulfill({
+    status: 403, contentType: 'application/json', body: '{"error":"会话删不掉"}' }))
+  await page.click('#side .who .out')
+  await page.waitForSelector('.toast', { timeout: 8000 })
+  check('登出失败有提示', /会话删不掉/.test(await page.textContent('.toast')))
+  check('登出失败时不刷新（仍停在看板上）',
+        await page.locator('#side .navit').count() > 0 && await page.locator('#k').count() === 0)
+  await page.unroute('**/api/auth/logout')
 
   /* ── 4) 登出：回到登录页，且**服务端那侧的会话真的没了** ── */
   const sess = (await page.context().cookies()).find((c) => c.name === COOKIE)
@@ -137,6 +173,11 @@ try {
   await page.fill('#k', TENANT_KEY)
   await page.click('#go')
   await page.waitForSelector('#side .navit', { timeout: 15000 })
+  // 先等身份落地再数：首屏渲染的是**未过滤**的 16 项，而 /api/auth/me 是另一个
+  // 请求 —— 直接数会和它竞态，偶发地数到 16 而假红（邮箱这一栏就是身份落地的信号）。
+  await page.waitForFunction(
+    (mail) => (document.querySelector('#side .who .mail')?.textContent || '').trim() === mail,
+    TENANT_EMAIL, { timeout: 15000 })
   const navCount = await page.locator('#side .navit').count()
   check('租户的侧栏少了管理员入口', navCount === TENANT_NAV, `实际 ${navCount} 项`)
   check('engines / settings 都不在',
@@ -145,6 +186,16 @@ try {
         (await page.textContent('#side .pick-v')).trim() !== '')
   check('租户的邮箱也在',
         (await page.textContent('#side .who .mail')).trim() === TENANT_EMAIL)
+
+  /* ── 5b) 隐藏入口不是边界，但深链也不能把人送进去 ──
+      （侧栏看不到 ≠ 进不去：手敲 hash 或浏览器后退都要改道） */
+  await page.goto(`${BASE}/#settings`, { waitUntil: 'networkidle' })
+  await page.waitForSelector('#side .navit', { timeout: 15000 })
+  await page.waitForTimeout(300)
+  const hash = await page.evaluate(() => location.hash)
+  check('租户手敲 #settings 会被改道', hash !== '#settings', hash || '(空)')
+  check('确实没渲染设置页',
+        !(await page.locator('#main').innerText()).includes('grouped by what changing it affects'))
 
   check('无未捕获的页面异常', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '))
   check('无其它 console 报错', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | '))

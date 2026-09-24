@@ -3,6 +3,7 @@
   import { navFor, badgeFor, LANGS } from '../lib/nav.js'
   import { i18n, setLocale, t } from '../lib/i18n/index.svelte.js'
   import { api } from '../lib/api.js'
+  import { auth } from '../lib/stores/auth.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { jobs } from '../lib/stores/jobs.svelte.js'
   import { runAction } from '../lib/jobs.svelte.js'
@@ -13,21 +14,13 @@
   // 语言状态改读 i18n store——切换不再整页 reload。
 
   let switching = $state(false)
-  let me = $state(null)
 
-  // 只有账号档答得上「你是谁」：令牌档服务端只知道一个令牌，默认档（本机无凭据）
-  // 压根没有账号。查不到就整块不渲染，不留空位。
-  $effect(() => {
-    let cancelled = false
-    api('/api/auth/me').then((r) => {
-      if (!cancelled && r && !r.error) me = r
-    })
-    return () => { cancelled = true }
-  })
-
-  const account = $derived(me && me.mode === 'account' ? me : null)
-  // 身份没回来之前不隐藏任何入口（隐藏是体验，不是边界；服务端照旧逐路由判权）
-  const nav = $derived(navFor(me ? me.admin : true))
+  // 身份来自共享 store（App 启动时拉一次，路由也要用）。
+  // 账号块只在账号档渲染：令牌档服务端只知道一个令牌，默认档（本机无凭据）
+  // 压根没有账号 —— 那两档整块不渲染，不留空位。
+  const account = $derived(auth.mode === 'account' ? auth : null)
+  // 身份未知时不隐藏任何入口（隐藏是体验，不是边界；服务端照旧逐路由判权）
+  const nav = $derived(navFor(auth.admin))
 
   async function signOut() {
     const r = await api('/api/auth/logout', { method: 'POST' })

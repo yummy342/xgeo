@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import os
 import re
@@ -571,6 +572,109 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class _DrainStub:
+    """只喂 _drain/_drain_chunked 需要的三个属性 —— 不起 socket，确定性地验分帧。"""
+
+    def __init__(self, raw: bytes, headers: dict):
+        self.rfile = io.BytesIO(raw)
+        self.headers = headers
+        self.close_connection = False
+
+    _drain = D.Handler._drain
+    _drain_chunked = D.Handler._drain_chunked
+
+    @property
+    def left(self) -> int:
+        return len(self.rfile.getvalue()) - self.rfile.tell()
+
+
+class TestProxyTrust(unittest.TestCase):
+    """反代信任的判据。`_proxied()` 为假的那一支在别的用例里从不执行，
+    而那正是安全上更关键的一支（两个头都不可信时才生效的保护）。"""
+
+    class _H:
+        """_proxied/_client_ip/_https 只用到 client_address 与 headers。"""
+
+        def __init__(self, peer, headers=None):
+            self.client_address = (peer, 12345)
+            self.headers = headers or {}
+
+        _proxied = D.Handler._proxied
+        _client_ip = D.Handler._client_ip
+        _https = D.Handler._https
+
+    def test_loopback_helpers(self):
+        for host in ("127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"):
+            self.assertTrue(D.is_loopback(host), host)
+        for host in ("192.168.1.29", "10.0.0.1", "", None, "evil.example", "1.2.3.4 "):
+            self.assertFalse(D.is_loopback(host), host)
+
+    def test_headers_are_ignored_from_a_non_loopback_peer(self):
+        h = self._H("192.168.1.29", {"X-Real-IP": "1.2.3.4",
+                                     "X-Forwarded-Proto": "https"})
+        self.assertFalse(h._proxied(), "异机反代默认不该被信任")
+        self.assertEqual(h._client_ip(), "192.168.1.29", "限流键取了不可信的头部")
+        self.assertFalse(h._https(), "Secure 由不可信的头部决定")
+
+    def test_headers_are_honoured_from_a_loopback_peer(self):
+        """仓库自带的 deploy.sh 就是这一形态（nginx 同机，覆写 X-Real-IP）。"""
+        h = self._H("127.0.0.1", {"X-Real-IP": "1.2.3.4", "X-Forwarded-Proto": "https"})
+        self.assertTrue(h._proxied())
+        self.assertEqual(h._client_ip(), "1.2.3.4")
+        self.assertTrue(h._https())
+
+    def test_explicit_switch_covers_remote_proxies(self):
+        """反代在别的机器上（K8s / CF Tunnel）时要显式打开，否则退化成
+        「全站共用一个限流桶 + cookie 不带 Secure」。"""
+        with mock.patch.dict(os.environ, {"XGEO_TRUST_PROXY": "1"}, clear=False):
+            h = self._H("192.168.1.29", {"X-Real-IP": "1.2.3.4",
+                                         "X-Forwarded-Proto": "https"})
+            self.assertTrue(h._proxied())
+            self.assertEqual(h._client_ip(), "1.2.3.4")
+            self.assertTrue(h._https())
+
+    def test_junk_x_real_ip_falls_back_to_the_socket(self):
+        """桶键是任意头部时，对端就能决定这个进程级字典的键长与键数。"""
+        h = self._H("127.0.0.1", {"X-Real-IP": "x" * 5000})
+        self.assertEqual(h._client_ip(), "127.0.0.1")
+
+    def test_drain_reads_the_declared_body(self):
+        st = _DrainStub(b"hello", {"Content-Length": "5"})
+        st._drain()
+        self.assertEqual(st.left, 0)
+        self.assertFalse(st.close_connection)
+
+    def test_drain_walks_the_chunked_framing(self):
+        """分块体是正常客户端发得出的形状：整串等值判断会让它落到「没读」。"""
+        for headers in ({"Transfer-Encoding": "chunked"},
+                        {"Transfer-Encoding": "chunked, gzip"}):
+            st = _DrainStub(b"5\r\nhello\r\n0\r\n\r\n", headers)
+            st._drain()
+            self.assertEqual(st.left, 0, headers)
+            self.assertFalse(st.close_connection, headers)
+
+    def test_drain_gives_up_past_the_ceiling(self):
+        """两个边界仍然只能断连接（那时响应可能被吞，是写明的取舍）。"""
+        big = _DrainStub(b"x" * 10, {"Content-Length": str(D.Handler.MAX_BODY + 1)})
+        big._drain()
+        self.assertTrue(big.close_connection)
+        self.assertEqual(big.left, 10, "声明超限时不该真的去读它")
+
+        chunked = _DrainStub(b"ff0000\r\n" + b"x" * 4, {"Transfer-Encoding": "chunked"})
+        chunked._drain()          # 单块就超 MAX_BODY
+        self.assertTrue(chunked.close_connection)
+
+    def test_drain_survives_a_dead_peer(self):
+        class Dead(io.BytesIO):
+            def read(self, *a):
+                raise ConnectionResetError("对端 RST")
+
+        st = _DrainStub(b"", {"Content-Length": "5"})
+        st.rfile = Dead()
+        st._drain()               # 不抛：那时已经回不了任何东西了
+        self.assertTrue(st.close_connection)
+
+
 class TestAccountLogin(unittest.TestCase):
     """账号档：FreeModel API Key → /me → 允许名单 → 本地会话。
 
@@ -697,6 +801,28 @@ class TestAccountLogin(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIn("跨站", json.loads(body)["error"])
 
+    def test_proxied_deploy_shape_is_not_refused(self):
+        """★ 本轮引入的回归：仓库自带的 deploy.sh 把看板绑 127.0.0.1，nginx 同机反代
+        并传 `Host: <域名>` —— 那时 Host 不是回环地址，一刀切的本机白名单会把**登录页
+        本身**403 掉（公网 + 反代正是账号登录要解决的形态）。所以对外主机名要能显式配上。
+
+        判据不能换成「对端是不是回环」：DNS rebinding 的攻击者浏览器也跑在本机。
+        """
+        host = "xgeo.example.com"
+        status, body, _ = self._req("POST", "/api/auth/login",
+                                    body={"credential": "sk-fm-x"},
+                                    headers={"Host": host, "Origin": f"https://{host}"})
+        self.assertEqual(status, 403)
+        self.assertIn("XGEO_PUBLIC_HOST", json.loads(body)["error"], "报错要能指路")
+
+        with mock.patch.dict(os.environ, {"XGEO_PUBLIC_HOST": host}, clear=False):
+            status, _body, _ = self._req("POST", "/api/auth/login",
+                                         body={"credential": "sk-fm-x"},
+                                         headers={"Host": host, "Origin": f"https://{host}"})
+            self.assertNotEqual(status, 403, "配了对外主机名还是被 Host 校验挡住")
+            status, _body, _ = self._req("GET", "/api/projects", headers={"Host": host})
+            self.assertEqual(status, 401, "登录页要能打开（401 才是对的）")
+
     def test_foreign_host_is_refused_when_accounts_only_and_bound_local(self):
         """账号档**不能**无条件跳过 Host 校验：DNS rebinding 能让浏览器同时伪造
         Host 与 Origin，而账号档下攻击者自带合法凭据（令牌档下他拿不到令牌，
@@ -747,8 +873,10 @@ class TestAccountLogin(unittest.TestCase):
             status, body, _ = self._req("POST", "/api/auth/login", **kw)
             self.assertEqual(status, 400, f"{name}: {body}")
 
-    def test_oversized_login_body_is_rejected_without_reading_it(self):
-        """未认证可达的接口不能让人推 8MB：一连接一线程，读满再限流等于没限。"""
+    def test_oversized_login_body_is_rejected_without_a_dropped_connection(self):
+        """未认证可达的接口不能被推 8MB 的体：一连接一线程，读满再限流等于没限。
+        注意 4KB 是**拒绝阈值**而不是读取上限 —— 超限时体仍然被读走（读走是为了
+        别让 RST 吞掉这个 400），只是读完就拒。"""
         status, _body, _ = self._req("POST", "/api/auth/login", raw=b"x" * 9000,
                                      headers={"Content-Type": "application/json"})
         self.assertEqual(status, 400)
@@ -955,6 +1083,68 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
         return (headers.get("Set-Cookie") or "").split(";")[0]
 
     # --- 正路 ---
+
+    def test_session_is_revoked_when_the_account_leaves_the_allowlist(self):
+        """会话在建的时候存了一份 admin/projects 快照，但权限要以**当前名单**为准：
+        名单的改动不走重启也能发生（`write_env` 会把变量写进 os.environ），
+        靠快照等于一次静默的降权失效。"""
+        sid = D.session_new("guest@example.com", {"admin": True, "projects": set()})
+        cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "boss@example.com:*"}, clear=False):
+            self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 401,
+                             "被踢出名单后旧会话还能用")
+        self.assertEqual(D.SESSIONS, {}, "回查时该把失效会话删掉，别留着占内存")
+
+    def test_logout_does_not_touch_the_token_tier_cookie(self):
+        """两种档共用一个 cookie 名：无条件下发清除会按 name+path 把令牌档的凭据
+        一起删掉，等于给双档实例留一个「一发就把别人登出」的入口。"""
+        _status, _body, headers = self._req(
+            "POST", "/api/auth/logout",
+            cookie=f"{D.AUTH_COOKIE}={D._token_digest(self.TOKEN)}")
+        self.assertIsNone(headers.get("Set-Cookie"), "没有会话可删却下发了清除 cookie")
+
+    def test_mixed_tier_login_is_not_reachable_through_rebinding(self):
+        """★ 混合档（账号 + 令牌）是最常见的形态 —— 扩展的 README 就教人
+        「本机要用助手，就同时也配上 XGEO_TOKEN」。而令牌档会短路 Host 校验，
+        落在这条路上的登录 CSRF：攻击者页面部署在 evil.example，rebinding 之下
+        浏览器发出的 Host 与 Origin **都是** evil.example，同源判定帮不上忙，
+        `/api/auth/login` 一成功就下发一个属于攻击者账号的会话 cookie。"""
+        status, body, headers = self._req(
+            "POST", "/api/auth/login", body={"credential": "sk-fm-good"},
+            headers={"Host": "evil.example", "Origin": "https://evil.example"})
+        self.assertEqual(status, 403, body)
+        self.assertIsNone(headers.get("Set-Cookie"), "rebinding 拿到了会话 cookie")
+
+    def test_login_origin_check_holds_when_bound_public(self):
+        """绑了公网地址时 Host 那一层是放开的（运维自己决定的暴露），登录自己的
+        同源校验就是唯一防线：不同源的 Origin 必须拒，别下发会话。"""
+        with mock.patch.object(D.Handler, "BIND_PUBLIC", True):
+            status, _body, headers = self._req(
+                "POST", "/api/auth/login", body={"credential": "sk-fm-good"},
+                headers={"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertIsNone(headers.get("Set-Cookie"))
+
+    def test_request_body_is_drained_exactly_once(self):
+        """**数调用次数**，而不是看同连接的后续请求 —— 401 那条路本来就会关连接
+        （do_POST 的 close_connection），两种实现下「同连接再发」都是断的，
+        那样写测不出区别。
+
+        真正要钉的是：读体只能发生一次。读第二次时读到的是**下一个请求**的字节
+        （keep-alive 上客户端会照常复用这条连接），而那个请求就此消失。
+        """
+        calls = []
+        orig = D.Handler._drain
+
+        def counting(self):
+            calls.append(1)
+            return orig(self)
+
+        with mock.patch.object(D.Handler, "_drain", counting):
+            status, _body, _ = self._req("POST", "/api/projects", body={"x": 1})
+        self.assertEqual(status, 401)
+        self.assertEqual(len(calls), 1, "请求体被 drain 了 %d 次" % len(calls))
 
     def test_auth_service_error_is_503_with_its_code(self):
         """上游非 200/401/403（500、502、302…）都归到「稍后再试」，**不变成放行**。"""

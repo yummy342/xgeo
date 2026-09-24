@@ -21,6 +21,7 @@
   import { onMount } from 'svelte'
   import { t } from './lib/i18n/index.svelte.js'
   import { route, routeFromHash, syncHash } from './lib/router.svelte.js'
+  import { allowedRoute, loadAuth } from './lib/stores/auth.svelte.js'
   import {
     project, projects, loadActions, loadProjects, loadProject, clearProject,
   } from './lib/stores/project.svelte.js'
@@ -49,7 +50,8 @@
 
   // 复刻 ui.html:3003-3020 的启动 IIFE 与 load() 末尾的路由决策。
   async function boot() {
-    await loadActions()
+    // 身份与动作并行拉：身份决定默认路由，晚一步就会先渲染出一页不该看到的
+    await Promise.all([loadActions(), loadAuth()])
     const ps = await loadProjects()
     if (ps === null) return                    // 连接失败，交给错误页
     if (!ps.length) {                          // 一个项目都没有 → 接入引导
@@ -61,7 +63,8 @@
     await loadProject(ps[0].slug)
     // 深链优先；否则有采样数据看总览，没有就去设置页
     const h = routeFromHash()
-    route.name = h || (project.data?.analytics?.latest_date ? 'overview' : 'settings')
+    // 没有采样数据时默认去设置页 —— 但那一页只有管理员能用，非管理员改道总览
+    route.name = allowedRoute(h || (project.data?.analytics?.latest_date ? 'overview' : 'settings'))
     syncHash(route.name)
   }
 

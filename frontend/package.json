@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/i18n-audit.mjs --strict && node scripts/legacy-globals.mjs --strict && node scripts/dist-integrity.mjs --strict",
+    "test": "node scripts/i18n-audit.mjs --strict && node scripts/legacy-globals.mjs --strict && node scripts/dist-integrity.mjs --strict && node scripts/auth-nav-audit.mjs",
     "test:e2e": "node scripts/smoke.mjs && node scripts/responsive.mjs && node scripts/dialog-smoke.mjs && node scripts/workbench-focus.mjs && node scripts/manual-publish-smoke.mjs",
     "test:e2e:login": "node scripts/login-smoke.mjs"
   },

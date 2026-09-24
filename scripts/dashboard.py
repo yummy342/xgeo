@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -285,6 +286,59 @@ def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
     return out
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def is_loopback(host: str | None) -> bool:
+    """这个地址/主机名是不是回环。`::ffff:127.0.0.1`（绑 `::` 双栈时同机反代
+    从 IPv4 回来就是这个形状）也算 —— 字符串比对会漏掉它，于是那条路悄悄退化成
+    「对端不是回环」，限流共桶、cookie 不带 Secure 都回来了。"""
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    if h in LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped.is_loopback
+    return ip.is_loopback
+
+
+def public_hosts() -> set[str]:
+    """对外主机名：`XGEO_PUBLIC_HOST=xgeo.asia,www.xgeo.asia`。
+
+    反代形态下 Host 是站点域名而不是回环地址（deploy.sh 传的是
+    `proxy_set_header Host $host`），所以账号档的 Host 白名单必须能把站点域名
+    列进来。**不能**改用「对端是不是回环」来判断请求是否来自反代：DNS rebinding
+    的攻击者浏览器也跑在同一台机上，它的对端同样是回环 —— 那条判据会把要防的
+    东西一起放进来。
+    """
+    return {host_name(x) for x in (_env("XGEO_PUBLIC_HOST") or "").split(",") if x.strip()}
+
+
+def trust_proxy() -> bool:
+    """`XGEO_TRUST_PROXY=1`：**无条件**采信 X-Real-IP / X-Forwarded-Proto。
+
+    默认只在「对端是回环」时采信（仓库自带的 deploy.sh 就是 nginx 同机）。
+    反代在别的机器上（K8s sidecar、Cloudflare Tunnel、异机 nginx）时对端不是回环，
+    两个头都不认 —— 后果是限流退化成全站共用一个桶、https 站点的会话 cookie 不带
+    Secure。**只有反代会覆写 `X-Real-IP` 时才该打开**：否则任何客户端都能自己填一个，
+    等于让对端决定自己落在哪个限流桶里。
+    """
+    return (_env("XGEO_TRUST_PROXY") or "").strip().lower() not in ("", "0", "false", "no")
+
+
 def host_name(value: str | None) -> str:
     """取 Host / Origin 里的主机名：去掉端口与 IPv6 的方括号。
 
@@ -295,6 +349,10 @@ def host_name(value: str | None) -> str:
     h = (value or "").strip().lower()
     if h.startswith("["):
         return h[1:h.index("]")] if "]" in h else h
+    if h.count(":") > 1:
+        # 裸 IPv6 字面量：既没有方括号也没有端口（`urlparse(...).hostname` 给的
+        # 就是这个形状）。按冒号切会把地址切空 —— 那比切错更隐蔽。
+        return h
     return h.split(":")[0]
 
 
@@ -561,11 +619,12 @@ def login_allowed(ip: str, limit: int = 10, window: int = 300) -> bool:
     else:
         # 空桶不留键：这是进程级全局，只增不删会一直长（原实现连空列表都建键）
         LOGIN_HITS.pop(ip, None)
-    if len(LOGIN_HITS) > 4096:
-        # 兜底清扫：只在「对端不是反代」时才可能攒出这么多键，顺手收掉整桶过期的
-        for k, v in list(LOGIN_HITS.items()):
-            if not [t for t in v if now - t < window]:
-                LOGIN_HITS.pop(k, None)
+    if len(LOGIN_HITS) > 1024:
+        # 封顶淘汰，按「桶里最新一次尝试」从旧到新删。只删空桶是不够的：每个新来的
+        # 来源都会留下一个非空桶，字典照样无界（直连形态或透传 X-Real-IP 时，来源
+        # 可以很多）。
+        for k in sorted(LOGIN_HITS, key=lambda k: max(LOGIN_HITS[k]))[:len(LOGIN_HITS) - 1024]:
+            LOGIN_HITS.pop(k, None)
     return len(hits) < limit
 
 
@@ -643,22 +702,27 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ------------------------------------------------------------ 反向代理
-    # 判据是**对端是不是回环**：仓库自带的 deploy.sh 把 nginx 和看板放同一台机
-    # （proxy_pass http://127.0.0.1:$PORT），只有它会从回环打进来，而且它用
-    # `$remote_addr` 覆写 X-Real-IP，客户端伪造不过去。直连时对端不是回环，
-    # 这两个头一律不认 —— 否则谁都能换掉自己的限流桶、或骗到一个只该在
-    # https 下发的 Secure cookie。
+    # 默认只在**对端是回环**时采信 X-Real-IP / X-Forwarded-Proto：仓库自带的
+    # deploy.sh 把 nginx 和看板放同一台机（proxy_pass http://127.0.0.1:$PORT），
+    # 只有它会从回环打进来，而且它用 `$remote_addr` 覆写 X-Real-IP，客户端伪造
+    # 不过去。反代不在本机时要显式打开 XGEO_TRUST_PROXY（见那个函数）。
+    # 超时：读请求（含 _drain）不能无限等 —— 声明一个 Content-Length 却不发体是
+    # 最省资源的占坑手法，一连接一线程，占满就是拒绝服务。
+    timeout = 30
+
     def _proxied(self) -> bool:
-        peer = (self.client_address[0] if self.client_address else "") or ""
-        return peer in ("127.0.0.1", "::1", "localhost")
+        if trust_proxy():
+            return True
+        return is_loopback(self.client_address[0] if self.client_address else "")
 
     def _client_ip(self) -> str:
-        """限流用的桶键。不是日志意义上的真实 IP，只要「同一来源稳定落在同一个桶」。
-        反代下取 X-Real-IP，否则所有用户（含管理员）共用一个桶，任何人连错
-        10 次就能把全站登录挡 5 分钟。"""
+        """限流用的桶键。反代下取 X-Real-IP，否则所有用户（含管理员）共用一个桶，
+        任何人连错 10 次就能把全站登录挡 5 分钟。
+        取之前必须**校验成合法 IP**：头部是任意字符串，照单全收等于让对端决定这个
+        进程级字典的键长与键数。不合法的回落到 TCP 对端。"""
         if self._proxied():
             real = (self.headers.get("X-Real-IP") or "").strip()
-            if real:
+            if is_ip(real):
                 return real
         return (self.client_address[0] if self.client_address else "") or "?"
 
@@ -674,13 +738,16 @@ class Handler(BaseHTTPRequestHandler):
         """用 FreeModel API Key 换一次本地会话。返回 (响应体, HTTP 码, 会话 id)。
 
         会话 id 单独返回而不是塞进响应体：它是凭据，只该进 Set-Cookie。"""
+        if not self._account_host_allowed():
+            return {"ok": False, "error": "Host 不在允许名单：反代部署要设 "
+                                          "XGEO_PUBLIC_HOST=<你的域名>"}, 403, None
         ip = self._client_ip()
         if not login_allowed(ip):
             return {"ok": False, "error": "尝试过于频繁，稍后再试"}, 429, None
         # 登录 CSRF：Origin 存在且与 Host 不同源时拒掉 —— 否则第三方页面能把
         # 受害者「登进攻击者的账号」，之后他上传的东西全落在攻击者名下。
         org = self.headers.get("Origin")
-        if org and (urlparse(org).hostname or "").lower() != host_name(self.headers.get("Host")):
+        if org and host_name(urlparse(org).hostname) != host_name(self.headers.get("Host")):
             return {"ok": False, "error": "跨站请求被拒绝"}, 403, None
         if not accounts_enabled():
             return {"ok": False,
@@ -727,40 +794,61 @@ class Handler(BaseHTTPRequestHandler):
         # 凭据不进日志、不落盘、不进记录：本次用它换到邮箱之后就不再需要它
         return ({"ok": True, "email": email, "admin": bool(acct.get("admin"))}, 200, sid)
 
-    def _host_ok(self) -> bool:
-        """默认档（不设令牌）下只接受本机 Host。
+    def _account_host_allowed(self) -> bool:
+        """账号档的 Host 判决：绑了非本机地址，或 Host 在本机/对外名单里。
 
-        那时浏览器里任何一个网页都能用 evil.com（DNS rebinding 解析到
-        127.0.0.1）发起同源请求，读写全部接口——包括 /api/keys 和发布接口。
-        校验 Host 是这类本地服务的通用挡法；顺带拒掉带外站 Origin 的请求
-        （那是从别的页面打过来的 CSRF，Host 会是 127.0.0.1 拦不住）。
-
-        配了令牌就不再限 Host：鉴权已经挡住未认证请求，而且这时用户可能
-        故意绑 0.0.0.0 从别的机器访问。
+        **必须独立于令牌档**：令牌档确实可以跳过 Host 校验（攻击者拿不到令牌，
+        DNS rebinding 也就没得用），但混合档（账号 + 令牌）里 `/api/auth/login`
+        照样可达，而它成功一下就下发会话 cookie —— rebinding 时攻击者页面就部署在
+        `evil.example`，Origin 与 Host 都是它，同源判定帮不上忙，Host 名单是唯一防线。
+        扩展的 README 恰恰教人「本机要用助手就同时配 XGEO_TOKEN」，所以这是常规形态。
         """
+        if Handler.BIND_PUBLIC:
+            return True
+        return host_name(self.headers.get("Host")) in (set(LOOPBACK_HOSTS) | public_hosts())
+
+    def _host_ok(self) -> bool:
+        """Host / Origin 校验，按档位分三支：
+
+        · **账号档**（含与令牌并存的混合档）：Host 必须在名单里
+          （本机 + `XGEO_PUBLIC_HOST`，或绑了非本机地址）。理由是 rebinding：
+          攻击者页面部署在 evil.example，浏览器被解析到 127.0.0.1，它发出的
+          Host 与 Origin **都是** evil.example —— 同源判定帮不上忙，而
+          `/api/auth/login` 一旦成功就下发一个属于攻击者账号的会话。
+          这一支故意排在令牌短路**之前**：混合档是最常见的形态（扩展的 README
+          就教人「本机要用助手就同时配 XGEO_TOKEN」）。
+        · **令牌档**（只有令牌）：不限 Host。鉴权已经挡住未认证请求，而且这时
+          用户可能故意绑 0.0.0.0 从别的机器访问；攻击者拿不到令牌，rebinding
+          也就没得用。
+        · **默认档**（什么都没配）：只认本机 Host，并拒掉外站 Origin ——
+          那时浏览器里任何一个网页都能用 evil.com（DNS rebinding 解析到
+          127.0.0.1）读写全部接口，包括 /api/keys 和发布接口。
+        """
+        if accounts_enabled() and not self._account_host_allowed():
+            self._json({"error": "Host 不在允许名单：反代部署要设 "
+                                 "XGEO_PUBLIC_HOST=<你的域名>（或绑 127.0.0.1 走隧道）"}, 403)
+            return False
         if Handler.TOKEN or Handler.SCOPES:
             return True
-        if accounts_enabled() and Handler.BIND_PUBLIC:
-            # 账号档 + 绑了非本机地址：用户是从别的机器上的浏览器访问的，
-            # 限 Host 会把登录页本身 403 掉。
-            return True
-        # 只配账号档、仍绑本机时不跳过 Host 校验。令牌档跳过它没关系（攻击者
-        # 拿不到合法令牌），账号档的威胁模型不同：攻击者**自带**合法凭据，能把
-        # 受害者登进自己的账号（之后他上传的东西全落在攻击者名下），而这时唯一
-        # 的防线就是「Origin == Host」—— DNS rebinding 恰好能让浏览器同时伪造
-        # 两者（它以为自己在跟 evil.com 说话）。下面的本机白名单不影响
-        # 127.0.0.1 下打开登录页。
         h = host_name(self.headers.get("Host"))
-        if h not in ("127.0.0.1", "localhost", "::1"):
+        # 走到这里只剩默认档与账号档（账号档的 Host 已在上面的名单里判过，
+        # 这里再用同一份名单复核一次，顺带让 Origin 校验有依据）
+        allowed = set(LOOPBACK_HOSTS) | (public_hosts() if accounts_enabled() else set())
+        if h not in allowed and not (accounts_enabled() and Handler.BIND_PUBLIC):
+            # 绑了非本机地址的账号档实例不在名单里判 Host（运维自己决定把它摊到
+            # 网络上，按 IP:端口访问时 Host 就是那个 IP）；默认档没有这个口子。
             self._json({"error": "只接受本机访问：Host 不是本机地址"}, 403)
             return False
         org = self.headers.get("Origin")
         # chrome-extension:// 必须放行：采样助手插件的侧栏 POST 回传会带这个源，
         # 它不是「别的网站」。请求已经过了 Host 校验，确实打在本机上。
-        if org and not org.startswith("chrome-extension://") \
-                and (urlparse(org).hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
-            self._json({"error": "已拒绝跨站请求"}, 403)
-            return False
+        if org and not org.startswith("chrome-extension://"):
+            o = host_name(urlparse(org).hostname)
+            # 同源放行（与 _do_login 一条口径）；再认一遍 Host 名单，这样反代形态下
+            # 站点域名自己的来源不会被误拒。
+            if o != h and o not in allowed:
+                self._json({"error": "已拒绝跨站请求"}, 403)
+                return False
         return True
 
     def _auth(self) -> bool:
@@ -805,10 +893,18 @@ class Handler(BaseHTTPRequestHandler):
         # 且升级后老的令牌 cookie 继续有效（老用户不会被登出）。
         sess = session_get(self.headers.get("Cookie"))
         if sess:
-            self._scope = None if sess["admin"] else set(sess["projects"])
-            self._mode = "account"
-            self._email = sess["email"]
-            return True
+            # 每请求回查名单，而不是用建会话那一刻的快照。名单本身在 .env 里改不动，
+            # 但 `write_env()` 会把变量同步写进 os.environ，将来也可能有人把名单挪到
+            # 配置文件 —— 那时「老会话保持旧权限」就是一次静默的降权失效。
+            # 代价是一次 env 读取 + 解析，可忽略。
+            acct = accounts().get(sess["email"])
+            if not acct:
+                session_drop(self.headers.get("Cookie"))
+            else:
+                self._scope = None if acct["admin"] else set(acct["projects"])
+                self._mode = "account"
+                self._email = sess["email"]
+                return True
         if self.command == "GET":
             self._send(401, _login_html().encode("utf-8"), "text/html; charset=utf-8")
         else:
@@ -887,24 +983,55 @@ class Handler(BaseHTTPRequestHandler):
         「服务端明明回话了，客户端却说断连」。所以每条早退路径（没走到读体那一步
         就返回的）都要先 drain 一次。
 
-        超过 MAX_BODY 的不读、直接标记关连接：那种量级宁可断，也不能替对端
-        分配内存。chunked 同理（解析它要另写一层）。
+        两个边界仍然只能断连接（那时响应可能被 RST 吞掉，是已知取舍，不是漏修）：
+        · 声明超过 MAX_BODY 的体 —— 替对端分配 8MB+ 内存比丢一个响应更糟；
+        · 分块体**读完超限**之后。
+        分块体本身按分帧读掉（不解析内容，只走框架），因为它是正常客户端发得出的形状。
+        本函数不抛异常：读的过程里对端可能 RST 或超时，那时已经回不了任何东西了。
         """
-        if (self.headers.get("Transfer-Encoding") or "").strip().lower() == "chunked":
-            self.close_connection = True
-            return
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            n = 0
-        if n > Handler.MAX_BODY:
+            te = [t.strip().lower() for t in
+                  (self.headers.get("Transfer-Encoding") or "").split(",")]
+            if "chunked" in te:
+                self._drain_chunked()
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if n > Handler.MAX_BODY:
+                self.close_connection = True
+                return
+            if n:
+                self.rfile.read(n)
+        except (OSError, ValueError):
             self.close_connection = True
-            return
-        if n:
-            self.rfile.read(n)
+
+    def _drain_chunked(self, limit: int | None = None) -> None:
+        """走分块框架、不留内容。超过上限就放弃并标记关连接。"""
+        cap = Handler.MAX_BODY if limit is None else limit
+        total = 0
+        while True:
+            line = self.rfile.readline(64)
+            if not line:
+                raise ValueError("分块体提前结束")
+            size = int(line.split(b";")[0].strip() or b"0", 16)
+            if size == 0:
+                self.rfile.readline(4096)     # 末尾的空行（有 trailer 时由关连接兜底）
+                return
+            total += size
+            if total > cap:
+                self.close_connection = True
+                return
+            self.rfile.read(size)
+            self.rfile.readline(2)            # 每块末尾的 CRLF
 
     def _body(self, max_bytes: int | None = None) -> dict:
-        if (self.headers.get("Transfer-Encoding") or "").strip().lower() == "chunked":
+        # 按逗号切分逐 token 比：`Transfer-Encoding: chunked, gzip` 这种多值写法
+        # 用整串等值判断会落空，于是被当成「没有体」→ 余下字节被当成下一个请求行
+        # （反代池化上游时就是跨用户走私面）。
+        te = [t.strip().lower() for t in (self.headers.get("Transfer-Encoding") or "").split(",")]
+        if "chunked" in te:
             # 分块体不读走的话字节留在 socket 里，会被当成下一个请求行解析
             self.close_connection = True
             raise ValueError("不支持 chunked 请求体")   # 分块体不解析，连接已标记要断
@@ -921,16 +1048,22 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ GET
     def do_GET(self):
+        # 带体的 GET 是畸形请求，但浏览器之外的客户端发得出；早退前同样要先读走，
+        # 否则 RST 会把 401/403 一起吞掉（与 do_POST 一套口径）。
         if not self._host_ok():
+            self._drain()
             self.close_connection = True
             return
         if not self._auth():
+            # 不在这里 drain：_auth 的失败分支已经读走了（再读一次读的是**下一个
+            # 请求**的字节，keep-alive 上表现为后续请求凭空 EOF）。
             self.close_connection = True
             return
         u = urlparse(self.path)
         p, q = unquote(u.path), parse_qs(u.query)
         # 项目级授权统一在这里判，各个分支不再各自检查
         if self._deny(path_slug(p)):
+            self._drain()
             return
         try:
             if p in ("/", "/index.html"):
@@ -1151,9 +1284,13 @@ class Handler(BaseHTTPRequestHandler):
             # do_POST，socketserver 只打 traceback 再掐连接、一个字节的响应都不发
             # （登录页的 fetch 直接 reject，表现成「点了没反应」）。其它路由都在
             # try 里按同一口径回 JSON，这里补齐；体量按 4KB 卡死（登录体就一句）。
+            # 注意这个 4KB 是**拒绝阈值**，不是读取上限：超限时 _body 会先把体读走
+            # 再抛（读走是为了别让 RST 吞掉这个 400），最大读到 MAX_BODY。
             try:
                 body = self._body(Handler.AUTH_MAX_BODY)
-            except (ValueError, RuntimeError):
+            except Exception:  # noqa: BLE001
+                # 除了列出来的三种 ValueError，对端 RST 时读体会抛 OSError —— 那已经
+                # 回不了任何东西，但也不该让 traceback 穿出 do_POST 刷日志。
                 self.close_connection = True
                 return self._json({"error": "请求体不合法（要 JSON 对象，且不超过 4KB）"}, 400)
             if not isinstance(body, dict):
@@ -1167,18 +1304,22 @@ class Handler(BaseHTTPRequestHandler):
                 org = self.headers.get("Origin")
                 if org and (urlparse(org).hostname or "").lower() != host_name(self.headers.get("Host")):
                     return self._json({"error": "跨站请求被拒绝"}, 403)
-                session_drop(self.headers.get("Cookie"))
-                # Max-Age=0 让浏览器立刻丢掉它；路径/属性要与下发时一致，否则删不掉
-                self._json({"ok": True}, 200,
-                           extra={"Set-Cookie": session_cookie("x", self._https(), max_age=0)})
+                # 只在**真删到会话**时才下发清除：这个 cookie 名与令牌档共用，
+                # 无条件清会按 name+path 把令牌档的凭据一起删掉（Secure 不参与
+                # 覆盖判定），等于给双档实例留一个「一发就把别人登出」的入口。
+                if session_drop(self.headers.get("Cookie")):
+                    # Max-Age=0 让浏览器立刻丢掉它；路径/属性要与下发时一致，否则删不掉
+                    self._json({"ok": True}, 200,
+                               extra={"Set-Cookie": session_cookie("x", self._https(), max_age=0)})
+                else:
+                    self._json({"ok": True}, 200)
                 return
             res, code, sid = self._do_login(body)
             self._json(res, code,
                        extra={"Set-Cookie": session_cookie(sid, self._https())} if sid else None)
             return
         if not self._auth():
-            self._drain()
-            self.close_connection = True
+            self.close_connection = True   # drain 已在 _auth 的失败分支里做过
             return
         p = unquote(urlparse(self.path).path)
         if self._deny(path_slug(p)):
@@ -1526,7 +1667,9 @@ def run(port: int = 8765, open_browser: bool = True,
     host = host or _env("XGEO_HOST") or "127.0.0.1"
     token = token or _env("XGEO_TOKEN") or None
     scoped = parse_scoped_tokens(_env("XGEO_PROJECT_TOKENS"))
-    if host not in ("127.0.0.1", "localhost") and not token and not scoped             and not accounts_enabled():
+    # `::1` 也是回环，别再维护第二套元组（这里曾经少了它，绑 ::1 会被判成
+    # 「暴露给网络上的所有人」）
+    if host not in LOOPBACK_HOSTS and not token and not scoped and not accounts_enabled():
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
@@ -1540,7 +1683,12 @@ def run(port: int = 8765, open_browser: bool = True,
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
     auth_note = ("，访问需令牌（XGEO_TOKEN）" if token
-                 else f"，访问需项目令牌（{len(scoped)} 个）" if scoped else "")
+                 else f"，访问需项目令牌（{len(scoped)} 个）" if scoped
+                 else f"，访问需账号登录（{len(accounts())} 个账号）" if accounts_enabled()
+                 else "")
+    if accounts_enabled() and not Handler.BIND_PUBLIC and not public_hosts():
+        G.info("提示：账号档 + 绑本机。若前面有反代（deploy.sh 的形态），"
+               "要设 XGEO_PUBLIC_HOST=<站点域名>，否则 Host 校验会把登录页 403 掉。")
     G.info(f"看板已启动：{url}（Ctrl+C 退出）{auth_note}")
     if not (UI_DIST / "index.html").is_file():
         G.info("未找到前端构建产物，页面会打不开。构建：npm --prefix frontend run build")

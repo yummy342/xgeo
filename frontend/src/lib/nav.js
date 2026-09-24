@@ -54,14 +54,14 @@ export function badgeFor(data, key) {
   }
 }
 
-/** 「只有管理员能用」的入口：这两页都读 /api/keys，租户会话点进去只吃 403。
- *  隐藏它们纯属体验，判权在服务端每个路由上 —— 身份未知时**不隐藏**。 */
-export const ADMIN_ONLY = new Set(['engines', 'settings'])
+// 身份 → 界面规则（隐藏哪些入口、非管理员改道哪去）都在 navrules.js 里，
+// 那边是纯函数、能在 npm test 里直接断言（这里再依赖 i18n store）。
+export { ADMIN_ONLY } from './navrules.js'
+import { filterNav } from './navrules.js'
 
 /** 按身份过滤后的导航。`admin` 为 true 或未知 → 原样返回。 */
 export function navFor(admin) {
-  if (admin !== false) return NAV
-  return NAV.map((g) => ({ ...g, items: g.items.filter(([k]) => !ADMIN_ONLY.has(k)) }))
+  return filterNav(NAV, admin)
 }
 
 export const LANGS = [['zh', '中'], ['en', 'EN'], ['ja', '日']]
