@@ -1057,6 +1057,30 @@ class TestAccountLogin(unittest.TestCase):
             self.assertEqual(self._req("GET", "/api/projects",
                                        cookie=self._cookie_of(headers))[0], 200)
 
+    def test_local_admin_can_log_out_without_the_accounts_tier(self):
+        """★ 真浏览器在线上逮到的：登出那条路由原来在「没配 XGEO_ACCOUNTS」时直接
+        404 —— 而兜底账号恰恰常出现在没有账号档的实例上，于是登出弹错误、页面不刷新
+        （用户以为自己登出了，其实没有）。"""
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "admin",
+                                          "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
+            _s, _b, headers = self._req("POST", "/api/auth/login",
+                                       body={"user": "admin", "password": "pw-123"})
+            cookie = self._cookie_of(headers)
+            self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+            status, _body, out = self._req("POST", "/api/auth/logout", cookie=cookie)
+            self.assertEqual(status, 200, "兜底账号登不出去")
+            self.assertIn("Max-Age=0", out.get("Set-Cookie") or "")
+            self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 401)
+
+    def test_local_admin_alone_is_not_an_open_instance(self):
+        """★ 只配兜底账号（没令牌、没账号档）时，`_auth` 的「什么都没配 → 放行」早退
+        会把实例当成**开放**的 —— 那比不配更糟：人以为配了凭据。测试逮到的第二个洞。"""
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "admin",
+                                          "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
+            # 四个入参都给全，模拟「令牌/分项目令牌都没配」的形态
+            self.assertEqual(self._req("GET", "/api/projects")[0], 401,
+                             "只配兜底账号却对所有人敞开")
+
     def test_local_admin_wrong_password_is_401(self):
         with mock.patch.dict(os.environ, {"XGEO_ADMIN_USER": "admin",
                                           "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):

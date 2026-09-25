@@ -941,7 +941,10 @@ class Handler(BaseHTTPRequestHandler):
         # 每个请求都从零开始：Handler 实例在 keep-alive 上是复用的，_email 只在
         # 账号分支赋值，不重置就会把上一个请求的身份带到 /api/auth/me 的响应里。
         self._scope, self._mode, self._email = None, "", ""
-        if not Handler.TOKEN and not Handler.SCOPES and not accounts_enabled():
+        if (not Handler.TOKEN and not Handler.SCOPES and not accounts_enabled()
+                and not local_admin()):
+            # 兜底账号也算「配了东西」：只配 XGEO_ADMIN_USER/PASSWORD 的实例若走这个
+            # 早退，就是**门大开**而人以为配了凭据 —— 比不配更糟。
             self._mode = "open"
             return True
         u = urlparse(self.path)
@@ -1401,11 +1404,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 return self._json({"error": "请求体要 JSON 对象"}, 400)
             if p == "/api/auth/logout":
-                # 没开账号档就不处理：它清的是 AUTH_COOKIE，而令牌档的凭据正是
-                # 同一个 cookie 名 —— 无条件下发清除就等于给令牌档加了一个
-                # 「任何人一发就把别人登出」的入口。顺带与登录同样校 Origin。
-                if not accounts_enabled():
-                    return self._json({"error": "这个实例没有账号登录"}, 404)
+                # 它清的是 AUTH_COOKIE，而令牌档的凭据正是同一个 cookie 名 ——
+                # 三条分支见下。顺带与登录一样校 Origin。
                 org = self.headers.get("Origin")
                 if org and (urlparse(org).hostname or "").lower() != host_name(self.headers.get("Host")):
                     return self._json({"error": "跨站请求被拒绝"}, 403)
@@ -1416,8 +1416,14 @@ class Handler(BaseHTTPRequestHandler):
                     # Max-Age=0 让浏览器立刻丢掉它；路径/属性要与下发时一致，否则删不掉
                     self._json({"ok": True}, 200,
                                extra={"Set-Cookie": session_cookie("x", self._https(), max_age=0)})
-                else:
+                elif accounts_enabled() or local_admin():
+                    # 没会话可删（cookie 早过期了），但这台机器确实有账号档或兜底账号
+                    # —— 回 200，不下发清除，免得动到令牌档的 cookie。
                     self._json({"ok": True}, 200)
+                else:
+                    # 只配了令牌的实例：这个端点没有意义，而它能清掉令牌 cookie，
+                    # 那就成了「任何人一发就把别人登出」的入口。
+                    self._json({"error": "这个实例没有账号登录"}, 404)
                 return
             res, code, sid = self._do_login(body)
             self._json(res, code,
@@ -1774,7 +1780,8 @@ def run(port: int = 8765, open_browser: bool = True,
     scoped = parse_scoped_tokens(_env("XGEO_PROJECT_TOKENS"))
     # `::1` 也是回环，别再维护第二套元组（这里曾经少了它，绑 ::1 会被判成
     # 「暴露给网络上的所有人」）
-    if host not in LOOPBACK_HOSTS and not token and not scoped and not accounts_enabled():
+    if (host not in LOOPBACK_HOSTS and not token and not scoped and not accounts_enabled()
+            and not local_admin()):
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
