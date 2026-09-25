@@ -158,7 +158,7 @@ PUBLISHERS = {
             editor_hint="正文框吃 Markdown；先选好目标子版，发前读一遍那版的自我推广规则",
             link_hint="发布后在帖子下方 share → copy link",
         ),
-        "guide": {"url": 'https://www.reddit.com/prefs/apps', "steps": ['reddit.com/prefs/apps → create app → 类型选「script」', 'REDDIT_CLIENT_ID 是应用名下方那串字符，SECRET 在旁边', '用户名密码就是登录凭证；账号开了两步验证会失败，建议用专用账号', 'subreddit 先用自己的主页社区（u_你的用户名）试发，再进目标社区——先读对方的自我推广规则']},
+        "guide": {"url": 'https://www.reddit.com/prefs/apps', "steps": ['reddit.com/prefs/apps → create app → 类型选「script」', 'REDDIT_CLIENT_ID 是应用名下方那串字符，SECRET 在旁边', '用户名填 Reddit 用户名（不是登录邮箱），密码是账号密码；开了两步验证会失败，建议用专用账号', 'subreddit 先用自己的主页社区（u_你的用户名）试发，再进目标社区——先读对方的自我推广规则']},
     },
 
     # ---------------- 半自动（无可用自动发布通路，工具只备好、不代发） ----------------
@@ -570,7 +570,8 @@ def _pub_reddit(cfg, text, title, fname):
     sub = (cfg.get("subreddit") or "").strip().removeprefix("r/")
     if not sub:
         return {"ok": False, "error": "先在设置里配置 subreddit"}
-    ua = "xgeo-publisher/0.1 by " + os.environ["REDDIT_USERNAME"]
+    # Reddit 要 `platform:app-id:version (by /u/user)` 格式，generic UA 会被挡
+    ua = "xgeo:publisher:0.1 (by /u/%s)" % os.environ["REDDIT_USERNAME"]
     tok = requests.post(
         "https://www.reddit.com/api/v1/access_token",
         auth=(os.environ["REDDIT_CLIENT_ID"], os.environ["REDDIT_CLIENT_SECRET"]),
