@@ -137,6 +137,41 @@ class TestDedup(unittest.TestCase):
         self.assertEqual(len(S.dedup_rows(rows)), 3)
 
 
+class TestListSamplesDedups(unittest.TestCase):
+    """列表端点必须与指标同口径去重。
+
+    指标那几条路都是 dedup_rows(G.read_jsonl(path))，而列表原来把同日重跑的
+    两条都渲染出来 —— 界面上多出一条**不影响任何数字**的幽灵行，而且前端按
+    `r.key` 渲染时重复 key 会抛 each_key_duplicate（整页报错，e2e 长期红着）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name) / "work"
+        d = self.work / "proj" / "samples"
+        d.mkdir(parents=True)
+        rows = [
+            dict(make_row(qid="Q1"), date="2026-09-22", ts="2026-09-22T15:37:30+08:00"),
+            dict(make_row(qid="Q1"), date="2026-09-22", ts="2026-09-22T15:38:29+08:00"),
+            dict(make_row(qid="Q2"), date="2026-09-22", ts="2026-09-22T15:39:00+08:00"),
+        ]
+        (d / "2026-09-22.jsonl").write_text(
+            chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows), "utf-8")
+        self.patch = mock.patch.object(S.G, "WORK", self.work)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_duplicate_rows_collapse_to_the_last_one(self):
+        out = S.list_samples("proj")
+        self.assertEqual(len(out["rows"]), 2, "同日重跑没被去掉")
+        keys = [r["key"] for r in out["rows"]]
+        self.assertEqual(len(set(keys)), len(keys), "列表里还有重复 key")
+        # 保留最后一条（与 dedup_rows 一致）—— 15:38 那条
+        kept = [r for r in out["rows"] if r["question_id"] == "Q1"][0]
+        self.assertEqual(kept["ts"], "2026-09-22T15:38:29+08:00")
+
+
 class TestProbeNoFallback(unittest.TestCase):
     def test_probe_only_platform_mention_rate_none(self):
         rows = [make_row(qid="Q1", probe=True, question="AIGCLINK定制家是什么"),

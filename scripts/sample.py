@@ -1135,7 +1135,12 @@ def list_samples(slug: str, date: str = "", platform: str = "", qid: str = "",
     """列出样本元数据（不含全文，全文按需单取）。flag: review=待复核 / edited=人工改过。"""
     rows, dates, plats = [], set(), set()
     for f in _sample_files(slug):
-        for r in G.read_jsonl(f):
+        # 与指标同口径：同日重跑/重复导入按 (平台, 题, 轮次, 模式) 保留最后一条
+        # （aggregate 那几条路都是 dedup_rows(G.read_jsonl(path))）。列表原来把两条
+        # 都渲染出来 —— 指标只算一条，界面上就多出一条**不影响任何数字**的幽灵行；
+        # 而且前端是 `{#each rows as r (r.key)}`，重复 key 直接抛 each_key_duplicate，
+        # 整页变成报错页（smoke 与 dialog-smoke 因此长期红着，与登录那批改动无关）。
+        for r in dedup_rows(G.read_jsonl(f)):
             d = r.get("date") or f.stem
             dates.add(d)
             plats.add(r.get("platform"))
