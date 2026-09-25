@@ -38,6 +38,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# 帮助先接住：放在 --host 守卫之前，否则 `deploy.sh --help` 会因为「缺 --host」退出 2
+case "$CMD" in
+  -h|--help|help) sed -n '2,20p' "$0"; exit 0 ;;
+esac
+
 [ -n "$HOST" ] || { echo "缺 --host（如 ubuntu@1.2.3.4）" >&2; exit 2; }
 USER_AT="${HOST%%@*}"
 if [ "$USER_AT" = "$HOST" ]; then
@@ -62,6 +67,7 @@ SCP_OPTS=(-o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 R() { ssh "${SSH_OPTS[@]}" "$HOST" "$@"; }
 
 case "$CMD" in
+  -h|--help|help) sed -n '2,20p' "$0"; exit 0 ;;
   deploy)
     [ -n "$DOMAIN" ] || { echo "缺 --domain（如 xgeo.example.com）" >&2; exit 2; }
     command -v tar >/dev/null || { echo "✗ 需要 tar" >&2; exit 1; }
