@@ -661,6 +661,23 @@ def login_note(ip: str) -> None:
     LOGIN_HITS.setdefault(ip, []).append(time.time())
 
 
+def _sso_url() -> str:
+    """跳 freemodel.online 的 SSO 中转页，登录后带一次性码跳回来。
+
+    目标由 fm-auth 那一侧的白名单裁决（`SSO_ALLOWED_TO`）：不在名单里，它会
+    静默回落到 alli.website，码就落到别人家的地址上 —— 所以这个域名必须两边
+    同时配好，只改这边不生效。
+    没配 `XGEO_PUBLIC_HOST`（纯本机跑）时返回空串：没有能回跳的地址，不给入口。
+    """
+    origin = _auth_base().rsplit("/api/", 1)[0]
+    hosts = sorted(h for h in public_hosts() if h)
+    if not hosts:
+        return ""
+    # 优先不带 www 的那个：名单里通常两个都配（证书覆盖 www），回跳用主域名更干净
+    main = next((h for h in hosts if not h.startswith("www.")), hosts[0])
+    return f"{origin}/console/sso.html?return_to=https%3A%2F%2F{main}"
+
+
 def _login_html(err: str = "", accounts_on: bool = True) -> str:
     """登录页。**凭据走 POST body，不进 URL**。
 
@@ -719,19 +736,33 @@ XGEO_ADMIN_USER / XGEO_ADMIN_PASSWORD（或用访问令牌）。
 
 
 def _login_html_accounts(e: str) -> str:
+    sso = _sso_url()
+    # 主入口是跳 freemodel.online 登录：那边是账号密码 + Cloudflare 验证，也是
+    # 用户本来就有账号的地方。本服务全程不碰密码，拿回来的只是一次性码。
+    # 没配对外主机名时（纯本机）不给这个入口，API Key 那条折叠就是唯一的路。
+    sso_block = f"""<a id="sso" href="{sso}" style="display:block;background:#9184d9;
+border-radius:8px;color:#101223;padding:11px 18px;font-size:14px;text-decoration:none;
+box-sizing:border-box">用 FreeModel 账号登录</a>
+<div style="font-size:11px;color:#6b7085;margin-top:6px;line-height:1.6">
+跳到 freemodel.online 登录，回来直接进入本工作台</div>
+""" if sso else ""
     return f"""<!doctype html><meta charset="utf-8"><title>XGEO</title>
 <body style="background:#131622;color:#e8eaf2;font-family:system-ui;display:flex;
 align-items:center;justify-content:center;height:100vh;margin:0">
 <div style="text-align:center;max-width:320px">
 <div style="font-size:20px;margin-bottom:14px">X<span style="color:#9184d9">GEO</span></div>
-<input id="k" type="password" placeholder="FreeModel API Key（sk-fm-…）" autofocus
-style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
-padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
-<button id="go" onclick="xgLogin()" style="background:#9184d9;border:0;border-radius:8px;
-color:#101223;padding:10px 18px;font-size:14px;margin-top:8px;width:100%;cursor:pointer">
-进入</button>
+{sso_block}
 <div id="e" style="color:#e08a8a;font-size:12px;margin-top:8px;min-height:16px">{e}</div>
-<details style="margin-top:14px;text-align:left">
+<details style="margin-top:{'14px' if sso else '0'};text-align:left">
+<summary style="cursor:pointer;font-size:12px;color:#8b90a5">用 API Key 登录</summary>
+<input id="k" type="password" placeholder="FreeModel API Key（sk-fm-…）"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box;margin-top:8px">
+<button id="go" onclick="xgLogin()" style="background:#2a2f45;border:0;border-radius:8px;
+color:#e8eaf2;padding:10px 14px;font-size:14px;margin-top:8px;width:100%;cursor:pointer">
+进入</button>
+</details>
+<details style="margin-top:10px;text-align:left">
 <summary style="cursor:pointer;font-size:12px;color:#8b90a5">管理员账号（断链兜底）</summary>
 <div style="display:flex;gap:8px;margin-top:8px">
 <input id="au" placeholder="管理员账号" autocomplete="username"
@@ -803,6 +834,32 @@ async function xgLocal() {
     out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
   }
 }
+
+// SSO 回跳：fm-auth 把一次性码放在 hash 里（`#/auth?code=…`），hash 不会发给
+// 服务器，所以只能在这一页里读出来换会话。**用 hash 不用 query 是有意的** ——
+// 码 60 秒就失效，但 query 会留在 nginx access log 里，而它换到的是可复用凭据。
+// 没配对外主机名的实例没有这个入口（没有 #sso），直接跳过。
+async function xgSso() {
+  if (!document.getElementById('sso')) return
+  const m = location.hash.match(/[?&]code=([0-9a-f]{64})/)
+  if (!m) return
+  const out = document.getElementById('e')
+  if (out) out.textContent = '正在登录…'
+  try {
+    const r = await fetch('/api/auth/sso', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: m[1]})})
+    const j = await r.json().catch(() => ({}))
+    if (r.ok) {
+      history.replaceState(null, '', location.pathname)   // 把码从地址栏抹掉
+      location.href = '/'
+      return
+    }
+    if (out) out.textContent = j.error || ('HTTP ' + r.status)
+  } catch (e) {
+    if (out) out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
+  }
+}
+xgSso()
 </script></body>"""
 
 
@@ -922,6 +979,59 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "该 FreeModel 账号不在本工作台的允许名单里"}, 403, None
         sid = session_new(email, acct)
         # 凭据不进日志、不落盘、不进记录：本次用它换到邮箱之后就不再需要它
+        return ({"ok": True, "email": email, "admin": bool(acct.get("admin"))}, 200, sid)
+
+    def _do_sso_login(self, body: dict) -> tuple[dict, int, str | None]:
+        """SSO 一次性码换本地会话。码由 fm-auth 签发（60 秒、只能用一次）。
+
+        为什么不在本地收邮箱密码：Turnstile 的 token 由用户浏览器产生、绑 IP，
+        本服务转发去验证会撞 IP 不匹配；而且本服务本来就不该经手用户明文密码。
+        用户在 freemodel.online 登录，拿一个一次性码回来换本地会话 —— 凭据全程
+        没进过这里，本地会话的凭据也就不是可复用的那份。
+        """
+        if not self._account_host_allowed():
+            return {"ok": False, "error": "Host 不在允许名单：反代部署要设 "
+                                          "XGEO_PUBLIC_HOST=<你的域名>"}, 403, None
+        ip = self._client_ip()
+        if not login_allowed(ip):
+            return {"ok": False, "error": "尝试过于频繁，稍后再试"}, 429, None
+        org = self.headers.get("Origin")
+        if org and host_name(urlparse(org).hostname) != host_name(self.headers.get("Host")):
+            return {"ok": False, "error": "跨站请求被拒绝"}, 403, None
+        if not accounts_enabled():
+            return {"ok": False, "error": "这个实例没有配账号登录（XGEO_ACCOUNTS 为空）",
+                    }, 403, None
+        code = str(body.get("code") or "").strip()
+        # 形状先卡住：码是 32 字节随机数的 hex，别把任意串送去上游
+        if not re.fullmatch(r"[0-9a-f]{64}", code):
+            return {"ok": False, "error": "登录码格式不对"}, 400, None
+        login_note(ip)
+        try:
+            # 与 /me 同一套请求纪律：不跟随跳转、不整包读、超时 8s
+            with requests.post(f"{_auth_base()}/sso/exchange", json={"code": code},
+                               timeout=8, allow_redirects=False, stream=True) as r:
+                sc = r.status_code
+                raw = r.raw.read(MAX_ME_BYTES + 1, decode_content=True) if sc == 200 else b""
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"认证服务不可达（{type(e).__name__}），"
+                                          f"可改用访问令牌登录"}, 503, None
+        if sc != 200:
+            # 上游对 invalid / used / expired 都回 401 且不细分（它自己在服务端日志里
+            # 区分重放）。这里只说「无效或过期」——码是 60 秒一次性的，重来一次最快。
+            return {"ok": False, "error": "登录码无效或已过期，回退一步重新登录"}, 401, None
+        if len(raw) > MAX_ME_BYTES:
+            return {"ok": False, "error": "认证服务响应过大"}, 502, None
+        try:
+            payload = json.loads(raw or b"{}") or {}
+        except Exception:  # noqa: BLE001
+            payload = {}
+        email = email_from_me(payload)
+        if not email:
+            return {"ok": False, "error": "认证服务没返回邮箱（接口字段可能变了）"}, 502, None
+        acct = accounts().get(email)
+        if not acct:
+            return {"ok": False, "error": "该 FreeModel 账号不在本工作台的允许名单里"}, 403, None
+        sid = session_new(email, acct)
         return ({"ok": True, "email": email, "admin": bool(acct.get("admin"))}, 200, sid)
 
     def _account_host_allowed(self) -> bool:
@@ -1481,7 +1591,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         p = unquote(urlparse(self.path).path)
         # 登录/登出必须在 _auth() **之前**：登录本来就发生在还没有凭据的时候。
-        if p in ("/api/auth/login", "/api/auth/logout"):
+        if p in ("/api/auth/login", "/api/auth/logout", "/api/auth/sso"):
             # 这两个分支**未认证可达**，所以请求体不能有未接住的异常：坏 JSON /
             # chunked / 超大 Content-Length 三种输入都会让 ValueError 穿出
             # do_POST，socketserver 只打 traceback 再掐连接、一个字节的响应都不发
@@ -1520,7 +1630,10 @@ class Handler(BaseHTTPRequestHandler):
                     # 那就成了「任何人一发就把别人登出」的入口。
                     self._json({"error": "这个实例没有账号登录"}, 404)
                 return
-            res, code, sid = self._do_login(body)
+            if p == "/api/auth/sso":
+                res, code, sid = self._do_sso_login(body)
+            else:
+                res, code, sid = self._do_login(body)
             self._json(res, code,
                        extra={"Set-Cookie": session_cookie(sid, self._https())} if sid else None)
             return

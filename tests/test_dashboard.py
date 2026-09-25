@@ -1269,6 +1269,7 @@ class _FakeMe(BaseHTTPRequestHandler):
     seen: list = []
     payload: dict = {}
     code = 200          # 想让它返别的状态码（500/302…）时改这个
+    sso_code = 200      # 假的 /sso/exchange 返回码
 
     def do_GET(self):
         token = (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
@@ -1286,6 +1287,34 @@ class _FakeMe(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        """假的 `/sso/exchange`：一次性码 → api_key + email。
+
+        只认 64 个 a 的码，其余当无效 —— 形状校验（[0-9a-f]{64}）与「上游怎么说
+        无效」是两件事，要能分别验。
+        """
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:  # noqa: BLE001
+            body = {}
+        code = str(body.get("code") or "")
+        type(self).seen.append(code)
+        if type(self).sso_code != 200:
+            out, status = {"code": type(self).sso_code}, type(self).sso_code
+        elif code == "a" * 64:
+            out = {"ok": True, "api_key": "sk-fm-sso",
+                   "email": type(self).payload.get("email", "")}
+            status = 200
+        else:
+            out, status = {"ok": False, "error": "code_invalid"}, 401
+        raw = json.dumps(out).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
     def log_message(self, *a):
         pass
@@ -1662,6 +1691,68 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
         cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
         self.assertEqual(self._req("GET", "/api/p/beta", cookie=cookie)[0], 200)
         self.assertEqual(self._req("GET", "/api/p/alpha", cookie=cookie)[0], 403)
+
+
+class TestSsoLogin(TestAccountLoginEndToEnd):
+    """SSO 一次性码换本地会话：码 → fm-auth → 邮箱 → 允许名单 → 下发 cookie。
+
+    这条路的凭据从不经过本服务（用户在 freemodel.online 登录），所以本服务侧
+    要守的只剩「码的形状」「邮箱在不在名单」「上游挂没挂」三件事。
+    （必须定义在 TestAccountLoginEndToEnd 之后：基类要先存在。）
+    """
+
+    GOOD = "a" * 64
+
+    def tearDown(self):
+        _FakeMe.sso_code = 200
+
+    def test_good_code_lands_a_session(self):
+        status, body, headers = self._req("POST", "/api/auth/sso", body={"code": self.GOOD})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["email"], self.EMAIL)
+        cookie = self._cookie_of(headers)
+        self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200)
+        me = json.loads(self._req("GET", "/api/auth/me", cookie=cookie)[1])
+        self.assertEqual(me["email"], self.EMAIL)
+        self.assertTrue(me["admin"], "名单里是 * 的账号应当是管理员")
+
+    def test_malformed_code_is_rejected_without_calling_upstream(self):
+        """形状不对的码直接回 400，不送去上游 —— 否则任何人都能拿本服务当
+        打 fm-auth 的跳板。"""
+        _FakeMe.seen = []
+        for bad in ("", "x" * 64, "a" * 63, "../../etc/passwd"):
+            status, _b, _h = self._req("POST", "/api/auth/sso", body={"code": bad})
+            self.assertEqual(status, 400, bad)
+        self.assertEqual(_FakeMe.seen, [], "不该有任何码到过上游")
+
+    def test_upstream_rejection_is_401(self):
+        _FakeMe.sso_code = 401
+        status, body, headers = self._req("POST", "/api/auth/sso", body={"code": self.GOOD})
+        self.assertEqual(status, 401, body)
+        self.assertFalse(self._cookie_of(headers), "上游拒了却下发了会话")
+
+    def test_upstream_unreachable_is_503_not_a_backdoor(self):
+        with mock.patch.dict(os.environ, {"XGEO_AUTH_BASE": "http://127.0.0.1:9/api/auth"},
+                             clear=False):
+            status, body, headers = self._req("POST", "/api/auth/sso", body={"code": self.GOOD})
+        self.assertEqual(status, 503, body)
+        self.assertFalse(self._cookie_of(headers))
+
+    def test_email_outside_the_allowlist_is_403(self):
+        _FakeMe.payload = {"email": "stranger@example.com"}
+        status, body, headers = self._req("POST", "/api/auth/sso", body={"code": self.GOOD})
+        self.assertEqual(status, 403, body)
+        self.assertFalse(self._cookie_of(headers), "不在名单却下发了会话")
+
+    def test_login_page_offers_the_button_only_with_a_public_host(self):
+        """没配 XGEO_PUBLIC_HOST（纯本机）时不给这个入口：没有能回跳的地址，
+        点了只会把码落到 fm-auth 的默认回落站。"""
+        with mock.patch.dict(os.environ, {"XGEO_PUBLIC_HOST": "xgeo.asia,www.xgeo.asia"},
+                             clear=False):
+            url = D._sso_url()
+        self.assertIn("/console/sso.html?return_to=https%3A%2F%2Fxgeo.asia", url)
+        with mock.patch.dict(os.environ, {"XGEO_PUBLIC_HOST": ""}, clear=False):
+            self.assertEqual(D._sso_url(), "")
 
 
 if __name__ == "__main__":
