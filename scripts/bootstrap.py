@@ -217,6 +217,15 @@ def competitors(brand: dict, market: str) -> list[dict]:
 
 # ---------------------------------------------------------------- 事实卡
 
+def _str_list(v: list) -> list[str]:
+    """LLM 回的列表收拢成干净的 str 列表：非标量丢掉、"待确认" 丢掉、去空白。"""
+    out = []
+    for x in v:
+        if isinstance(x, (str, int, float)) and str(x).strip() and str(x).strip() != "待确认":
+            out.append(str(x).strip())
+    return out
+
+
 def _merge_bootstrap(cfg: dict, brand: dict, market: str) -> dict:
     """把新推导的竞品与题库并进已有配置，而不是整体替换。
 
@@ -356,28 +365,41 @@ def run(slug: str, skip_llm: bool = False) -> dict:
         G.info("  LLM 不可用或返回无法解析，底座留空，需人工填写")
         return cfg
 
+    # 品牌字段与问题/竞品同一条纪律：**人工非空就不覆盖**。原来无条件赋值，重跑一次
+    # bootstrap 就把人填的 aliases/industry/offers 全刷成机器抽的（offers 还会进
+    # JSON-LD 的 offers，交付包让人贴进 <head>）。类型也要当场收拢：模型回 dict 数组
+    # 时脏值会先落盘、随后 render_facts / gen_llms_txt 的 '、'.join 裸抛 TypeError。
     b = cfg["brand"]
-    b["name"] = brand.get("name") or b["name"]
+    if isinstance(brand.get("name"), str) and brand["name"].strip():
+        b["name"] = brand["name"].strip() if not b.get("name") else b["name"]
     for k_cfg, k_llm in (("aliases", "aliases"), ("products", "products")):
         v = brand.get(k_llm)
-        if isinstance(v, list) and v:
-            b[k_cfg] = [x for x in v if x and x != "待确认"]
+        if isinstance(v, list) and v and not b.get(k_cfg):
+            b[k_cfg] = _str_list(v)
     for k in ("industry", "target_users", "business_goal"):
         v = brand.get(k)
-        if v and v != "待确认":
-            b[k] = v
-    if brand.get("disambiguation"):
+        if isinstance(v, str) and v.strip() and v != "待确认" and not b.get(k):
+            b[k] = v.strip()
+    if isinstance(brand.get("disambiguation"), str) and brand["disambiguation"].strip() \
+            and not b.get("disambiguation"):
         b["disambiguation"] = brand["disambiguation"]
-    if brand.get("pricing"):
-        b["offers"] = [{"name": p.get("name", ""), "price": str(p.get("price", "")),
-                        "currency": p.get("currency", "CNY"), "desc": p.get("desc", "")}
-                       for p in brand["pricing"]]
+    if isinstance(brand.get("pricing"), list) and brand["pricing"] and not b.get("offers"):
+        b["offers"] = [{"name": str(p.get("name", "")), "price": str(p.get("price", "")),
+                        "currency": str(p.get("currency", "CNY")), "desc": str(p.get("desc", ""))}
+                       for p in brand["pricing"] if isinstance(p, dict)]
 
-    cfg = _merge_bootstrap(cfg, brand, market)
-    cfg["bootstrap"] = {"at": G.now_iso(), "source": "官网正文 + LLM 抽取",
-                        "uncertain": brand.get("uncertain") or [],
-                        "needs_review": True}
-    G.save_config(slug, cfg)
+    # 读-改-写必须持锁，而且**在锁内重读**：LLM 那几次调用是分钟级，期间用户可能在
+    # 看板上加了题（那是直接 HTTP 写），拿开头的快照整体回写会把它悄悄吞掉。
+    # dashboard 那一侧为此加了锁，而这一侧从来不持锁 —— 那把锁对 bootstrap 毫无约束。
+    with G.project_lock(slug):
+        fresh = G.load_config(slug)
+        fresh["brand"] = {**(fresh.get("brand") or {}), **b}
+        fresh = _merge_bootstrap(fresh, brand, market)
+        fresh["bootstrap"] = {"at": G.now_iso(), "source": "官网正文 + LLM 抽取",
+                              "uncertain": brand.get("uncertain") or [],
+                              "needs_review": True}
+        G.save_config(slug, fresh)
+        cfg = fresh
 
     fp = G.project_dir(slug) / "content" / "facts.md"
     fp.parent.mkdir(parents=True, exist_ok=True)

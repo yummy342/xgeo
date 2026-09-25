@@ -360,7 +360,11 @@ def ask_ark(p: dict, key: str, question: str, timeout: int) -> dict:
         if r.status_code != 200:
             return {"ok": False, "answer": "", "error": f"HTTP {r.status_code}: {r.text[:300]}"}
         d = r.json()
-        return {"ok": True, "answer": d["choices"][0]["message"].get("content") or "",
+        answer, why = _extract_answer(d)
+        if why:
+            return {"ok": False, "answer": answer, "error": why, "citations": [],
+                    "raw_model": _p_model(p), "usage": _usage_of(d), "searched": False}
+        return {"ok": True, "answer": answer,
                 "citations": [], "raw_model": _p_model(p), "usage": _usage_of(d), "searched": False}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "answer": "", "error": f"{type(e).__name__}: {e}"}
@@ -430,6 +434,70 @@ def _usage_of(data: dict) -> dict | None:
         # 一次成功的采样连答案一起丢掉。
         return None
     return {"in": a, "out": b}
+
+
+def _failed_rec(plat: str, q: dict, rnd, error: str) -> dict:
+    """一条「没采到」的记录。字段与正常记录同形 —— 少字段会让样本库里的
+    形态不一致（`evidence_level` 空白、`answer_chars` 缺失），排查时看不出区别。"""
+    return {
+        "date": G.today(), "ts": G.now_iso(),
+        "platform": plat, "platform_name": (PROVIDERS.get(plat) or {}).get("name", plat),
+        "market": market_of(plat) if plat else None,
+        "terminal": "api", "sample_mode": "api",
+        "question_id": (q or {}).get("id"), "question": (q or {}).get("text", ""),
+        "round": rnd, "brand_in_question": is_probe_question(q or {}, None),
+        "ok": False, "error": error, "answer": "", "citations": [],
+        "elapsed_ms": 0, "evidence_level": None, "model": None,
+        "search_enabled": None, "usage": None,
+        "analysis": {
+            "brand_mentioned": False, "brand_rank": 0, "candidates": [],
+            "competitors_mentioned": [], "cited_domains": [],
+            "own_domain_cited": False, "answer_chars": 0,
+            "needs_review": False, "negative_cues": [],
+        },
+        "needs_review": False,
+    }
+
+
+def _answer_text(ch: dict) -> str:
+    """从一条 choice 里取正文。
+
+    `content` 为空时回落 `reasoning_content`：推理档模型（注册表里 deepseek/kimi/
+    minimax 都是）常把正文写在那儿，而 `content` 是空的 —— 硬取 `content` 会把它
+    记成「空答案」，再被当成「品牌没被提及」。
+    """
+    msg = ch.get("message") or {}
+    return ((msg.get("content") or "").strip() or (msg.get("reasoning_content") or "").strip())
+
+
+def _extract_answer(data: dict) -> tuple[str, str]:
+    """取答案，并判定「这条能不能当样本」。返回 (文本, 不能用的原因或 "")。
+
+    **必须有这一层**：`ask()` 原来只按 HTTP 状态码分类，200 之后不论拿到什么都记
+    `ok=True`。而空答案走 `analyze_answer` 必然得到 `brand_mentioned=False`，再被
+    `aggregate` 计进提及率分母 —— 一次限流、一次空生成就被记成「品牌没有被提及」。
+    实测三种形态都真实出现过（本地 mock 复现）：
+      · 网关把错误包在 200 里（`{"error": {...}}`，中转类常见）
+      · 推理模型把思维链放 `reasoning_content`、`content` 为空
+      · `finish_reason == "length"` 截断答案当成完整答案
+    """
+    if data.get("error"):
+        return "", "provider_error"
+    ch = (data.get("choices") or [{}])[0]
+    if not isinstance(ch, dict):
+        ch = {}
+    text = _answer_text(ch)
+    if not text:
+        # 兜底：api2d 的 claude 端点打的是 /v1/chat/completions，回的却是 Anthropic
+        # 原生结构（content 是块列表，没有 choices）。
+        text = "".join(b.get("text", "") for b in data.get("content", [])
+                       if isinstance(b, dict)).strip()
+    if not text:
+        return "", "empty_answer"
+    if ch.get("finish_reason") == "length":
+        # 截断的答案不能当完整答案用（answer_chars、提及判定都会跟着偏）
+        return text, "truncated"
+    return text, ""
 
 
 def _refs_from(data: dict) -> list[dict]:
@@ -510,17 +578,14 @@ def ask(platform: str, question: str, timeout: int = 120) -> dict:
                     continue
                 return err
             data = r.json()
-            if data.get("choices"):
-                answer = data["choices"][0]["message"].get("content") or ""
-            else:
-                # 兜底：api2d 的 claude 端点打的是 /v1/chat/completions，回的却是
-                # Anthropic 原生结构（content 是块列表，没有 choices）。
-                # 硬取 choices[0] 会炸在 TypeError 上，且被 per-platform except 吞掉，
-                # 只报「某平台采样中断」——这条在 voyage-geo 上踩过一次，别再踩。
-                answer = "".join(
-                    b.get("text", "") for b in data.get("content", []) if isinstance(b, dict)
-                )
             refs = _refs_from(data)
+            answer, why = _extract_answer(data)
+            if why:
+                # 失败也要把 citations/usage 带回去：排查时「模型返回了什么」比状态码有用
+                return {"ok": False, "answer": answer, "error": why, "citations": refs,
+                        "raw_model": data.get("model", _p_model(p)),
+                        "usage": _usage_of(data),
+                        "searched": bool(refs) or p.get("search", False)}
             return {"ok": True, "answer": answer, "citations": refs,
                     "raw_model": data.get("model", _p_model(p)),
                     "usage": _usage_of(data),
@@ -774,7 +839,11 @@ def dedup_rows(rows: list[dict]) -> list[dict]:
     best: dict[tuple, dict] = {}
     order: list[tuple] = []
     for r in rows:
-        k = (r.get("platform"), r.get("question_id"), r.get("round"), r.get("sample_mode"))
+        # 键里带 session_mode：同一题在两个采样环境各采一次（沙箱一遍、个人号一遍）
+        # 是**两份不同的证据**，不带上它去重会把其中一条整个抹掉（留谁看落盘顺序），
+        # 而 README 承诺「不同环境采的样本不该混在一起算平均」。
+        k = (r.get("platform"), r.get("question_id"), r.get("round"),
+             r.get("sample_mode"), r.get("session_mode"))
         cur = best.get(k)
         if cur is None:
             order.append(k)
@@ -894,7 +963,11 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
     runnable = [p for p in plats if available(p)]
     skipped = [p for p in plats if not available(p)]
     if skipped:
-        G.info("跳过（缺 API Key）：" + "、".join(f"{p}({PROVIDERS[p]['key_env']})" for p in skipped))
+        # 平台码写错时 `PROVIDERS[p]` 会 KeyError，崩在「跳过」提示上（CLI 的
+        # `--platforms` 会把用户原始字符串直接传进来，而默认路径先过滤过）
+        G.info("跳过（缺 API Key）："
+               + "、".join(f"{p}({(PROVIDERS.get(p) or {}).get('key_env', '未知平台码')})"
+                           for p in skipped))
     if not runnable:
         G.info("没有可用的 API 平台。用 `geo.py sample-sheet` 导出人工/浏览器采样清单。")
         return {}
@@ -974,25 +1047,11 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
                 # 付过费，钱花了、结果丢。落一条 ok=False 的记录继续跑。
                 plat = job[0] if job else ""
                 q = job[1] if len(job) > 1 else {}
-                rec = {
-                    "date": G.today(), "ts": G.now_iso(),
-                    "platform": plat,
-                    "platform_name": (PROVIDERS.get(plat) or {}).get("name", plat),
-                    "market": market_of(plat) if plat else None,
-                    "terminal": "api", "sample_mode": "api",
-                    "question_id": (q or {}).get("id"),
-                    "question": (q or {}).get("text", ""),
-                    "round": job[2] if len(job) > 2 else None,
-                    "brand_in_question": False,
-                    "ok": False, "error": f"{type(e).__name__}: {e}",
-                    "analysis": {
-                        "brand_mentioned": False, "brand_rank": 0, "candidates": [],
-                        "competitors_mentioned": [], "cited_domains": [],
-                        "own_domain_cited": False, "answer_chars": 0,
-                        "needs_review": False, "negative_cues": [],
-                    },
-                    "needs_review": False,
-                }
+                # 字段与正常失败（非 200）的记录**写全同一套**：原来少 7 个
+                # （answer/citations/elapsed_ms/evidence_level/model/search_enabled/usage），
+                # 同类失败在样本库里的形态不一致（evidence_level 空着）。
+                rec = _failed_rec(plat, q, job[2] if len(job) > 2 else None,
+                                  f"{type(e).__name__}: {e}")
             with lock:
                 done += 1
                 _append(rec)
@@ -1112,7 +1171,7 @@ def sample_import(slug: str, file: str) -> dict:
 def sample_key(r: dict) -> str:
     """样本唯一键。与 dedup_rows 同口径（同日同平台同题同轮同模式唯一）加上日期。"""
     return "|".join(str(r.get(k, "")) for k in
-                    ("date", "platform", "question_id", "round", "sample_mode"))
+                    ("date", "platform", "question_id", "round", "sample_mode", "session_mode"))
 
 
 def _sample_files(slug: str) -> list[Path]:
@@ -1269,7 +1328,7 @@ def patch_sample(slug: str, key: str, patch: dict) -> dict:
                 if "needs_review" in patch:
                     r["needs_review"] = bool(patch["needs_review"])
                 r["reviewed_at"] = G.now_iso()
-            G.write_jsonl(f, rows)
+            G.rewrite_jsonl(f, rows)
             break
         else:
             return {"ok": False, "error": "找不到该样本"}
@@ -1294,7 +1353,7 @@ def store_manual_rows(slug: str, cfg: dict, rows: list[dict]) -> dict:
     """人工/插件样本的统一落库：追加 jsonl → 去重 → 重算当日指标 → 竞品确认。"""
     pdir = G.project_dir(slug)
     path = pdir / "samples" / f"{G.today()}.jsonl"
-    G.write_jsonl(path, G.read_jsonl(path) + rows)
+    G.rewrite_jsonl(path, G.read_jsonl(path) + rows)
     all_rows = [r for r in dedup_rows(G.read_jsonl(path)) if r.get("ok")]
     metrics = {
         "slug": slug, "date": G.today(), "generated_at": G.now_iso(),
@@ -1313,6 +1372,9 @@ SESSION_MODES = {
     "incognito": ("无痕未登录", "A_人工真实样本"),
     "clean_profile": ("专用采样 Profile（已登录，无自查历史）", "A_人工真实样本"),
     "personal": ("个人日常账号（含个性化，仅供参考）", "D_待复核"),
+    # 认不出来的一律落这里，**不是 incognito**：口径字段默认取最高可信度方向是反的
+    # （客户端少带一个字段就白送 A 级）。采集环境如实填报是这一层的全部意义。
+    "unknown": ("环境标记缺失或无法识别（不计入可见性证据）", "D_待复核"),
 }
 
 
@@ -1323,35 +1385,49 @@ def collect_import(slug: str, records: list[dict]) -> dict:
     session_mode 决定证据等级：个人日常账号采的样本降级为 D_待复核——
     它测的是「AI 对你的画像」，不是「陌生买家看到什么」，不能当可见性证据用。"""
     cfg = G.load_config(slug)
-    qmap = {q.get("id"): q["text"] for q in cfg.get("questions", [])}
+    qs = {q.get("id"): q for q in cfg.get("questions", [])}
+    qmap = {k: v["text"] for k, v in qs.items()}
     known = set(PROVIDERS) | set(MANUAL_ONLY)
-    rows = []
+    rows, skipped = [], []
     for r in records:
         plat = str(r.get("platform") or "").strip()
         answer = str(r.get("answer") or "").strip()
         if plat not in known or not answer:
+            # 丢弃要**回报**：原来静默 continue，而插件只要 ok 为真就把本地缓冲整个
+            # 清空 —— 真丢过的话数据没了、消息还写着「✓ 已导入 N 条」。
+            skipped.append({"platform": plat, "question_id": r.get("question_id"),
+                            "why": "平台码未知" if plat not in known else "答案为空"})
             continue
         cites = [{"url": str(c.get("url", ""))[:500], "title": str(c.get("title", ""))[:200]}
                  for c in (r.get("citations") or []) if isinstance(c, dict) and c.get("url")][:30]
-        sm = str(r.get("session_mode") or "incognito")
-        sm = sm if sm in SESSION_MODES else "incognito"
+        sm = str(r.get("session_mode") or "").strip().lower()
+        if sm not in SESSION_MODES:
+            sm = "unknown"
+        rec_id = str(r.get("question_id") or "")[:32]
         rec = {
             "date": G.today(), "ts": G.now_iso(),
             "platform": plat, "platform_name": label_of(plat), "market": market_of(plat),
             "terminal": "web", "sample_mode": "extension",
             "session_mode": sm, "session_label": SESSION_MODES[sm][0],
             "evidence_level": SESSION_MODES[sm][1], "search_enabled": True,
-            "question_id": str(r.get("question_id") or "")[:32],
+            "question_id": rec_id,
             "question": qmap.get(r.get("question_id"), str(r.get("question") or "")[:500]),
             "round": 1, "ok": True, "error": None,
             "answer": answer[:20000], "citations": cites,
             "page_url": str(r.get("page_url") or "")[:500],
+            # 点名题标记：`run()` 的 API 路径写了这个字段，插件回传这条原来没写，
+            # 而 `analytics._unprompted` 是纯字段读、没有 declared-probe 兜底 ——
+            # 同一行样本在 metrics 里是「未测」、在看板里却成了 0.0（还被判成
+            # 「完全不可见」）。两条路必须同口径。
+            "brand_in_question": is_probe_question(qs.get(rec_id) or {}, cfg),
         }
         rec["analysis"] = analyze_answer(rec["answer"], cfg, citations=cites)
         rec["needs_review"] = bool(rec["analysis"].get("needs_review"))
         rows.append(rec)
     if not rows:
-        return {"ok": False, "imported": 0, "error": "没有可导入的样本（平台码未知或答案为空）"}
+        return {"ok": False, "imported": 0, "skipped": skipped,
+                "error": "没有可导入的样本（平台码未知或答案为空）"}
     metrics = store_manual_rows(slug, cfg, rows)
-    G.info(f"插件回传导入 {len(rows)} 条样本")
-    return {"ok": True, "imported": len(rows), "sample_count": metrics["sample_count"]}
+    G.info(f"插件回传导入 {len(rows)} 条样本" + (f"，丢弃 {len(skipped)} 条" if skipped else ""))
+    return {"ok": True, "imported": len(rows), "skipped": skipped,
+            "sample_count": metrics["sample_count"]}

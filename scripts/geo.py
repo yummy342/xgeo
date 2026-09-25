@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -60,6 +61,27 @@ def cmd_init(a):
         G.die(f"项目 `{slug}` 已存在（问题 {len(cur.get('questions', []))} 题、"
               f"竞品 {len(cur.get('competitors', []))} 个）。换一个 --slug，"
               f"或确认要清空后加 --force")
+    if existing.exists() and getattr(a, "force", False):
+        # --force 的承诺是「清空重建」，而原来只覆盖了 geo.json：samples/、audit.json、
+        # metrics/、reports/、history/ 全都留着，换品牌之后旧样本照旧进统计
+        # （采样用量、效果趋势都是上一期的数）—— 同名的重建等于新旧品牌混账。
+        # 这里把「由 geo.json 派生出来的东西」清掉，人工材料（content/materials.md）保留：
+        # 它是无站点项目的推导底座，属于输入而不是产物。
+        pdir = G.project_dir(slug)
+        removed = []
+        for rel in ("samples", "metrics", "reports", "history", "evidence", "assets",
+                    "deliverables", "delivery", "audit.json", "publish.json",
+                    "factcheck.json", "tasks.json", "expand.json", "distribution.json"):
+            p = pdir / rel
+            if not p.exists():
+                continue
+            if p.is_dir():
+                shutil.rmtree(p)
+                p.mkdir(parents=True, exist_ok=True)
+            else:
+                p.unlink()
+            removed.append(rel)
+        G.info("--force：已清空 " + ("、".join(removed) if removed else "（没有派生产物）"))
 
     name = a.name
     if not name and url:

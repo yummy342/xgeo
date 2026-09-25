@@ -1612,15 +1612,33 @@ class Handler(BaseHTTPRequestHandler):
                 # geo.json，不持锁就是后写者赢，问题库这类人工投入会静默消失。
                 with G.project_lock(slug):
                     cur = G.read_json(G.project_dir(slug) / "geo.json", {})
+                    # `update(body)` 是整块替换：一个 `{"brand": {"name": "X"}}` 会把
+                    # brand.site/products/aliases 全洗掉，项目从此被判「无自有网站」
+                    # （crawl/audit 跳过、站点工单不再出、report 取 b['site'] 直接
+                    # KeyError），而且照样回 ok。brand 走字段级合并，其余键照旧。
+                    if isinstance(body.get("brand"), dict):
+                        body = {**body,
+                                "brand": {**(cur.get("brand") or {}), **body["brand"]}}
                     cur.update(body)      # 整体覆盖字段，前端传完整对象
-                    G.save_config(slug, cur)
+                    try:
+                        G.save_config(slug, cur)
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
                 return self._json({"ok": True})
 
             if p.startswith("/api/facts/"):
                 slug = p[len("/api/facts/"):]
+                # `body.get("text", "")` + write_text：一个空 body 的 POST 就把
+                # facts.md 清成 0 字节、还回 ok —— 而它是人工投入的真相源，且没有
+                # geo.json 那样的备份。缺键必须拒。
+                if not isinstance(body.get("text"), str):
+                    return self._json({"ok": False, "error": "缺 text 字段"}, 400)
                 f = G.project_dir(slug) / "content" / "facts.md"
                 f.parent.mkdir(parents=True, exist_ok=True)
-                f.write_text(body.get("text", ""), "utf-8")
+                if f.exists():
+                    (f.parent / f"facts.bak-{G.today()}.md").write_text(
+                        f.read_text("utf-8", "replace"), "utf-8")
+                G._atomic_write(f, lambda t: t.write_text(body["text"], "utf-8"))
                 return self._json({"ok": True})
 
             if p.startswith("/api/asset/"):
@@ -1634,8 +1652,10 @@ class Handler(BaseHTTPRequestHandler):
                     target.relative_to(base)
                 except ValueError:
                     return self._json({"ok": False, "error": "非法路径"}, 403)
+                if not isinstance(body.get("text"), str):
+                    return self._json({"ok": False, "error": "缺 text 字段"}, 400)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(body.get("text", ""), "utf-8")
+                G._atomic_write(target, lambda t: t.write_text(body["text"], "utf-8"))
                 return self._json({"ok": True})
 
             if p == "/api/precheck":
@@ -1659,8 +1679,12 @@ class Handler(BaseHTTPRequestHandler):
                 if ("/" in rel or "\\" in rel or ".." in rel or rel.startswith(".")
                         or not rel.endswith(".md") or len(rel) <= 3):
                     return self._json({"ok": False, "error": "文件名须是 .md，不能包含路径"}, 400)
+                if not isinstance(body.get("text"), str):
+                    # 同 facts/asset：缺 text 会把成稿清成 0 字节（content/*.md 是
+                    # 人工投入的真相源，重跑只能得到机器草稿）
+                    return self._json({"ok": False, "error": "缺 text 字段"}, 400)
                 base.mkdir(parents=True, exist_ok=True)
-                (base / rel).write_text(body.get("text", ""), "utf-8")
+                G._atomic_write(base / rel, lambda t: t.write_text(body["text"], "utf-8"))
                 return self._json({"ok": True})
 
             if p == "/api/keys":
@@ -1846,9 +1870,16 @@ def _monitor_tick():
             continue  # 有任务在跑，下个 tick 再看
         try:
             J.start(d.name, "serve", {})
-            mon["next_run"] = (date.today() + timedelta(days=int(every))).isoformat()
-            cfg["monitor"] = mon
-            G.save_config(d.name, cfg)
+            # 读-改-写要持锁并**在锁内重读**：这一段横跨 J.start，期间用户可能正在
+            # 看板上改配置，拿上面读到的快照整体回写会把改动吞掉（同文件另外 5 处
+            # 读改写都持锁，只有这里漏了）。
+            with G.project_lock(d.name):
+                fresh = G.read_json(cfg_path, {})
+                fresh["monitor"] = {**(fresh.get("monitor") or {}),
+                                    "next_run": (date.today()
+                                                 + timedelta(days=int(every))).isoformat()}
+                G.save_config(d.name, fresh)
+                mon = fresh["monitor"]
             G.info(f"周期复跑触发：{d.name}，下次 {mon['next_run']}")
         except (ValueError, RuntimeError) as e:
             G.info(f"周期复跑跳过 {d.name}：{e}")

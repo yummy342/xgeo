@@ -95,9 +95,21 @@ def info(msg: str):
 
 SLUG_OK = re.compile(r"^[a-z0-9一-鿿][a-z0-9一-鿿-]{0,47}$")
 
+# Windows 保留设备名：`nul` 会让 Path.exists() 为真、is_dir() 为假（解析到 NUL 设备），
+# 后续写临时文件裸抛 FileNotFoundError；`con`/`aux` 等则能建出目录但换台机器就打不开。
+_WIN_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+                 *(f"lpt{i}" for i in range(1, 10))}
+
+
+def slug_ok(slug: str | None) -> bool:
+    """用 `fullmatch` 而不是 `match`：`re.match` + `$` 会放行行尾换行
+    （`SLUG_OK.match("abc\\n")` 为真），而目录名带换行在 POSIX 上真能建出来。"""
+    s = slug or ""
+    return bool(SLUG_OK.fullmatch(s)) and s.lower() not in _WIN_RESERVED
+
 
 def project_dir(slug: str) -> Path:
-    if not SLUG_OK.match(slug or ""):
+    if not slug_ok(slug):
         die(f"非法项目标识：{slug!r}")
     return WORK / slug
 
@@ -143,21 +155,30 @@ def _open_lock_file(path, timeout: float = 10.0):
             time.sleep(0.05)
 
 
-def _win_lock(fd):
+def _win_lock(fd, timeout: float = 10.0):
     """Windows 侧的加锁。msvcrt 没有 flock 那种无限等待。
 
     LK_LOCK 大约 10 秒后抛 OSError，而长任务（大采样表导入要几十秒）持锁时
     等待方拿到的是裸 traceback 而不是排队 —— 改成自己轮询 LK_NBLCK。
     锁区间固定为首字节 [0,1)，解锁必须用同一区间。
+
+    **write/flush 也要包在重试里**：另一个句柄持有首字节时抛 PermissionError 的正是
+    这两步（不是 open —— 实测持有锁时 `_open_lock_file` 0.00s 就返回，重试永不触发）。
+    实测同进程 8 线程 320 次取锁有 28 次失败、全部落在 flush 上；落到 HTTP 层是 500、
+    落到采样是丢样本。顺手给等待加 deadline，别在锁被长任务占着时死循环。
     """
-    fd.write("x")        # 让锁范围落在文件内（open("w") 会把文件截成 0 字节）
-    fd.flush()
-    fd.seek(0)
+    end = time.monotonic() + timeout
     while True:
         try:
+            fd.seek(0)           # 每次从 0 写，失败重试时文件不会一直变长
+            fd.write("x")        # 让锁范围落在文件内（open("w") 会把文件截成 0 字节）
+            fd.flush()
+            fd.seek(0)
             msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
             return
         except OSError:
+            if time.monotonic() >= end:
+                die(f"等锁超时：{fd.name} 一直被别的进程占着")
             time.sleep(0.05)
 
 
@@ -173,7 +194,12 @@ def load_config(slug: str) -> dict:
     p = project_dir(slug) / "geo.json"
     if not p.exists():
         die(f"找不到项目配置 {p}，先运行：python3 scripts/geo.py init --url <网址>")
-    return json.loads(p.read_text("utf-8"))
+    try:
+        return json.loads(p.read_text("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 原来裸抛 JSONDecodeError：`geo.py status` 一句 traceback，而 `geo.py list`
+        # 对同一个文件只是警告后把项目显示成「问题 0」——最要紧的文件读得最不体面。
+        die(f"geo.json 损坏（{e}）。备份在 {p.parent / '.geo.bak'}，可手工恢复")
 
 
 def has_site(cfg: dict) -> bool:
@@ -199,9 +225,37 @@ def _atomic_write(path: Path, write):
         raise
 
 
+def rewrite_jsonl(path, rows: list[dict]):
+    """重写 jsonl，**把读不出来的行原样留在文件末尾**。
+
+    `write_jsonl(path, read_jsonl(path) + rows)` 这个形状会永久删数据：读的时候坏行
+    被跳过、写回去就没了，而 `samples/*.jsonl` 没有 geo.json 那样的备份。坏行的来源
+    是 `_append` 用 `open("a")` 追加、进程被杀留半行 —— 那半行可能正是唯一一份答案。
+    """
+    path = Path(path)
+    keep = []
+    if path.exists():
+        for line in path.read_text("utf-8", errors="replace").split("\n"):
+            t = line.strip()
+            if not t:
+                continue
+            try:
+                json.loads(t)
+            except json.JSONDecodeError:
+                keep.append(t)          # 坏行原样带回去，别吞
+    _atomic_write(path, lambda t: t.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows + keep), "utf-8"))
+
+
 def save_config(slug: str, cfg: dict):
     """写配置前先备份。geo.json 里是一期的人工投入（问题库、竞品、口径），
     被误覆盖的代价远大于留几个备份文件。"""
+    # 这里是所有 geo.json 写入的唯一收口：缺 brand（或 brand 不是对象）说明调用方
+    # 拿着一个残缺的 dict 来写，写下去这个项目就「没有网站、没有问题库」了 ——
+    # 而不是报错。宁可在这里拒掉，也别让项目静默降级（.geo.bak 里有上一版）。
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("brand"), dict) or not cfg["brand"]:
+        raise ValueError("拒绝写入残缺配置：geo.json 必须有 brand 对象")
+
     p = project_dir(slug) / "geo.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
