@@ -220,8 +220,14 @@ def run(slug: str) -> Path:
             if src.exists():
                 shutil.copy2(src, out / dst)
 
-    # 02 执行方案
+    # 02 执行方案。**全仓库没有任何代码写 plan.md**，真正的执行方案由 deliverables
+    # 生成成 3-GEO执行方案.md —— 缺了这一份，交付包里就永远少一个 02，而 index.md
+    # 还列着它（客户会照着找）。
     plan = pdir / "plan.md"
+    if not plan.exists():
+        alt = pdir / "deliverables" / "3-GEO执行方案.md"
+        if alt.exists():
+            plan = alt
     if plan.exists():
         shutil.copy2(plan, out / "02-执行方案.md")
 

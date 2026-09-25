@@ -130,6 +130,12 @@ def check(task: dict, audit: dict, metrics: dict) -> tuple[bool | None, str, dic
             probe = site.get("ai_ua_probe") or {}
             if not probe and not bad:
                 return None, "本次重抓没有 UA 探测数据（旧版抓取结果），先重跑 crawl", None
+            # status 0（超时/被断连）不是「放行」：一次抖动就把这条 P0 自动判通过，
+            # 而 drop 型 WAF 恰恰只能靠它显形。有没测出的就不下结论。
+            unknown = [b for b, st in probe.items() if not st and b not in bad]
+            if unknown and not bad:
+                return None, (f"UA 探测有 {len(unknown)} 个没测出（超时或被断连），"
+                              f"先重跑 crawl 再判：{'、'.join(unknown)}"), None
             return (not bad), ("AI 爬虫 UA 探测首页全部放行" if not bad
                                else f"仍被拒：{'、'.join(bad)}"), None
         if expr == "site.robots_sitemap_declared":

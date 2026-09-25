@@ -350,8 +350,17 @@ def cmd_blueprint(a):
 def cmd_generate(a):
     import generate
 
-    generate.run(a.slug, which=a.asset.split(",") if a.asset else None,
-                 with_draft=a.draft, draft_limit=a.draft_limit)
+    which = None
+    if a.asset:
+        want = [x.strip() for x in a.asset.split(",") if x.strip()]
+        # 拼错一个资产名原来会「生成 1 项资产」+ 退出码 0（实际只写了 DEPLOY.md 与
+        # index.json），而 --platform 那条路是有 choices 的
+        unknown = [x for x in want if x not in generate.ASSETS]
+        if unknown:
+            G.die("未知资产：" + "、".join(unknown)
+                  + "；可选：" + "、".join(sorted(generate.ASSETS)))
+        which = want
+    generate.run(a.slug, which=which, with_draft=a.draft, draft_limit=a.draft_limit)
 
 
 def cmd_variants(a):

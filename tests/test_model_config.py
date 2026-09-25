@@ -58,8 +58,12 @@ class TestModelResolution(unittest.TestCase):
                     return {"choices": [{"message": {"content": "ok"}}]}
             return R()
 
-        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "k",
-                                          "DEEPSEEK_MODEL": "ds-live-override"}):
+        # 环境变量名从 provider 表里取，别硬写：deepseek 的 key_env 是 BAILIAN_KEY
+        # （写 DEEPSEEK_API_KEY 时这条用例只在「开发机 .env 里恰好有 BAILIAN_KEY」
+        # 的机器上绿，干净机/CI 必红），而 model_env 是 DEEPSEEK_MODEL。
+        _p = S.PROVIDERS["deepseek"]
+        with mock.patch.dict(os.environ, {_p["key_env"]: "k",
+                                          _p["model_env"]: "ds-live-override"}):
             with mock.patch.object(S.requests, "post", side_effect=fake_post):
                 res = S.ask("deepseek", "hi", timeout=5)
         self.assertTrue(res["ok"])

@@ -226,6 +226,9 @@ def probe_ai_ua(root: str, home: dict, robots_txt: str, delay: float) -> tuple[d
         if not G.robots_decision(groups, bot, "/")[0]:
             continue
         res = G.fetch(root, timeout=10, retries=0, ua=ua)
+        # status=0 = 超时/连接被丢。**不能当成「放行」**：一次网络抖动就能把
+        # 「解除 WAF 差异封锁」这类 P0 工单自动关掉；反过来 drop 型 WAF（直接断连
+        # 而不是回 403）也只能靠这个 0 才看得出来。消费方按 0 单独算「未测出」。
         probe[bot] = res["status"]
         if res["status"] in (401, 403, 406, 429, 451, 503):
             ua_blocked.append(bot)

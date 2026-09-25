@@ -184,7 +184,17 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
         probe = s.get("ai_ua_probe") or {}
         if probe or s.get("ai_ua_blocked"):
             bad = s.get("ai_ua_blocked") or []
-            A(f"| WAF/UA 差异探测 | {'**拒绝 ' + '、'.join(bad) + '**' if bad else f'实测放行 {len(probe)} 个 AI 爬虫 UA'} |")
+            unknown = [b for b, st in probe.items() if not st and b not in bad]
+            parts = []
+            if bad:
+                parts.append("**拒绝 " + "、".join(bad) + "**")
+            ok_n = sum(1 for st in probe.values() if st)
+            if ok_n:
+                parts.append(f"实测放行 {ok_n} 个")
+            if unknown:
+                # 「没测出」不能写成「放行」：这份报告是给客户看的
+                parts.append(f"未测出 {len(unknown)} 个（超时或被断连）")
+            A(f"| WAF/UA 差异探测 | {'；'.join(parts) or '未测出'} |")
         A(f"| 页面可访问率 | {s.get('pages_ok', 0)}/{s.get('pages_crawled', 0)} |")
         lc = audit.get("language_coverage") or {}
         if lc:
@@ -300,7 +310,9 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
     A("")
     A("---")
     A("")
-    A(f"评分口径见 `references/method.md`。生成时间 {G.now_iso()}。")
+    # 这句话会进**交付给客户**的 01-诊断报告，而 references/ 在客户手上没有
+    A(f"评分口径：提及率 30 / 引用份额 25 / 阵地覆盖 20 / 内容承接 15 / 事实一致性 10 "
+      f"的加权，算不出来的项显示「未测」并把权重归一。生成时间 {G.now_iso()}。")
     return "\n".join(L)
 
 

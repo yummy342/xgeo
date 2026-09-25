@@ -1448,8 +1448,13 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if p.startswith("/files/"):
                 rel = p[len("/files/"):]
-                # assets/ 是可写目录，按 HTML 发出去等于给了写接口同源脚本执行权
-                return self._static(G.WORK, rel, force_text="/assets/" in rel)
+                # assets/ 是可写目录，按 HTML 发出去等于给了写接口同源脚本执行权；
+                # evidence/ 是**抓来的第三方整页 HTML（含它自己的 script）**，同样按
+                # text/html 发就是在看板源上执行它 —— 打开一份快照就能带 cookie 打
+                # /api/keys。两处都降级成 text/plain；我们自己生成的 reports/delivery
+                # 仍然按 HTML 发（那是要给人看的）。
+                return self._static(G.WORK, rel,
+                                    force_text=("/assets/" in rel or "/evidence/" in rel))
             if p.startswith("/assets/"):
                 # 前端构建产物。URL /assets/x.js 对应文件 ui_dist/assets/x.js
                 # （Vite 默认把产物放进 assets/，index.html 也按这个路径引用）

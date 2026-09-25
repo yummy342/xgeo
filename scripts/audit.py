@@ -224,8 +224,14 @@ def score_page(page: dict, keywords: list[str]) -> dict:
         issue("FEW_EXTERNAL_LINKS", "P2 几乎不引用外部来源，证据链偏弱")
     hit_schema = types & AUTHORITY_SCHEMA
     s += 5 * band(len(hit_schema), [(3, 1.0), (2, 0.75), (1, 0.45)])
-    if not hit_schema:
+    if not types:
         issue("NO_JSONLD", "P0 没有任何结构化数据（JSON-LD），机器读不懂这页在讲什么实体")
+    elif not hit_schema:
+        # 有 JSON-LD 但没有权威类型的实体声明（只有 WebPage 之类）——与「一条都没有」
+        # 是两码事：原来共用 NO_JSONLD，句子直接写「没有任何结构化数据」，而
+        # tasks 侧的判据（jsonld_types 为空）根本不认这条，同一页在工单里不算缺。
+        issue("WEAK_SCHEMA", "P1 有 JSON-LD 但没有权威类型的实体声明（Organization / "
+                             "Product / FAQPage / Article 等），检索系统认不出这页代表什么实体")
     # schema 与可见内容一致性：声明了 FAQPage 但正文没有可见问答 = 自我声明，
     # 检索系统会拿可见文本对账，对不上时结构化数据反而变成负信号
     if "FAQPage" in types and not RE_FAQ.search(text):
