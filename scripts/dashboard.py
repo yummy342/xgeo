@@ -1573,15 +1573,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "缺 slug"}, 400)
                 if self._deny(slug):
                     return
+                # 原来直接取 body["action"]：缺键是 KeyError，do_POST 外层的
+                # except (ValueError, RuntimeError) 接不住 → 500
                 action = body.get("action")
                 if not action:
                     return self._json({"ok": False, "error": "缺 action"}, 400)
-                # 未知动作由 J.start 抛 ValueError：不接住就是 500（且后端日志里
-                # 只有一句 traceback，看不出是用户传错了参数）
-                try:
-                    job = J.start(slug, action, body.get("params") or {})
-                except ValueError as e:
-                    return self._json({"ok": False, "error": str(e)}, 400)
+                # 未知动作由 J.start 抛 ValueError，外层已接住回 400，这里不再包一层
+                job = J.start(slug, action, body.get("params") or {})
                 return self._json({"ok": True, "job": job})
 
             if p.startswith("/api/sample/"):
@@ -1819,22 +1817,21 @@ class Handler(BaseHTTPRequestHandler):
                     used = {int(m.group(1)) for q in qs
                             if (m := re.match(r"q(\d+)$", str(q.get("id", ""))))}
                     added = []
-                    try:
-                        for it in items:
-                            text = str(it.get("text") or "").strip()
-                            mk = it.get("market") if it.get("market") in G.QID_SEGMENT else "cn"
-                            grp = str(it.get("group") or "场景").strip() or "场景"
-                            if not text or text in existing:
-                                continue
-                            # 与 bootstrap 用同一个分配器：绝不复用已占用的 qid，
-                            # 且不越出本市场的段位（cn 涨过 100 条时进溢出池）
-                            q = {"id": G.next_qid(mk, used), "group": grp, "market": mk,
-                                 "text": text, "source": "expand"}
-                            qs.append(q)
-                            existing.add(text)
-                            added.append(q)
-                    except ValueError as e:
-                        return self._json({"ok": False, "error": str(e)}, 400)
+                    # 编号用与 bootstrap 相同的分配器：绝不复用已占用的 qid，
+                    # 也不越出本市场的段位（cn 涨过 100 条时进溢出池）。
+                    # 分配失败时 next_qid 抛 ValueError，外层接住回 400 ——
+                    # 此时 cfg 只在内存里改过一半，没有落盘。
+                    for it in items:
+                        text = str(it.get("text") or "").strip()
+                        mk = it.get("market") if it.get("market") in G.QID_SEGMENT else "cn"
+                        grp = str(it.get("group") or "场景").strip() or "场景"
+                        if not text or text in existing:
+                            continue
+                        q = {"id": G.next_qid(mk, used), "group": grp, "market": mk,
+                             "text": text, "source": "expand"}
+                        qs.append(q)
+                        existing.add(text)
+                        added.append(q)
                     if added:
                         G.save_config(slug, cfg)
                 return self._json({"ok": True, "added": len(added),

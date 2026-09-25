@@ -451,10 +451,10 @@ def run(slug: str) -> Path:
     G.write_text_atomic(pdir / "reports" / "latest.md", md)
     G.write_json(pdir / "todos.json", todos)
 
-    # 归档本期 audit，供下期算 delta。文件名带到秒：同一天跑两次（改完页面再出一版）
+    # 归档本期 audit，供下期算 delta。文件名带到微秒：同一天跑两次（改完页面再出一版）
     # 时后一份不该盖掉前一份 —— prev_audit 取排序最后一份，同名覆盖会让第二期
-    # 拿自己当上一期，delta 恒为 0。
-    G.write_json(pdir / "history" / f"audit-{G.today()}-{datetime.now().strftime('%H%M%S')}.json",
+    # 拿自己当上一期，delta 恒为 0。只到秒的话，脚本连跑两期的间隔常常不足一秒。
+    G.write_json(pdir / "history" / f"audit-{G.today()}-{datetime.now().strftime('%H%M%S-%f')}.json",
                  {"avg_score": audit.get("avg_score"),
                   "grade_distribution": audit.get("grade_distribution") or {},
                   "page_count": audit.get("page_count"), "date": G.today()})

@@ -343,22 +343,21 @@ def run(slug: str) -> Path:
     td = T.load(slug)
 
     opt = optimization_plan(slug)
-    (out / "2-GEO优化方案.md").write_text(opt, "utf-8")
-    (out / "2-GEO优化方案.html").write_text(
-        R.build_html(f"{name} · GEO 优化方案", opt,
-                     [("站点均分", str(audit.get("avg_score", "—"))),
-                      ("抓取页数", str(audit.get("page_count", "—"))),
-                      ("工单总数", str(td.get("summary", {}).get("total", 0)))]), "utf-8")
-
+    G.write_text_atomic(out / "2-GEO优化方案.md", opt)
+    G.write_text_atomic(out / "2-GEO优化方案.html",
+                        R.build_html(f"{name} · GEO 优化方案", opt,
+                                     [("站点均分", str(audit.get("avg_score", "—"))),
+                                      ("抓取页数", str(audit.get("page_count", "—"))),
+                                      ("工单总数", str(td.get("summary", {}).get("total", 0)))]))
     exe = execution_plan(slug)
-    (out / "3-GEO执行方案.md").write_text(exe, "utf-8")
+    G.write_text_atomic(out / "3-GEO执行方案.md", exe)
     s = td.get("summary", {})
-    (out / "3-GEO执行方案.html").write_text(
-        R.build_html(f"{name} · GEO 执行方案", exe,
-                     [("工单总数", str(s.get("total", 0))),
-                      ("P0", str(s.get("by_priority", {}).get("P0", 0))),
-                      ("可自动验收", str(s.get("auto_verifiable", 0))),
-                      ("已完成", str(s.get("by_status", {}).get("done", 0)))]), "utf-8")
+    G.write_text_atomic(out / "3-GEO执行方案.html",
+                        R.build_html(f"{name} · GEO 执行方案", exe,
+                                     [("工单总数", str(s.get("total", 0))),
+                                      ("P0", str(s.get("by_priority", {}).get("P0", 0))),
+                                      ("可自动验收", str(s.get("auto_verifiable", 0))),
+                                      ("已完成", str(s.get("by_status", {}).get("done", 0)))]))
 
     G.info(f"三份交付物已生成 → {out}")
     return out

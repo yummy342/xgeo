@@ -29,6 +29,11 @@ CONTENT_END = "<<<SITE_CONTENT_END>>>"
 
 
 def _wrap_content(body: str) -> str:
+    """给资料套上定界标记。先把正文里出现的标记字面量改掉 —— 网页可以自带一行
+    END 标记提前闭合数据区，让紧跟其后的「忽略以上纪律」看起来像我们说的话。
+    模型只认 prompt 里写明的那个确切标记，所以改掉字面量就够了。"""
+    body = body.replace(CONTENT_BEGIN, "[site-content-begin]") \
+               .replace(CONTENT_END, "[site-content-end]")
     return f"\n{CONTENT_BEGIN}\n{body}\n{CONTENT_END}\n"
 
 
@@ -64,6 +69,12 @@ def _site_digest(slug: str, limit: int = 14000) -> str:
             break
         parts.append(block)
         used += len(block)
+    # 一页正文都没抽出来时必须返回 ""：返回带标记的空壳是 truthy，调用方的
+    # `if not digest: G.die("先运行 crawl")` 就永远不触发，模型拿着空资料
+    # 编出品牌事实、题库与竞品，而 bootstrap 会把人工为空的字段照写进 geo.json。
+    # （JS 渲染的站点正文抽不出来但 status=200，抓取健康检查照样通过。）
+    if not parts:
+        return ""
     return _wrap_content("".join(parts))
 
 
@@ -155,16 +166,41 @@ def _names_not_in_source(facts: dict, digest: str) -> list[str]:
     return bad
 
 
+def _numbers_not_in_source(facts: dict, digest: str) -> list[str]:
+    """key_numbers 里的数字必须能在资料里找到。只比数字不比写法 ——「￥99/月」
+    与「99 元/月」都含 99，不该算不一致；要拦的是模型编出来的「已有 5000 家客户」，
+    那类断言会原样进 facts.md、题库 prompt 与客户交付包。"""
+    hay = re.sub(r"[,\s，]+", "", digest)
+    bad = []
+    for item in (facts.get("key_numbers") or []):
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value", ""))
+        if any(num not in hay for num in re.findall(r"\d+(?:\.\d+)?", value)):
+            bad.append(value[:40])
+    return bad
+
+
 def brand_facts(slug: str, digest: str) -> dict | None:
     G.info("  推导品牌事实…")
     facts = _ask_json(BRAND_PROMPT + digest)
     if not facts or not digest:
         return facts
-    bad = _names_not_in_source(facts, digest)
+    # 回核只覆盖「可回核」的字段：名字与数字。definition / industry /
+    # business_goal 是模型按资料重写的自由文本，没有能拿来做子串比对的原文形态
+    # —— 这一层挡不住往这些字段里塞断言，挡它们的只有数据区定界与 prompt 里的声明。
+    bad = _names_not_in_source(facts, digest) + _numbers_not_in_source(facts, digest)
     if bad:
         G.info(f"  回核：{'、'.join(bad[:5])} 在资料里找不到，已记入 uncertain")
-        facts["uncertain"] = (facts.get("uncertain") or []) + \
-            [f"以下名称在抓取到的资料里找不到，需人工确认：{'、'.join(bad[:8])}"]
+        # uncertain 是模型给的，类型不受约束（实测会回字符串「无」）：
+        # 直接拿它 + list 会抛 TypeError，而那是在付过费的 LLM 调用之后。
+        prev = facts.get("uncertain")
+        if isinstance(prev, str):
+            prev = [prev] if prev.strip() else []
+        elif not isinstance(prev, list):
+            prev = []
+        facts["uncertain"] = prev + \
+            [f"以下内容在抓取到的资料里找不到，需人工确认：{'、'.join(bad[:8])}"]
     return facts
 
 
