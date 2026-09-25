@@ -109,6 +109,18 @@ class TestRenameCompatibility(unittest.TestCase):
         # 开了的那份照旧
         self.assertIn('id="k"', D._login_html(accounts_on=True))
 
+    def test_login_page_js_has_no_stray_braces(self):
+        """登录页的 JS 曾经在 f-string 里（花括号必须双写），搬成普通字符串时漏了还原
+        —— 结果是 `Unexpected token '{'`，整段 JS 不执行：线上实测点「进入」毫无反应
+        （curl 全过，只有真浏览器看得见）。这条钉的就是这个 bug 类。"""
+        for label, page in (("开", D._login_html(accounts_on=True)),
+                            ("关", D._login_html(accounts_on=False))):
+            self.assertNotIn("{{", page, f"{label}：花括号双写漏进页面了")
+            self.assertNotIn("}}", page, f"{label}：花括号双写漏进页面了")
+            # 两个函数都要在（少一个就是「按钮点了没反应」）
+            self.assertIn("function xgLogin()", page)
+            self.assertIn("function xgLocal()", page)
+
     def test_login_page_escapes_the_error_text(self):
         """错误回显是插进 HTML 的，虽然来路都是我们自己那几句固定文案 —— 也转它。"""
         page = D._login_html('<img src=x onerror="alert(1)">')

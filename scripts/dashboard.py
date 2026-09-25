@@ -762,44 +762,44 @@ font-size:14px;cursor:pointer">进入</button>
 
 
 _LOGIN_JS = """
-async function xgLogin() {{
+async function xgLogin() {
   const k = document.getElementById('k').value.trim()
   if (!k) return
   const out = document.getElementById('e')
   out.textContent = ''
-  try {{
-    const r = await fetch('/api/auth/login', {{method: 'POST',
-      headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{credential: k}})}})
-    const j = await r.json().catch(() => ({{}}))
-    if (r.ok) {{ location.href = '/'; return }}
+  try {
+    const r = await fetch('/api/auth/login', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({credential: k})})
+    const j = await r.json().catch(() => ({}))
+    if (r.ok) { location.href = '/'; return }
     out.textContent = j.error || ('HTTP ' + r.status)
-  }} catch (e) {{
+  } catch (e) {
     // 没有这一层，fetch 一 reject（网络断了、服务重启）就是「点了没反应」：
     // 界面不给任何回话，用户只会反复点。
     out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
-  }}
-}}
+  }
+}
 
 // 本地管理员兜底：与 API Key 走同一个端点，靠 body 里有没有 user/password 分流。
 // 认证服务不可达、或允许名单把所有人挡在外面时，这条路仍然通 —— 它就是为那种
 // 时候准备的。密码只在服务端的 .env 里（600），代码里不带任何默认值。
-async function xgLocal() {{
+async function xgLocal() {
   const u = document.getElementById('au').value.trim()
   const p = document.getElementById('ap').value
   if (!u || !p) return
   const out = document.getElementById('e')
   out.textContent = ''
-  try {{
-    const r = await fetch('/api/auth/login', {{method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{user: u, password: p}})}})
-    const j = await r.json().catch(() => ({{}}))
-    if (r.ok) {{ location.href = '/'; return }}
+  try {
+    const r = await fetch('/api/auth/login', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user: u, password: p})})
+    const j = await r.json().catch(() => ({}))
+    if (r.ok) { location.href = '/'; return }
     out.textContent = j.error || ('HTTP ' + r.status)
-  }} catch (e) {{
+  } catch (e) {
     out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
-  }}
-}}
+  }
+}
 </script></body>"""
 
 
