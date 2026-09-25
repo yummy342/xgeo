@@ -31,7 +31,12 @@
 
   async function save() {
     busy = true
-    await requestPost('/api/facts/' + slug, { text })
+    try {
+      await requestPost('/api/facts/' + slug, { text })
+    } catch (e) {
+      busy = false          // 失败要把按钮放回来，否则整篇 facts.md 的编辑内容取不回来
+      return
+    }
     busy = false
     toast(t('Saved'))
     onchanged?.()

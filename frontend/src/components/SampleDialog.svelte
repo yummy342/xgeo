@@ -3,6 +3,7 @@
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
+  import { safeUrl } from '../lib/url.js'
 
   // 取代 ui.html:2897 的 sampleModal。
   //
@@ -126,9 +127,19 @@
           {/each}
         </div>
         <div class="cites">
-          {#each cites as c (c.url)}
+          <!-- 键用下标而不是 c.url：重复 URL 在 Svelte 5 里是**抛错**（不是降级），
+               整块渲染不出来。入库侧两处都去重了（sample.py 的 seen / content.js 的
+               seen），但手改过样本 JSONL、或别的客户端往 collect 投重复 URL 时就撞上。 -->
+          {#each cites as c, ci (ci)}
             <div class="cite">
-              <a href={c.url} target="_blank" class="cite-url">{c.url}</a>
+              <!-- 引用 URL 是**模型返回的原样文本**（sample.py 只去重、不校验 scheme），
+                   而这里是 href —— 绑裸值就是「点一下执行」。全仓别的渲染点都过
+                   safeUrl，只有这一处漏了。认不出 http(s) 就退化成纯文本。 -->
+              {#if safeUrl(c.url)}
+                <a href={safeUrl(c.url)} target="_blank" rel="noopener" class="cite-url">{c.url}</a>
+              {:else}
+                <span class="cite-url">{c.url}</span>
+              {/if}
               <span class="cite-title">{c.title || ''}</span>
             </div>
           {/each}

@@ -54,10 +54,26 @@
       toast(cfg.error, 'err')
       return
     }
-    const qs = text.split('\n').map(parse).filter(Boolean)
+    // 逐行解析，**畸形行必须拦下来**：原来 filter(Boolean) 把少一个 `|`、或正文为空
+    // 的行直接丢掉，然后整段覆盖写回 —— 一道题就这么永久消失，而 toast 只说
+    // 「已保存 N 题」。空行不算畸形（粘贴常带尾随空行）。
+    const rows = text.split('\n').map((l, i) => [i + 1, l]).filter(([, l]) => l.trim())
+    const bad = rows.filter(([, l]) => !parse(l)).map(([n]) => n)
+    if (bad.length) {
+      busy = false
+      toast(t('Line {n} is not a valid question (needs 4 fields) — nothing was saved')
+        .replace('{n}', String(bad[0])), 'err')
+      return
+    }
+    const qs = rows.map(([, l]) => parse(l))
     cfg.questions = qs
     if (cfg.bootstrap) cfg.bootstrap.needs_review = false
-    await requestPost('/api/config/' + slug, cfg)
+    try {
+      await requestPost('/api/config/' + slug, cfg)
+    } catch (e) {
+      busy = false          // 失败别把按钮永久禁掉：整份题库的编辑会取不回来
+      return
+    }
     busy = false
     toast(t('Saved {n} questions').replace('{n}', String(qs.length)))
     await loadProject(slug, true)

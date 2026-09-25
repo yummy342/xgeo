@@ -25,7 +25,7 @@
   const down = $derived(meas.filter((x) => (x.after || 0) < (x.before || 0)))
   const last = $derived(vh.length ? vh[vh.length - 1] : null)
   const progTasks = $derived(
-    tasks.filter((x) => x.progress).sort((x, y) => x.priority.localeCompare(y.priority)),
+    tasks.filter((x) => x.progress).sort((x, y) => (x.priority || '').localeCompare(y.priority || '')),
   )
 
   function mktName(m) {

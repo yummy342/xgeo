@@ -140,7 +140,10 @@ import { jobLog, loadJobLog, runAction, setMonitor, statusLabel, stopJob } from 
     <div class="card elev panel">
       <div>
         <div class="panel-t">{t('Engines and keys')}</div>
-        <div class="panel-s">{t('Keys are written to .env in the project root and take effect immediately. <b>One working engine is enough to start sampling</b>; more engines widen coverage.')}</div>
+        <!-- 这条文案本身带 <b>，而 {...} 会转义成字面标签（中英字典里都有标签，
+             所以双语都显示成 `&lt;b&gt;`）。同名情形在 Publishing 那页走的是 PageHead
+             的 {@html}，这里跟上。 -->
+        <div class="panel-s">{@html t('Keys are written to .env in the project root and take effect immediately. <b>One working engine is enough to start sampling</b>; more engines widen coverage.')}</div>
       </div>
       <div class="key-progress" class:ok={keyInfo.done}>
         {t('Recommended: {d}/{n} ready').replace('{d}', String(keyInfo.done)).replace('{n}', String(keyInfo.need.length))}{#if !keyInfo.done}{t(' — start with the "preferred · searches" ones')}{/if}

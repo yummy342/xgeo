@@ -30,7 +30,14 @@
     items.push({
       field: field.trim(), said: said.trim(), truth: truth.trim(), state: state_,
     })
-    await requestPost('/api/factcheck/' + slug, { items })
+    // request() 失败会抛（错误提示它自己弹过），不接住的话 busy 永远是 true：
+    // 保存按钮一直禁着、刚录的内容也取不回来，只剩一个 3.8 秒后消失的 toast。
+    try {
+      await requestPost('/api/factcheck/' + slug, { items })
+    } catch (e) {
+      busy = false
+      return
+    }
     busy = false
     toast(t('Recorded — the health score will update'))
     await loadProject(slug, true)

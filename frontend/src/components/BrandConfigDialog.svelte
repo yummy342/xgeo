@@ -66,7 +66,12 @@
     })
     if (next.bootstrap) next.bootstrap.needs_review = false
 
-    await requestPost('/api/config/' + slug, next)
+    try {
+      await requestPost('/api/config/' + slug, next)
+    } catch (e) {
+      busy = false
+      return
+    }
     busy = false
     toast(t('Saved'))
     onchanged?.()

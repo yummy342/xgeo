@@ -32,7 +32,12 @@
 
   async function importIt() {
     busy = true
-    await requestPost('/api/sample-import', { slug, file: name, text })
+    try {
+      await requestPost('/api/sample-import', { slug, file: name, text })
+    } catch (e) {
+      busy = false          // 失败要把按钮放回来，否则粘进去的答案原文丢失
+      return
+    }
     busy = false
     toast(t('Imported'))
     await loadProject(slug, true)

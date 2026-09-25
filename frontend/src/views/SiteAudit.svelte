@@ -1,7 +1,6 @@
 <script>
   import PageHead from '../components/PageHead.svelte'
   import TaskDialog from '../components/TaskDialog.svelte'
-  import { esc } from '../lib/format.js'
   import { project } from '../lib/stores/project.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
 

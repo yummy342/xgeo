@@ -8,6 +8,7 @@
   import { project } from '../lib/stores/project.svelte.js'
 import { runAction } from '../lib/jobs.svelte.js'
   import { t } from '../lib/i18n/index.svelte.js'
+  import { esc } from '../lib/format.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { ui } from '../lib/stores/ui.svelte.js'
 
@@ -56,7 +57,7 @@ import { runAction } from '../lib/jobs.svelte.js'
 <div class="page">
   <PageHead
     kicker={t('STATUS · COMPETITORS')}
-    title={t('{n} wins on source coverage, not on product').replace('{n}', topName)}
+    title={t('{n} wins on source coverage, not on product').replace('{n}', esc(topName))}
     sub={t('Rival presence rate from the same unprompted sampling run, computed separately for CN ({cn} samples) and global ({gl}), each against its own denominator. A rival\'s lead is copyable — cover the same content they get cited for and you enter the same answers. Their cite share and content readiness cannot be measured from outside, so they are not shown.').replace('{cn}', String(NS.cn || 0)).replace('{gl}', String(NS.global || 0))}
   />
 

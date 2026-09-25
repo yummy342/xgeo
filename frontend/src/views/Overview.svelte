@@ -34,7 +34,7 @@
 
   const open = $derived(
     (D.tasks || []).filter((x) => x.status !== 'done')
-      .sort((x, y) => x.priority.localeCompare(y.priority)).slice(0, 3),
+      .sort((x, y) => (x.priority || '').localeCompare(y.priority || '')).slice(0, 3),
   )
 
   const maxm = $derived(Math.max(0.001, ...engs.map((e) => e.mention || 0)))

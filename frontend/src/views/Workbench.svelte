@@ -42,7 +42,7 @@
   const fitChs = $derived(q
     ? ((project.data?.blueprint || {}).channels || [])
         .filter((c) => (c.fits || []).includes(q.group) && (q.market === 'both' || c.market === q.market))
-        .sort((x, y) => x.priority.localeCompare(y.priority))
+        .sort((x, y) => (x.priority || '').localeCompare(y.priority || ''))
     : [])
 
   const pickList = $derived.by(() => {
@@ -144,6 +144,10 @@
   }
 
   async function toggleDist(chId, on, ev) {
+    // 元素必须**在 await 之前**取出来：事件分发一结束 `currentTarget` 就置 null，
+    // 而下面的回滚靠它 —— 原来读 ev.currentTarget 恒为 null，于是勾撤不回去，
+    // 界面显示已铺、库里没有（正是这段注释想修的那个 bug）。`target` 不受影响。
+    const el = ev && ev.target
     const r = await post('/api/distribution/' + slug, { qid: q.id, channel: chId, on })
     if (r.ok) {
       if (project.data) project.data.distribution = r.distribution
@@ -152,7 +156,6 @@
       // 失败要把勾撤回去：checked={distDone(...)} 不是双向绑定，表达式值一直是
       // false，Svelte 只在「值变了」时才写 DOM —— 用户手动勾上的那个勾会留在
       // 界面上，看起来已铺，库里没有。
-      const el = ev && ev.currentTarget
       if (el) el.checked = !on
       toast(t('Failed: {e}').replace('{e}', r.error || ''), 'err')
     }

@@ -784,6 +784,7 @@ export const zh = {
   'One question per line:': '每行一题：',
   'id|group|market(cn/global/both)|question': '编号|分组|市场(cn/global/both)|问题',
   'Re-run sampling for changes to take effect.': '保存后重跑采样才生效。',
+  'Line {n} is not a valid question (needs 4 fields) — nothing was saved': '第 {n} 行不是合法的问题（要 4 个字段）—— 已中止，什么都没保存',
   'Saved {n} questions': '已保存 {n} 题',
 
   // ---- 生成规则说明（长文案）----

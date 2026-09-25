@@ -42,7 +42,7 @@ import { runAction } from '../lib/jobs.svelte.js'
   const cnt = (s) => ts.filter((x) => x.status === s).length
 
   const sorted = $derived(ts.slice().sort(
-    (a, b) => ((a.status === 'done') - (b.status === 'done')) || a.priority.localeCompare(b.priority),
+    (a, b) => ((a.status === 'done') - (b.status === 'done')) || (a.priority || '').localeCompare(b.priority || ''),
   ))
 
   // 判据走 lib/publishstate.js：备好待人工粘贴（prepared）不算已发布 —— 这条卡片的

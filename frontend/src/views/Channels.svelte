@@ -99,7 +99,7 @@
               </div>
               <div class="chan-why">{@html esc(c.why).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</div>
               <div class="spec chan-spec">
-                <div><div class="k">{t('What')}</div><div class="v">{esc((c.forms || []).join(' / '))}</div></div>
+                <div><div class="k">{t('What')}</div><div class="v">{(c.forms || []).join(' / ')}</div></div>
                 <div><div class="k">{t('How much')}</div><div class="v">{c.volume}</div></div>
                 <div><div class="k">{t('Cadence')}</div><div class="v">{c.cadence}</div></div>
                 <div><div class="k">{t('Who')}</div><div class="v">{c.owner}</div></div>

@@ -31,6 +31,7 @@
 
   let tree = $state([])
   let treeLoaded = $state(false)
+  let treeErr = $state('')
   let treeSeq = 0        // 资产树请求序号：快切项目时用来丢掉过期响应
   let cur = $state(null)
   let text = $state('')
@@ -55,7 +56,10 @@
     treeLoaded = false
     api('/api/assets/' + s).then((r) => {
       if (mine !== treeSeq) return
-      tree = Array.isArray(r) ? r : []
+      // 失败**不能**落进「还没有资产」那句：用户可能刚跑完生成，界面却在自信地说
+      // 没有资产（Engines/Settings 都显式处理过这一支，只有这里漏了）。
+      if (r && r.error) treeErr = r.error
+      else tree = Array.isArray(r) ? r : []
       treeLoaded = true
     })
   })
@@ -153,7 +157,11 @@
           {/each}
         {/each}
       {:else}
-        <div class="muted empty">{t('No assets yet — run "Generate assets" under Settings')}</div>
+        {#if treeErr}
+          <div class="err">{treeErr}</div>
+        {:else}
+          <div class="muted empty">{t('No assets yet — run "Generate assets" under Settings')}</div>
+        {/if}
       {/if}
     </div>
 

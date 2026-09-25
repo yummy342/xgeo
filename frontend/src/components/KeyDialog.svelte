@@ -31,7 +31,12 @@
     if (!Object.keys(updates).length) { onclose?.(); return }
 
     busy = true
-    await requestPost('/api/keys', { updates })
+    try {
+      await requestPost('/api/keys', { updates })
+    } catch (e) {
+      busy = false
+      return
+    }
     busy = false
     toast(t('Written to .env'))
     onchanged?.()
