@@ -13,7 +13,7 @@ English · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 ![Product demo](docs/demo.en.gif)
 
-🌐 [Website xgeo.asia](https://xgeo.asia) · 🔍 [Live demo (read-only)](https://xgeo.asia/demo/) · 📹 [HD demo video (mp4)](docs/demo.en.mp4) · 🖼 [All screenshots](docs/screenshots-en/)
+🌐 [Website xgeo.asia](https://xgeo.asia) · 🔍 [Live demo (FreeModel account required)](https://xgeo.asia/demo/) · 📹 [HD demo video (mp4)](docs/demo.en.mp4) · 🖼 [All screenshots](docs/screenshots-en/)
 
 
 </div>

@@ -13,7 +13,7 @@
 
 ![产品演示](docs/demo.gif)
 
-🌐 [官网 xgeo.asia](https://xgeo.asia) · 🔍 [在线演示（只读）](https://xgeo.asia/demo/) · 📹 [高清演示视频 (mp4)](docs/demo.mp4) · 🖼 [全部截图](docs/screenshots/)
+🌐 [官网 xgeo.asia](https://xgeo.asia) · 🔍 [在线演示（需 FreeModel 账号登录）](https://xgeo.asia/demo/) · 📹 [高清演示视频 (mp4)](docs/demo.mp4) · 🖼 [全部截图](docs/screenshots/)
 
 
 </div>

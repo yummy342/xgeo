@@ -13,7 +13,7 @@
 
 ![Product demo](docs/demo.ja.gif)
 
-🌐 [公式サイト xgeo.asia](https://xgeo.asia) · 🔍 [ライブデモ（読み取り専用）](https://xgeo.asia/demo/) · 📹 [HD デモ動画 (mp4)](docs/demo.ja.mp4) · 🖼 [全スクリーンショット](docs/screenshots-ja/)
+🌐 [公式サイト xgeo.asia](https://xgeo.asia) · 🔍 [ライブデモ（FreeModel アカウントが必要）](https://xgeo.asia/demo/) · 📹 [HD デモ動画 (mp4)](docs/demo.ja.mp4) · 🖼 [全スクリーンショット](docs/screenshots-ja/)
 
 </div>
 
