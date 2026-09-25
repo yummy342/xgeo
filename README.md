@@ -154,6 +154,10 @@ What to know before turning it on:
   limiting and `Secure` cookies work. Only do this when the proxy overwrites
   `X-Real-IP` (nginx does); with a bare client it would let callers pick their own bucket.
 - The allowlist only changes by editing the environment and restarting.
+- **Locked out (break-glass)**: set `XGEO_ADMIN_USER` / `XGEO_ADMIN_PASSWORD` for a
+  local admin login that does not touch fm-auth at all — the login page has a collapsed
+  "admin account" entry for it. Both variables must be set; the code ships no default,
+  so an instance without them simply has no such entry.
 - **The sampling extension needs a token, not an account** — it has no browser session.
   Using it on the same machine therefore means keeping `XGEO_TOKEN` set too.
 

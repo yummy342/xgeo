@@ -155,7 +155,10 @@ NGINX
                                                    #   Host: $DOMAIN，不设它 Host 校验会
                                                    #   把登录页本身 403 掉
        XGEO_AUTH_BASE=https://freemodel.online/api/auth   # 默认值，可省
-     两种档可以并存。
+     两种档可以并存。另外建议配一组**兜底账号**（不经过 fm-auth，认证服务挂了也进得去）：
+       XGEO_ADMIN_USER=admin
+       XGEO_ADMIN_PASSWORD=<别用弱口令，这台机器在公网上>
+
 
      写完 sudo systemctl restart xgeo
 

@@ -863,6 +863,11 @@ class TestAccountLogin(unittest.TestCase):
         finally:
             conn.close()
 
+    @staticmethod
+    def _cookie_of(headers):
+        """从 Set-Cookie 里取 `名=值` 那一段（后面还挂着属性）。"""
+        return (headers.get("Set-Cookie") or "").split(";")[0]
+
     # --- 纯函数 ---
 
     def test_parse_accounts_admin_and_tenant(self):
@@ -1020,6 +1025,60 @@ class TestAccountLogin(unittest.TestCase):
         shadowed = f"{D.LEGACY_COOKIE}=deadbeef; {good}"
         self.assertEqual(self._req("GET", "/api/projects", cookie=shadowed)[0], 200,
                          "旧 cookie 把新会话遮住了")
+
+    def test_local_admin_logs_in_and_survives_the_allowlist_recheck(self):
+        """★ 断链兜底：不依赖任何外部服务（fm-auth 挂了、名单配错时它是最后一条路）。
+        它的会话不在允许名单里，所以 `_auth` 的每请求回查必须放过它 —— 否则登录
+        成功之后第一个请求就 401，表现成「登进去又被弹回登录页」。"""
+        with mock.patch.dict(os.environ, {"XGEO_ADMIN_USER": "admin",
+                                          "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
+            status, body, headers = self._req("POST", "/api/auth/login",
+                                              body={"user": "admin", "password": "pw-123"})
+            self.assertEqual(status, 200, body)
+            self.assertTrue(json.loads(body)["admin"])
+            cookie = self._cookie_of(headers)
+            self.assertEqual(self._req("GET", "/api/projects", cookie=cookie)[0], 200,
+                             "兜底会话被允许名单回查踢掉了")
+            me = json.loads(self._req("GET", "/api/auth/me", cookie=cookie)[1])
+            self.assertEqual(me["mode"], "account")
+            self.assertEqual(me["email"], "admin")
+            self.assertTrue(me["admin"])
+            # 管理员能看到 /api/keys（兜底账号是管理员，不是租户）
+            self.assertEqual(self._req("GET", "/api/keys", cookie=cookie)[0], 200)
+
+    def test_local_admin_works_without_the_accounts_tier(self):
+        """兜底账号的存在理由就是账号档那条路不通的时候 —— 所以它必须能不依赖
+        XGEO_ACCOUNTS（全新自托管实例、或名单写坏了只留兜底）。"""
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "admin",
+                                          "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
+            status, body, headers = self._req("POST", "/api/auth/login",
+                                              body={"user": "admin", "password": "pw-123"})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(self._req("GET", "/api/projects",
+                                       cookie=self._cookie_of(headers))[0], 200)
+
+    def test_local_admin_wrong_password_is_401(self):
+        with mock.patch.dict(os.environ, {"XGEO_ADMIN_USER": "admin",
+                                          "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
+            for wrong in ({"user": "admin", "password": "nope"},
+                          {"user": "root", "password": "pw-123"},
+                          {"user": "", "password": ""}):
+                status, _body, headers = self._req("POST", "/api/auth/login", body=wrong)
+                self.assertEqual(status, 401, wrong)
+                self.assertIsNone(headers.get("Set-Cookie"), wrong)
+
+    def test_local_admin_is_off_unless_fully_configured(self):
+        """两个变量缺一个就等于没配（fail closed）—— 代码里不带任何默认值。"""
+        for env in ({"XGEO_ADMIN_USER": "admin", "XGEO_ADMIN_PASSWORD": ""},
+                    {"XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "pw"},
+                    {"XGEO_ADMIN_USER": "admin", "XGEO_ADMIN_PASSWORD": "  "}):
+            with self.subTest(env=env):
+                with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": ""}, clear=False):
+                    with mock.patch.dict(os.environ, env, clear=False):
+                        self.assertIsNone(D.local_admin(), env)
+                        status, _b, _h = self._req("POST", "/api/auth/login",
+                                                   body={"user": "admin", "password": "pw"})
+                        self.assertNotEqual(status, 200, "没配全却放行了")
 
     def test_login_rate_limited(self):
         for _ in range(10):

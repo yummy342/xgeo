@@ -528,6 +528,20 @@ def accounts_enabled() -> bool:
     return bool(accounts())
 
 
+def local_admin() -> tuple[str, str] | None:
+    """本地管理员账号：`XGEO_ADMIN_USER` / `XGEO_ADMIN_PASSWORD`。
+
+    **断链兜底**，不是账号档的替代：fm-auth 不可达、或允许名单写错把所有人挡在外面
+    时，至少还有一条不依赖任何外部服务的路。两个变量缺一个就等于没配（fail closed），
+    代码里**不带默认值** —— 没配的实例上没有这个入口。
+    """
+    user = (_env("XGEO_ADMIN_USER") or "").strip()
+    # 密码两侧也去空白：运维在 .env 里手写时很容易带上尾空格，而登录框里打不出来。
+    # 只有空白等于没配（fail closed）。
+    pwd = (_env("XGEO_ADMIN_PASSWORD") or "").strip()
+    return (user, pwd) if user and pwd else None
+
+
 def _auth_base() -> str:
     return (_env("XGEO_AUTH_BASE") or "https://freemodel.online/api/auth").rstrip("/")
 
@@ -572,8 +586,12 @@ SESSIONS: dict[str, dict] = {}     # cookie 摘要 → {email, admin, projects, 
 LOGIN_HITS: dict[str, list] = {}   # 客户端 IP → 尝试时间戳（进程内限流）
 
 
-def session_new(email: str, acct: dict) -> str:
-    """建会话，返回会话 id；cookie 里只放它的 sha256 摘要（沿用令牌那套）。"""
+def session_new(email: str, acct: dict, local: bool = False) -> str:
+    """建会话，返回会话 id；cookie 里只放它的 sha256 摘要（沿用令牌那套）。
+
+    `local=True` 标记「本地管理员兜底建的会话」：它不在允许名单里，所以 `_auth`
+    的每请求回查必须放过它（否则登录成功之后第一个请求就 401）。
+    """
     now = time.time()
     for k, v in list(SESSIONS.items()):
         if v.get("exp", 0) < now:
@@ -581,6 +599,7 @@ def session_new(email: str, acct: dict) -> str:
     sid = secrets.token_urlsafe(32)
     SESSIONS[_token_digest(sid)] = {"email": email, "admin": bool(acct.get("admin")),
                                     "projects": set(acct.get("projects") or ()),
+                                    "local": bool(local),
                                     "exp": now + _session_ttl()}
     return sid
 
@@ -660,6 +679,19 @@ color:#101223;padding:10px 18px;font-size:14px;margin-top:8px;width:100%;cursor:
 进入</button>
 <div id="e" style="color:#e08a8a;font-size:12px;margin-top:8px;min-height:16px">{e}</div>
 <details style="margin-top:14px;text-align:left">
+<summary style="cursor:pointer;font-size:12px;color:#8b90a5">管理员账号（断链兜底）</summary>
+<div style="display:flex;gap:8px;margin-top:8px">
+<input id="au" placeholder="管理员账号" autocomplete="username"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<input id="ap" type="password" placeholder="密码" autocomplete="current-password"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<button id="ago" onclick="xgLocal()" style="background:#2a2f45;border:0;border-radius:8px;
+color:#e8eaf2;padding:10px 14px;font-size:14px;cursor:pointer;white-space:nowrap">进入</button>
+</div>
+</details>
+<details style="margin-top:10px;text-align:left">
 <summary style="cursor:pointer;font-size:12px;color:#8b90a5">用访问令牌登录</summary>
 <div style="display:flex;gap:8px;margin-top:8px">
 <input id="t" type="password" placeholder="访问令牌 / Access token"
@@ -689,6 +721,27 @@ async function xgLogin() {{
   }} catch (e) {{
     // 没有这一层，fetch 一 reject（网络断了、服务重启）就是「点了没反应」：
     // 界面不给任何回话，用户只会反复点。
+    out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
+  }}
+}}
+
+// 本地管理员兜底：与 API Key 走同一个端点，靠 body 里有没有 user/password 分流。
+// 认证服务不可达、或允许名单把所有人挡在外面时，这条路仍然通 —— 它就是为那种
+// 时候准备的。密码只在服务端的 .env 里（600），代码里不带任何默认值。
+async function xgLocal() {{
+  const u = document.getElementById('au').value.trim()
+  const p = document.getElementById('ap').value
+  if (!u || !p) return
+  const out = document.getElementById('e')
+  out.textContent = ''
+  try {{
+    const r = await fetch('/api/auth/login', {{method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{user: u, password: p}})}})
+    const j = await r.json().catch(() => ({{}}))
+    if (r.ok) {{ location.href = '/'; return }}
+    out.textContent = j.error || ('HTTP ' + r.status)
+  }} catch (e) {{
     out.textContent = '连不上本机看板（' + (e && e.message ? e.message : e) + '）'
   }}
 }}
@@ -756,9 +809,21 @@ class Handler(BaseHTTPRequestHandler):
         org = self.headers.get("Origin")
         if org and host_name(urlparse(org).hostname) != host_name(self.headers.get("Host")):
             return {"ok": False, "error": "跨站请求被拒绝"}, 403, None
+        # 本地管理员兜底：不依赖任何外部服务，所以要排在「有没有配账号档」之前。
+        # 只有客户端确实带了 user/password 才走这条，FreeModel Key 那条路不受影响。
+        la = local_admin()
+        if la and (body.get("user") is not None or body.get("password") is not None):
+            login_note(ip)
+            ok = (_same(str(body.get("user") or "").strip(), la[0])
+                  and _same(str(body.get("password") or "").strip(), la[1]))
+            if not ok:
+                return {"ok": False, "error": "管理员账号或密码不对"}, 401, None
+            sid = session_new(la[0], {"admin": True, "projects": set()}, local=True)
+            return {"ok": True, "email": la[0], "admin": True}, 200, sid
         if not accounts_enabled():
             return {"ok": False,
-                    "error": "这个实例没有配账号登录（XGEO_ACCOUNTS 为空），请用访问令牌"}, 403, None
+                    "error": "这个实例没有配账号登录（XGEO_ACCOUNTS 为空），"
+                             "请用访问令牌或管理员账号"}, 403, None
         cred = body.get("credential")
         if not isinstance(cred, str) or not cred.strip():
             return {"ok": False, "error": "请填 FreeModel API Key"}, 400, None
@@ -914,11 +979,15 @@ class Handler(BaseHTTPRequestHandler):
             # 但 `write_env()` 会把变量同步写进 os.environ，将来也可能有人把名单挪到
             # 配置文件 —— 那时「老会话保持旧权限」就是一次静默的降权失效。
             # 代价是一次 env 读取 + 解析，可忽略。
-            acct = accounts().get(sess["email"])
-            if not acct:
+            local = bool(sess.get("local"))
+            acct = None if local else accounts().get(sess["email"])
+            if acct is None and not local:
                 session_drop(self.headers.get("Cookie"))
             else:
-                self._scope = None if acct["admin"] else set(acct["projects"])
+                # 本地兜底会话不在名单里，用建会话时存下的权限（它就是管理员）
+                admin = bool(sess["admin"]) if acct is None else bool(acct["admin"])
+                projects = set(sess["projects"]) if acct is None else set(acct["projects"])
+                self._scope = None if admin else projects
                 self._mode = "account"
                 self._email = sess["email"]
                 return True
