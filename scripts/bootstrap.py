@@ -167,17 +167,31 @@ def _names_not_in_source(facts: dict, digest: str) -> list[str]:
 
 
 def _numbers_not_in_source(facts: dict, digest: str) -> list[str]:
-    """key_numbers 里的数字必须能在资料里找到。只比数字不比写法 ——「￥99/月」
-    与「99 元/月」都含 99，不该算不一致；要拦的是模型编出来的「已有 5000 家客户」，
-    那类断言会原样进 facts.md、题库 prompt 与客户交付包。"""
+    """facts 里出现的每个数字串都必须能在资料里找到 —— 扫**所有字段**，不只是
+    key_numbers：编造的断言常落在 definition / suitable / industry 这些自由文本里，
+    它们没有可比的原文形态（模型本来就要重写），数字是唯一抓得住的把柄。
+
+    只比数字不比写法 ——「￥99/月」与「99 元/月」都含 99，不该算不一致；
+    要拦的是「已有 5000 家客户」这种资料里根本没有的数。"""
     hay = re.sub(r"[,\s，]+", "", digest)
-    bad = []
-    for item in (facts.get("key_numbers") or []):
-        if not isinstance(item, dict):
+    bad: list[str] = []
+
+    def walk(v):
+        if isinstance(v, str):
+            if any(num not in hay for num in re.findall(r"\d+(?:\.\d+)?", v)):
+                if v[:40] not in bad:
+                    bad.append(v[:40])
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+
+    for k, v in facts.items():
+        if k == "uncertain":      # 这一项是我们自己写进去的待确认清单
             continue
-        value = str(item.get("value", ""))
-        if any(num not in hay for num in re.findall(r"\d+(?:\.\d+)?", value)):
-            bad.append(value[:40])
+        walk(v)
     return bad
 
 
@@ -186,9 +200,11 @@ def brand_facts(slug: str, digest: str) -> dict | None:
     facts = _ask_json(BRAND_PROMPT + digest)
     if not facts or not digest:
         return facts
-    # 回核只覆盖「可回核」的字段：名字与数字。definition / industry /
-    # business_goal 是模型按资料重写的自由文本，没有能拿来做子串比对的原文形态
-    # —— 这一层挡不住往这些字段里塞断言，挡它们的只有数据区定界与 prompt 里的声明。
+    # 回核的边界：名字（name/aliases/products）与数字（扫全部字段）。
+    # definition / industry / business_goal 是模型按资料重写的自由文本，
+    # 「行业第一」这类断言的措辞没有可比的原文形态 —— 挡住它们的是数据区
+    # 定界与 prompt 里的纪律，不是这一层。数字扫全字段就是为了补这个缺口：
+    # 编造的断言基本都要靠一个数才站得住。
     bad = _names_not_in_source(facts, digest) + _numbers_not_in_source(facts, digest)
     if bad:
         G.info(f"  回核：{'、'.join(bad[:5])} 在资料里找不到，已记入 uncertain")

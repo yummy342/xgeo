@@ -104,6 +104,17 @@ class TestEntityNameBackcheck(WorkDirCase):
             facts = B.brand_facts(self.slug, digest)
         self.assertIn("5000", " ".join(facts["uncertain"]))
 
+    def test_fabricated_number_in_definition_is_flagged_too(self):
+        """自由文本字段也要扫：definition 没有可比的原文形态，但里面的
+        「5000 家客户」是能核的 —— 这类断言原样进 facts.md 与交付包。"""
+        digest = B._wrap_content("Aiglade 团队 12 人，2024 年成立")
+        with mock.patch.object(B, "_ask_json", return_value={
+                "name": "Aiglade", "uncertain": [],
+                "definition": "Aiglade 是面向中小团队的桌面工具，已有 5000 家客户。"}):
+            facts = B.brand_facts(self.slug, digest)
+        self.assertIn("5000", " ".join(facts["uncertain"]))
+        self.assertNotIn("12", " ".join(facts["uncertain"]))
+
     def test_real_number_is_not_flagged(self):
         digest = B._wrap_content("Aiglade 团队 12 人，2024 年成立")
         with mock.patch.object(B, "_ask_json", return_value={
