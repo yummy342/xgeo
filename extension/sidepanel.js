@@ -25,6 +25,12 @@ const HOST2PLAT = {
   "google.com": "google_aio",
   "chat.baidu.com": "baidu", "yiyan.baidu.com": "baidu", "wenxin.baidu.com": "baidu",
   "metaso.cn": "metaso", "n.cn": "nano_ai", "bot.n.cn": "nano_ai",
+  // 这 6 个是采样目标，原来只在 content.js 的 NEWCHAT 里、不在这张表：
+  // 后果是 detectPlatform 恒「未识别」，以及自动跑的「标签页被导走即停」
+  // 判据（HOST2PLAT[host] && 与启动时不同）恒假 —— 样本仍记在启动时那个平台上。
+  "perplexity.ai": "perplexity", "gemini.google.com": "gemini",
+  "chatglm.cn": "glm_web", "kimi.com": "kimi_web", "kimi.moonshot.cn": "kimi_web",
+  "yuanbao.tencent.com": "yuanbao",
 };
 
 const store = {
@@ -60,6 +66,23 @@ async function apiGet(path) {
   if (r.status === 401) throw new Error("看板要求凭据：把访问令牌填到上面那一栏");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
+}
+
+/** 等标签页 status 变成 complete（或超时）；返回的 Promise 一定会 resolve，
+ *  调用方不必接住异常。*/
+function waitTabLoaded(tabId, timeout = 12000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { chrome.tabs.onUpdated.removeListener(listener); } catch (e) { /* 忽略 */ }
+      resolve();
+    };
+    const listener = (id, info) => { if (id === tabId && info.status === 'complete') finish(); };
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(finish, timeout);
+  });
 }
 
 async function activeTab() {
@@ -122,7 +145,11 @@ async function renderQueue() {
   QUEUE.questions.forEach(q => (byGroup[q.group || "未分组"] = byGroup[q.group || "未分组"] || []).push(q));
   const sections = Object.entries(byGroup).map(([g, list]) => {
     const left = list.filter(q => !doneSet.has(collectedKey(p, q.id))).length;
-    return `<div class="small" style="color:var(--t600);margin:8px 0 2px">${g}
+    // 分组名来自 geo.json（bootstrap/expand 的 LLM 生成，与题目文本同一个不可信源），
+    // 这里原来是裸插值 —— 同文件的 renderGroups 是转义的。MV3 的 CSP 挡掉内联事件
+    // 处理器，所以是 HTML 注入 / 面板内 UI 伪造（能塞 <form action=外站>），不是
+    // 可直接执行的 XSS，但一行就能收掉。
+    return `<div class="small" style="color:var(--t600);margin:8px 0 2px">${esc(g)}
         <span style="color:var(--t500)">· 待采 ${left}/${list.length}</span></div>` +
       list.map(q => `
         <div class="q ${SEL && SEL.id === q.id ? "sel" : ""}" data-id="${esc(q.id)}">
@@ -277,6 +304,19 @@ async function waitAnswer(tabId, timeoutMs) {
 }
 
 async function autoRun() {
+  // 重入闸必须在**同步段**里：`#auto` 直到两处 confirm() 之后才隐藏，而双击的
+  // 第二下早在第一个 await 之后就被派发了 —— 两次执行共用同一个 RUN、抢 i/fails，
+  // 同一标签页并发提问、样本归属错乱。
+  if (RUN || $("#auto").disabled) return;
+  $("#auto").disabled = true;
+  try {
+    return await autoRunInner();
+  } finally {
+    $("#auto").disabled = false;
+  }
+}
+
+async function autoRunInner() {
   const plat = currentPlatform();
   if (!plat) { alog("先在上方选择当前引擎", "okline"); return; }
   const tab = await activeTab();
@@ -314,7 +354,10 @@ async function autoRun() {
       const nc = await chrome.tabs.sendMessage(RUN.tabId, { type: "xgeo-newchat" });
       if (nc && nc.url) {
         await chrome.tabs.update(RUN.tabId, { url: nc.url });
-        await sleep(3500);
+        // 固定 3.5s 对慢站（ChatGPT 冷启动、要登录的国内引擎）不够，提交失败连着
+        // 两题就把自动跑停掉，日志只写「提交失败」，看不出是加载没跟上。
+        await waitTabLoaded(RUN.tabId, 15000);
+        await sleep(600);   // SPA 还要水合一会儿，complete 之后再缓一下
       } else if (!newChatWarned) {
         // 站点不在新会话映射表里时原来静默就地继续 —— 所有题在同一个对话里
         // 连着问，上文污染后面每一题的答案，而这正是采样纪律的头一条。
@@ -382,6 +425,14 @@ $("#upload").onclick = async () => {
     });
     const j = await r.json();
     if (j.ok) {
+      const skipped = Array.isArray(j.skipped) ? j.skipped : [];
+      if (skipped.length) {
+        // 服务端丢了几条（平台码未知/答案为空）就别清本地缓冲 —— 原来只要 ok 为真
+        // 就整个清空：丢掉的样本没了、消息还写着「✓ 已导入 N 条」。
+        $("#upmsg").textContent = `⚠ 导入 ${j.imported} 条，服务器丢弃 ${skipped.length} 条`
+          + `（${skipped[0].why}）—— 本地缓冲**未清空**，请核对后重传`;
+        return;
+      }
       $("#upmsg").textContent = `✓ 已导入 ${j.imported} 条（A 级人工样本），指标已重算`;
       SAMPLES = []; await store.set("samples:" + slug(), []);
       $("#count").textContent = "0"; renderQueue();

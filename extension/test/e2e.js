@@ -6,8 +6,30 @@ const { chromium } = require("playwright-core");
 const fs = require("fs"), path = require("path"), os = require("os");
 
 const SRC = path.resolve(__dirname, "..");
-const CFT = os.homedir() + "/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/" +
-  "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+// Chrome for Testing 的路径按平台与构建号都不同（原来写死某一次 macOS arm64 构建，
+// 于是这套用例只在作者那台机器上跑得起来）。允许 XGEO_CFT 覆盖，否则在
+// ms-playwright 缓存里按平台找第一个存在的。
+function findCft() {
+  if (process.env.XGEO_CFT) return process.env.XGEO_CFT;
+  const roots = [os.homedir() + '/Library/Caches/ms-playwright',
+                 os.homedir() + '/AppData/Local/ms-playwright',
+                 os.homedir() + '/.cache/ms-playwright'];
+  const rels = ['chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+                'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+                'chrome-win64/chrome.exe', 'chrome-linux64/chrome', 'chrome-linux/chrome'];
+  for (const root of roots) {
+    let dirs = [];
+    try { dirs = fs.readdirSync(root).filter((d) => d.startsWith('chromium-')); } catch (e) { continue; }
+    for (const d of dirs) {
+      for (const rel of rels) {
+        const p = path.join(root, d, rel);
+        if (fs.existsSync(p)) return p;
+      }
+    }
+  }
+  throw new Error('找不到 Chrome for Testing：设 XGEO_CFT 指到可执行文件，或先 npx playwright install chromium');
+}
+const CFT = findCft();
 const FIXTURE = "http://localhost:8614/test/fixture.html";
 const DASH = "http://127.0.0.1:8765";
 let fails = 0;

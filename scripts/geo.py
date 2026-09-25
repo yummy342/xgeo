@@ -193,7 +193,7 @@ def cmd_new(a):
         try:
             S.run(slug, limit=a.limit)
         except Exception as e:  # noqa: BLE001
-            G.info(f"采样跳过：{type(e).__name__}: {e}")
+            G.info(f"⚠ 采样失败、本步已跳过（不阻断整条 cycle）：{type(e).__name__}: {e}")
     G.info("═══ 7/9 工单与建设蓝图 ═══")
     tasks.build(slug)
     BP.build(slug)
@@ -249,7 +249,7 @@ def cmd_autopilot(a):
         try:
             S.run(a.slug, limit=a.limit)
         except Exception as e:  # noqa: BLE001
-            G.info(f"采样跳过：{type(e).__name__}: {e}")
+            G.info(f"⚠ 采样失败、本步已跳过（不阻断整条 cycle）：{type(e).__name__}: {e}")
     G.info("═══ 5/8 工单与建设蓝图 ═══")
     tasks.build(a.slug)
     BP.build(a.slug)
@@ -322,7 +322,7 @@ def cmd_cycle(a):
         try:
             sample.run(a.slug, limit=a.limit)
         except Exception as e:  # noqa: BLE001
-            G.info(f"采样跳过：{type(e).__name__}: {e}")
+            G.info(f"⚠ 采样失败、本步已跳过（不阻断整条 cycle）：{type(e).__name__}: {e}")
     G.info("=== 4/4 报告 ===")
     report.run(a.slug)
     # 一期跑完立刻给对照：复测的全部意义就在这一步，
@@ -594,7 +594,7 @@ def cmd_serve(a):
         try:
             S.run(a.slug, limit=a.limit)
         except Exception as e:  # noqa: BLE001
-            G.info(f"采样跳过：{type(e).__name__}: {e}")
+            G.info(f"⚠ 采样失败、本步已跳过（不阻断整条 cycle）：{type(e).__name__}: {e}")
     try:
         import expand
         expand.run(a.slug)
