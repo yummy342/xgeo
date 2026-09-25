@@ -17,6 +17,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import dashboard as D
 
+# 测试跑在自己的环境里：宿主 shell 里导出的 XGEO_*（README 与 deploy.sh 都教人这么干）
+# 会渗进每一个用例，让「默认档」这类断言按别的档位跑 —— 实测宿主带上
+# XGEO_TRUST_PROXY/XGEO_ADMIN_* 时，TestHostGuard / TestStaticServing 这些**与今天
+# 改动无关**的类会红 8 条，而失败原因看起来像真 bug。模块级先摘掉，用例要哪一档自己
+# patch（patch.dict 会记住这里的状态，还原时不会把宿主的值放回来）。
+for _k in ("XGEO_TOKEN", "XGEO_PROJECT_TOKENS", "XGEO_ACCOUNTS", "XGEO_AUTH_BASE",
+           "XGEO_ADMIN_USER", "XGEO_ADMIN_PASSWORD", "XGEO_PUBLIC_HOST",
+           "XGEO_TRUST_PROXY", "XGEO_SESSION_TTL"):
+    os.environ.pop(_k, None)
+
 
 class TestAuthOk(unittest.TestCase):
     TOKEN = "s3cret-token"
@@ -593,9 +603,6 @@ class TestStaticServing(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class _DrainStub:
     """只喂 _drain/_drain_chunked 需要的三个属性 —— 不起 socket，确定性地验分帧。"""
@@ -617,6 +624,17 @@ class _DrainStub:
 class TestProxyTrust(unittest.TestCase):
     """反代信任的判据。`_proxied()` 为假的那一支在别的用例里从不执行，
     而那正是安全上更关键的一支（两个头都不可信时才生效的保护）。"""
+
+    def setUp(self):
+        # 把其它档位的变量**显式置空**：`clear=False` 只补不删，宿主 shell 里导出的
+        # XGEO_* 会渗进来。实测：宿主设了 XGEO_TRUST_PROXY=1 或 XGEO_ADMIN_* 时，
+        # 本类若干断言会红，而失败原因与被测代码无关（最容易被当成真 bug 查半天）。
+        self.neutral = mock.patch.dict(os.environ, {
+            "XGEO_TRUST_PROXY": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "",
+            "XGEO_PUBLIC_HOST": "", "XGEO_SESSION_TTL": "",
+        }, clear=False)
+        self.neutral.start()
+        self.addCleanup(self.neutral.stop)
 
     class _H:
         """_proxied/_client_ip/_https 只用到 client_address 与 headers。"""
@@ -745,6 +763,24 @@ class TestProxyTrust(unittest.TestCase):
         self.assertIsNotNone(D.Handler.timeout)
         self.assertLessEqual(D.Handler.timeout, 60)
 
+    def test_negative_content_length_is_refused(self):
+        """负数必须挡：`read(-1)` 在 socket 上等于读到 EOF，一切上限作废 —— 未认证
+        请求声明 `Content-Length: -1` 就能让服务端收到多少吃多少（实测单连接 200MB、
+        RSS 54→239MB）。每个方向都验一遍。"""
+        # `-0` 不算：`int("-0") == 0`，`if n:` 直接不读，无害
+        for bad in ("-1", "-999", "-100000"):
+            st = _DrainStub(b"x" * 32, {"Content-Length": bad})
+            st._drain()
+            self.assertTrue(st.close_connection, bad)
+            self.assertEqual(st.left, 32, f"{bad} 被读了")
+            st2 = _DrainStub(b"x" * 32, {"Content-Length": bad})
+            with self.assertRaises(ValueError, msg=bad):
+                st2._body()
+        # 解析不了的长度也按畸形处理（原来当 0 静默不读，残余字节会被当下一请求）
+        st = _DrainStub(b"x" * 8, {"Content-Length": "abc"})
+        st._drain()
+        self.assertTrue(st.close_connection)
+
     def test_drain_survives_a_dead_peer(self):
         class Dead(io.BytesIO):
             def read(self, *a):
@@ -767,6 +803,15 @@ class TestBindPublicDerivation(unittest.TestCase):
     """
 
     def setUp(self):
+        # 把其它档位的变量**显式置空**：`clear=False` 只补不删，宿主 shell 里导出的
+        # XGEO_* 会渗进来。实测：宿主设了 XGEO_TRUST_PROXY=1 或 XGEO_ADMIN_* 时，
+        # 本类若干断言会红，而失败原因与被测代码无关（最容易被当成真 bug 查半天）。
+        self.neutral = mock.patch.dict(os.environ, {
+            "XGEO_TRUST_PROXY": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "",
+            "XGEO_PUBLIC_HOST": "", "XGEO_SESSION_TTL": "",
+        }, clear=False)
+        self.neutral.start()
+        self.addCleanup(self.neutral.stop)
         self.tmp = TemporaryDirectory()
         self.work = mock.patch.object(D.G, "WORK", Path(self.tmp.name))
         self.work.start()
@@ -819,7 +864,11 @@ class TestBindPublicDerivation(unittest.TestCase):
     def test_loopback_bind_is_not_public(self):
         for host in ("127.0.0.1", "127.0.1.1"):
             with self.subTest(host=host):
-                self.assertFalse(self._bind(host), f"{host} 只绑回环，却被判成对外")
+                got = self._bind(host)
+                # 先断言「注入真的发生过」：assertFalse 对 None 也成立，
+                # 而 None 只说明 run() 还没跑到那一行 —— 那是假绿。
+                self.assertIsNotNone(got, f"{host}: BIND_PUBLIC 没被注入")
+                self.assertFalse(got, f"{host} 只绑回环，却被判成对外")
 
     def test_non_loopback_bind_is_public(self):
         self.assertTrue(self._bind("0.0.0.0"))
@@ -837,6 +886,15 @@ class TestAccountLogin(unittest.TestCase):
     """
 
     def setUp(self):
+        # 把其它档位的变量**显式置空**：`clear=False` 只补不删，宿主 shell 里导出的
+        # XGEO_* 会渗进来。实测：宿主设了 XGEO_TRUST_PROXY=1 或 XGEO_ADMIN_* 时，
+        # 本类若干断言会红，而失败原因与被测代码无关（最容易被当成真 bug 查半天）。
+        self.neutral = mock.patch.dict(os.environ, {
+            "XGEO_TRUST_PROXY": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "",
+            "XGEO_PUBLIC_HOST": "", "XGEO_SESSION_TTL": "",
+        }, clear=False)
+        self.neutral.start()
+        self.addCleanup(self.neutral.stop)
         self.tmp = TemporaryDirectory()
         work = Path(self.tmp.name) / "work"
         for slug in ("alpha", "beta"):
@@ -1089,7 +1147,7 @@ class TestAccountLogin(unittest.TestCase):
         """★ 真浏览器在线上逮到的：登出那条路由原来在「没配 XGEO_ACCOUNTS」时直接
         404 —— 而兜底账号恰恰常出现在没有账号档的实例上，于是登出弹错误、页面不刷新
         （用户以为自己登出了，其实没有）。"""
-        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "admin",
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "", "XGEO_ADMIN_USER": "admin",
                                           "XGEO_ADMIN_PASSWORD": "pw-123"}, clear=False):
             _s, _b, headers = self._req("POST", "/api/auth/login",
                                        body={"user": "admin", "password": "pw-123"})
@@ -1244,6 +1302,15 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
     TOKEN = "s3cret-admin-token"
 
     def setUp(self):
+        # 把其它档位的变量**显式置空**：`clear=False` 只补不删，宿主 shell 里导出的
+        # XGEO_* 会渗进来。实测：宿主设了 XGEO_TRUST_PROXY=1 或 XGEO_ADMIN_* 时，
+        # 本类若干断言会红，而失败原因与被测代码无关（最容易被当成真 bug 查半天）。
+        self.neutral = mock.patch.dict(os.environ, {
+            "XGEO_TRUST_PROXY": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": "",
+            "XGEO_PUBLIC_HOST": "", "XGEO_SESSION_TTL": "",
+        }, clear=False)
+        self.neutral.start()
+        self.addCleanup(self.neutral.stop)
         _FakeMe.seen = []
         _FakeMe.payload = {"email": self.EMAIL, "api_key": "sk-fm-fresh"}
         _FakeMe.code = 200
@@ -1366,6 +1433,20 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertIsNone(headers.get("Set-Cookie"))
 
+    def test_scoped_token_does_not_lose_admin_entries(self):
+        """`/api/auth/me` 的 `admin` 是给「要不要给管理员入口」用的。分项目令牌命中时
+        `_scope` 是个集合，早先直接拿 `_scope is None` 判 → 它被当成租户、侧栏少了
+        Engines/Settings（16→14）、深链被改道 —— 而令牌档的界面必须与加登录之前一致。
+        判权没变：/api/keys 对它照旧 403。"""
+        with mock.patch.object(D.Handler, "SCOPES", {"tok-scoped": {"freemodel"}}):
+            status, body, _ = self._req("GET", "/api/auth/me",
+                                        headers={"X-Xgeo-Token": "tok-scoped"})
+            self.assertEqual(status, 200, body)
+            self.assertTrue(json.loads(body)["admin"], "分项目令牌被当成租户了")
+            self.assertEqual(self._req("GET", "/api/keys",
+                                       headers={"X-Xgeo-Token": "tok-scoped"})[0], 403,
+                             "判权不该跟着变")
+
     def test_accounts_tier_does_not_break_the_token_tier(self):
         """账号门只在「没有令牌」那一档生效。放在令牌短路之前的话，反代形态
         （仓库自带的 deploy.sh：绑 127.0.0.1 + `Host: <域名>`）下没设 XGEO_PUBLIC_HOST
@@ -1374,6 +1455,51 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
         status, _body, _ = self._req("GET", "/api/projects",
                                      headers={"Host": "xgeo.asia", "X-Xgeo-Token": self.TOKEN})
         self.assertEqual(status, 200, "令牌档被账号档的 Host 门连坐了")
+
+    def test_token_302_branch_drains_too(self):
+        """`?token=` 换 cookie 那条分支同样是「在 _auth 里返回 False」，带体的请求
+        不读走就会让 302 被 RST 吞掉（实测 1MB 体的 POST 20/20 拿不到响应）。"""
+        calls = []
+        orig = D.Handler._drain
+
+        def counting(self):
+            calls.append(1)
+            return orig(self)
+
+        with mock.patch.object(D.Handler, "_drain", counting):
+            status, _b, headers = self._req("POST", f"/api/projects?token={self.TOKEN}",
+                                            body={"x": 1})
+        self.assertEqual(status, 302)
+        self.assertEqual(len(calls), 1, "302 分支没 drain（或 drain 了不止一次）")
+        self.assertIn("Set-Cookie", headers)
+
+    def test_get_with_a_body_does_not_smuggle_a_second_request(self):
+        """带体的 GET 是畸形请求但发得出：成功路径原来既不读体也不断连，体里藏的
+        第二个请求会被当成下一个请求行执行（实测一条请求收到两个 200）。
+
+        判据用**回的是哪个接口**：体里藏 `/api/auth/me`（回一个对象），随后我自己
+        发 `/api/projects`（回一个数组）。读到数组才是我的请求 —— 读到对象就说明
+        体里那条被先执行了。
+        """
+        crlf = chr(13) + chr(10)
+        smuggled = ("GET /api/auth/me HTTP/1.1" + crlf
+                    + "X-Xgeo-Token: " + self.TOKEN + crlf + "Host: x" + crlf + crlf).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("GET", "/api/projects", body=smuggled,
+                         headers={"X-Xgeo-Token": self.TOKEN,
+                                  "Content-Type": "text/plain"})
+            r1 = conn.getresponse()
+            self.assertEqual(r1.status, 200)
+            r1.read()
+            conn.request("GET", "/api/projects", headers={"X-Xgeo-Token": self.TOKEN})
+            r2 = conn.getresponse()
+            body = r2.read()
+            self.assertEqual(r2.status, 200)
+            self.assertIsInstance(json.loads(body), list,
+                                  "回的是体里藏的 /api/auth/me（走私被执行了）")
+        finally:
+            conn.close()
 
     def test_request_body_is_drained_exactly_once(self):
         """**数调用次数**，而不是看同连接的后续请求 —— 401 那条路本来就会关连接
@@ -1520,7 +1646,7 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
     def test_logout_is_not_available_without_the_accounts_tier(self):
         """它清的是 AUTH_COOKIE，而令牌档的凭据正是同一个 cookie 名 ——
         无条件下发清除就等于给令牌档加了个「任何人一发就把别人登出」的入口。"""
-        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": ""}, clear=False):
+        with mock.patch.dict(os.environ, {"XGEO_ACCOUNTS": "", "XGEO_ADMIN_USER": "", "XGEO_ADMIN_PASSWORD": ""}, clear=False):
             status, _body, headers = self._req("POST", "/api/auth/logout")
         self.assertEqual(status, 404)
         self.assertIsNone(headers.get("Set-Cookie"))
@@ -1536,3 +1662,7 @@ class TestAccountLoginEndToEnd(unittest.TestCase):
         cookie = f"{D.AUTH_COOKIE}={D._token_digest(sid)}"
         self.assertEqual(self._req("GET", "/api/p/beta", cookie=cookie)[0], 200)
         self.assertEqual(self._req("GET", "/api/p/alpha", cookie=cookie)[0], 403)
+
+
+if __name__ == "__main__":
+    unittest.main()

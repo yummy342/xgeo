@@ -279,7 +279,10 @@ def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for part in (raw or "").split(";"):
         tok, _, slugs = part.partition(":")
-        names = {s.strip() for s in slugs.split(",") if s.strip()}
+        # 与 parse_accounts 同一口径：项目标识就是目录名，必然小写。写成 `Proj-A`
+        # 的结果是「登进来了但什么都看不到」（/api/projects 回 []、点任何项目 403），
+        # 而且没有任何报错 —— 两处的归一化口径就该一致。
+        names = {s.strip().lower() for s in slugs.split(",") if s.strip()}
         tok = tok.strip()
         if tok and names:
             out[tok] = names
@@ -930,6 +933,9 @@ class Handler(BaseHTTPRequestHandler):
         `evil.example`，Origin 与 Host 都是它，同源判定帮不上忙，Host 名单是唯一防线。
         扩展的 README 恰恰教人「本机要用助手就同时配 XGEO_TOKEN」，所以这是常规形态。
         """
+        # 判据是「**有没有配任何一份凭据**」，不是「有没有账号档」：只配兜底账号的实例
+        # 同样会绑公网/走反代，而 XGEO_PUBLIC_HOST 是运维显式列的对外主机名 —— 拿账号档
+        # 当唯一门槛的话，那个形态下 `GET /` 与 `/api/auth/login` 全 403（独立复现过两次）。
         if Handler.BIND_PUBLIC:
             return True
         h = host_name(self.headers.get("Host"))
@@ -967,11 +973,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         # 走到这里只剩默认档与账号档（账号档的 Host 已在上面的名单里判过，
         # 这里再用同一份名单复核一次，顺带让 Origin 校验有依据）
-        allowed = public_hosts() if accounts_enabled() else set()
+        # 对外主机名对所有「配了凭据」的档位都生效（含只配兜底账号的形态）
+        allowed = public_hosts() if (accounts_enabled() or local_admin()) else set()
         # 回环判定要走 is_loopback：字符串元组认不出 127.0.0.2、127.0.1.1（Debian 系
         # 的 /etc/hosts 把主机名指到它）与 `::ffff:127.0.0.1`（绑 :: 时同机反代回来的
         # 形状）—— 那几种都是本机，用元组比会假 403。
-        if not (is_loopback(h) or h in allowed) and not (accounts_enabled() and Handler.BIND_PUBLIC):
+        if not (is_loopback(h) or h in allowed) and not (
+                (accounts_enabled() or local_admin()) and Handler.BIND_PUBLIC):
             # 绑了非本机地址的账号档实例不在名单里判 Host（运维自己决定把它摊到网络上，
             # 按 IP:端口访问时 Host 就是那个 IP）；默认档没有这个口子（那种实例根本起不来）。
             self._json({"error": "只接受本机访问：Host 不是本机地址"}, 403)
@@ -1006,7 +1014,10 @@ class Handler(BaseHTTPRequestHandler):
         qt = (parse_qs(u.query).get("token") or [None])[0]
         # _auth 在 try 之外调用：这里抛异常就是连接被直接掐断，连 401 都回不去
         if qt and _match_token(Handler.TOKEN, Handler.SCOPES, None, query_token=qt):
-            # 令牌换 cookie 后跳回干净地址，别让令牌留在地址栏和访问日志里
+            # 令牌换 cookie 后跳回干净地址，别让令牌留在地址栏和访问日志里。
+            # 先 drain：这一支同样是「在 _auth 里返回 False」的失败分支，带体的请求
+            # 不读走就会让 302 被 RST 吞掉（实测 1MB 体的 POST 20/20 拿不到响应）。
+            self._drain()
             self.send_response(302)
             loc = u.path or "/"
             # 只接受站内绝对路径。`GET /\evil.com?token=…` 的 u.path 就是
@@ -1154,7 +1165,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
-                n = 0
+                # 解析不了的长度按畸形处理：原来当 0（不读），残余字节会被当成
+                # 下一个请求行 —— 与 _body 的拒收口径也不一致。
+                self.close_connection = True
+                return
+            if n < 0:
+                # **负数必须挡**：`read(-1)` 在 socket 上等于读到 EOF，一切上限作废 ——
+                # 未认证请求声明 `Content-Length: -1` 就能让服务端收到多少吃多少
+                # （实测单连接 200MB、RSS 54→239MB）。合法客户端不会发负数。
+                self.close_connection = True
+                return
             if n > Handler.MAX_BODY:
                 self.close_connection = True
                 return
@@ -1200,6 +1220,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             raise ValueError("不支持 chunked 请求体")   # 分块体不解析，连接已标记要断
         n = int(self.headers.get("Content-Length", 0))
+        if n < 0:
+            # 同 _drain：负数会让 `read(-1)` 读到 EOF，cap 形同虚设。
+            self.close_connection = True
+            raise ValueError(f"请求体长度非法：{n}")
         cap = Handler.MAX_BODY if max_bytes is None else max_bytes
         if n > cap:
             # 不设上限的话，一个声明了超大 Content-Length 的请求就能把内存吃满。
@@ -1223,6 +1247,11 @@ class Handler(BaseHTTPRequestHandler):
             # 请求**的字节，keep-alive 上表现为后续请求凭空 EOF）。
             self.close_connection = True
             return
+        # 带着体的 GET 是畸形请求，但发得出：成功路径原来既不读体也不断连，于是体里
+        # 藏的第二个请求会被当成下一个请求行执行（实测一条请求收到两个 200）。
+        # 与 _body 一套口径：声明了体就先读走，超限/畸形自然断连。
+        if self.headers.get("Content-Length") or self.headers.get("Transfer-Encoding"):
+            self._drain()
         u = urlparse(self.path)
         p, q = unquote(u.path), parse_qs(u.query)
         # 项目级授权统一在这里判，各个分支不再各自检查
@@ -1335,9 +1364,14 @@ class Handler(BaseHTTPRequestHandler):
                 # 在服务端每个路由上，前端隐藏不作为边界。
                 # projects 不放这里：要在意的项目清单走 /api/projects，那条已经
                 # 按 _scope 过滤过了，两个出口报同一件事只会漂移。
+                # `admin` 是给「要不要给管理员入口」用的，而**令牌档的界面必须与加登录
+                # 之前逐字一致**：分项目令牌命中时 `_scope` 是个集合，早先这里直接拿
+                # `_scope is None` 判，于是它被当成租户、侧栏少了 Engines/Settings
+                # （16→14），深链也被改道。服务端对 /api/keys 照旧 403，判权没变，
+                # 变的只是「藏不藏入口」——那就不该让令牌档跟着变。
                 return self._json({"ok": True, "mode": self._mode or "token",
                                    "email": self._email,
-                                   "admin": self._scope is None})
+                                   "admin": self._mode != "account" or self._scope is None})
 
             if p.startswith("/api/publish/"):
                 import publish as P
@@ -1836,7 +1870,7 @@ def run(port: int = 8765, open_browser: bool = True,
     scoped = parse_scoped_tokens(_env("XGEO_PROJECT_TOKENS"))
     # `::1` 也是回环，别再维护第二套元组（这里曾经少了它，绑 ::1 会被判成
     # 「暴露给网络上的所有人」）
-    if (host not in LOOPBACK_HOSTS and not token and not scoped and not accounts_enabled()
+    if (not is_loopback(host) and not token and not scoped and not accounts_enabled()
             and not local_admin()):
         G.die(f"绑定到 {host} 会把看板暴露给网络上的所有人。"
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
