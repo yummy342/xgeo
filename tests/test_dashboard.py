@@ -786,8 +786,12 @@ class TestBindPublicDerivation(unittest.TestCase):
         # 带个令牌：绑 0.0.0.0 又没有任何凭据时 run() 会按设计 die（绑公网必须配
         # 凭据），那就走不到注入那一行 —— 这里要测的是注入，不是守卫。
         with mock.patch.object(D, "ThreadingHTTPServer", Rec),              mock.patch.object(D.Handler, "BIND_PUBLIC", None),              mock.patch.object(D.Handler, "TOKEN", "tok-bind-test"):
-            t = threading.Thread(target=lambda: D.run(port=0, host=host, token="tok-bind-test"),
-                                 daemon=True)
+            # open_browser=False 是必须的：run() 默认会 webbrowser.open()，而它拼的
+            # URL 用的是**传进去的端口**（0）—— 漏了这个参数，每跑一次测试就在用户
+            # 桌面上弹一个打不开的 http://127.0.0.1:0/ 标签页。
+            t = threading.Thread(
+                target=lambda: D.run(port=0, open_browser=False, host=host,
+                                     token="tok-bind-test"), daemon=True)
             t.start()
             for _ in range(200):
                 if made and D.Handler.BIND_PUBLIC is not None:
