@@ -54,6 +54,14 @@ const ok = (c, m) => { if (!c) fails++; console.log((c ? "  ✓ " : "  ✗ ") + 
   const side = await ctx.newPage();          // 独立窗口模拟侧栏，与被采页面并存
   await side.goto(`chrome-extension://${extId}/sidepanel.html`);
   await side.waitForTimeout(1200);
+  // 看板配了凭据（XGEO_TOKEN / 账号档）时，不带令牌的读取一律 401 —— 按今天新写的
+  // extension/README 那节把本机配好之后，这套用例会从这一步起全红。令牌从环境读，
+  // 不填就是原来的匿名行为（本机没配凭据时够用）。
+  if (process.env.XGEO_TOKEN) {
+    await side.fill("#token", process.env.XGEO_TOKEN);
+    await side.click("#load");           // 填完重新载一次，让上面那次失败的重来
+    await side.waitForTimeout(800);
+  }
   const slugOpts = await side.$$eval("#slug option", els => els.map(e => e.value));
   ok(slugOpts.includes("aigclink"), `读到项目列表：${slugOpts.join(",")}`);
 

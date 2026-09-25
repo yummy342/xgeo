@@ -111,7 +111,7 @@ python3 scripts/geo.py ui        # → http://127.0.0.1:8765
 # 方法 A（推奨）：SSH トンネル。ポートを公開しない
 ssh -N -L 8765:127.0.0.1:8765 user@your-server   # その後ローカルで http://127.0.0.1:8765 を開く
 
-# 方法 B：公開バインド + アクセストークン（両方必須。トークン未設定では起動を拒否）
+# 方法 B：公開バインド + 資格情報（次のいずれか一つ。何も無ければ起動を拒否）
 export XGEO_TOKEN=$(openssl rand -hex 16)
 export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
@@ -245,7 +245,7 @@ python3 scripts/geo.py sample-import --slug <project> --file <sheet>
 
 ## 設計原則とセキュリティ境界
 
-- **単一マシン・セルフホスト**：標準ライブラリの `http.server` を 127.0.0.1 のみで起動。DB なし。データはプレーンファイル。アクセスはトークンで制限し、任意で FreeModel アカウント階層も使えます（`XGEO_ACCOUNTS` 未設定なら無効）
+- **単一マシン・セルフホスト**：標準ライブラリの `http.server` を 127.0.0.1 のみで起動。DB なし。データはプレーンファイル。アクセスはアクセストークンで制限し、任意で FreeModel アカウント（`XGEO_ACCOUNTS`）と、認証サービスに到達できないとき用のローカル管理者アカウント（`XGEO_ADMIN_USER`/`XGEO_ADMIN_PASSWORD`）も使えます
 - **決して捏造しない**：ファクトはサイト本文のみから。競合名の発明は禁止。AI 下書きは lint + 人間レビュー必須
 - **検証こそプロダクト**：自動検証できるものは、人の「完了しました」に依存しない
 - **公開は常に手動**：チャネル認証情報はローカル `.env`（mode 600）。公開は毎回明示的なクリック。WeChat/WordPress は下書きのみ

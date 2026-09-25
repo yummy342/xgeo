@@ -18,6 +18,12 @@ export async function loadAuth() {
     auth.admin = r.admin !== false
   }
   auth.loaded = true
+  // 身份落地后把**当前 hash** 再过一遍守卫：hashchange 可能发生在 /me 回来之前，
+  // 那时 admin 还是未知（按「不隐藏、不改道」处理），非管理员于是会停在 `#settings`
+  // 上直到他再点一下。写一次 hash 就会触发 router 的 hashchange → 走守卫改道。
+  // 只碰 location，不 import router（router 已经 import 了本模块，反过来会成环）。
+  const cur = (location.hash || '').replace('#', '')
+  if (cur && routeFor(cur, auth.admin) !== cur) location.replace('#overview')
 }
 
 /** 非管理员落到只有管理员能用的页面时改道总览。

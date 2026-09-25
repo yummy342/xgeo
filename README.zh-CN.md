@@ -140,13 +140,15 @@ python3 scripts/geo.py ui        # → http://127.0.0.1:8765
 ssh -N -L 8765:127.0.0.1:8765 user@your-server
 # 然后本地浏览器打开 http://127.0.0.1:8765
 
-# 方式 B：绑定公网 + 访问令牌（两个变量缺一不可，不设令牌会拒绝启动）
+# 方式 B：绑定公网 + 凭据（下面三种任配一份，一份都不配会拒绝启动）
 export XGEO_TOKEN=$(openssl rand -hex 16)
 export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
 # 浏览器首次访问输入令牌（或打开 http://server:8765/?token=令牌），
 # 之后凭 HttpOnly cookie 访问；API 调用带 X-Xgeo-Token 头
 ```
+
+要 systemd + nginx + certbot 那套，仓库里有 `scripts/deploy.sh deploy --host <user@host> --domain <域名>` —— 它只发 `scripts/`，**不动服务器上的 `work/`**（那边是活数据）。
 
 公网部署建议再套一层 HTTPS 反向代理（nginx/caddy），令牌走明文 HTTP 会被中间人看到。`.env` 与 `work/` 含密钥和项目数据，注意文件权限。
 
@@ -282,7 +284,7 @@ python3 scripts/geo.py sample-import --slug <项目> --file <采样表>
 
 ## 设计原则与安全边界
 
-- **单机自托管**：标准库 `http.server` 只绑 127.0.0.1；无数据库，数据即文件。访问由令牌把关，另有一档可选的 FreeModel 账号登录（不设 `XGEO_ACCOUNTS` 就不生效）
+- **单机自托管**：标准库 `http.server` 只绑 127.0.0.1；无数据库，数据即文件。访问由访问令牌把关，另有两档可选：FreeModel 账号（`XGEO_ACCOUNTS`），以及认证服务不可达时用的本地管理员兜底账号（`XGEO_ADMIN_USER`/`XGEO_ADMIN_PASSWORD`）
 - **宁缺毋滥**：品牌事实只从官网正文抽取，抽不到标「待确认」；竞品严禁发明名字；AI 初稿必须过 lint 并人工核实
 - **验收即产品**：能自动判定的绝不靠人回填
 - **发布永远手动**：渠道凭证在本地 `.env`（权限 600），每次发布人工点击确认；公众号/WordPress 只进草稿箱

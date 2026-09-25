@@ -1889,6 +1889,7 @@ def run(port: int = 8765, open_browser: bool = True,
     auth_note = ("，访问需令牌（XGEO_TOKEN）" if token
                  else f"，访问需项目令牌（{len(scoped)} 个）" if scoped
                  else f"，访问需账号登录（{len(accounts())} 个账号）" if accounts_enabled()
+                 else "，访问需管理员账号（XGEO_ADMIN_USER）" if local_admin()
                  else "")
     if accounts_enabled() and not Handler.BIND_PUBLIC and not public_hosts():
         G.info("提示：账号档 + 绑本机。若前面有反代（deploy.sh 的形态），"

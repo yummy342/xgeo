@@ -115,13 +115,16 @@ The server binds to `127.0.0.1` by default. Two ways to access it remotely:
 # Option A (recommended): SSH tunnel, no port exposed
 ssh -N -L 8765:127.0.0.1:8765 user@your-server   # then open http://127.0.0.1:8765 locally
 
-# Option B: public bind + access token (both required — refuses to start without a token)
+# Option B: public bind + a credential — refuses to start with none of them.
+# Any one of: XGEO_TOKEN / XGEO_ACCOUNTS / XGEO_ADMIN_USER+_PASSWORD
 export XGEO_TOKEN=$(openssl rand -hex 16)
 export XGEO_HOST=0.0.0.0
 python3 scripts/geo.py ui
 # Enter the token on first visit (or open http://server:8765/?token=TOKEN);
 # afterwards access is via HttpOnly cookie. API calls: X-Xgeo-Token header.
 ```
+
+For a systemd + nginx + certbot setup there is also `scripts/deploy.sh deploy --host <user@host> --domain <domain>` — it ships `scripts/` only and leaves the server's `work/` (live samples, tasks) untouched.
 
 For public deployments put an HTTPS reverse proxy (nginx/caddy) in front — a token over plain HTTP can be intercepted. `.env` and `work/` contain secrets and project data — mind file permissions.
 
@@ -253,7 +256,7 @@ All six audit dimensions are anchored in public empirical data; `scripts/audit.p
 
 ## Design principles & security boundaries
 
-- **Single-machine, self-hosted**: stdlib `http.server` on 127.0.0.1; no DB; data is plain files. Access is token-gated, with an optional FreeModel-account tier (off unless `XGEO_ACCOUNTS` is set)
+- **Single-machine, self-hosted**: stdlib `http.server` on 127.0.0.1; no DB; data is plain files. Access is gated by an access token, plus two optional tiers: FreeModel accounts (`XGEO_ACCOUNTS`) and a local admin break-glass login (`XGEO_ADMIN_USER`/`XGEO_ADMIN_PASSWORD`) for when the auth service is unreachable
 - **Never fabricate**: facts only from site copy; inventing competitor names is forbidden; AI drafts must pass lint + human review
 - **Verification is the product**: anything auto-verifiable never relies on someone saying "done"
 - **Publishing is always manual**: channel credentials in local `.env` (mode 600); every publish is an explicit click; WeChat/WordPress go to drafts only

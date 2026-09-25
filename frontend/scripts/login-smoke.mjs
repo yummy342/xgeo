@@ -4,14 +4,15 @@
 // 单测和 e2e 都不该依赖外网），所以它必须占一个固定端口：服务端要配
 // XGEO_AUTH_BASE 指向它。用法（两步）：
 //
-//   XGEO_ACCOUNTS='e2e@example.com:*;guest@example.com:$GL_E2E_TENANT_SCOPE' \
+//   XGEO_ACCOUNTS='e2e@example.com:*;guest@example.com:<项目标识>' \
 //   XGEO_AUTH_BASE=http://127.0.0.1:18871/api/auth \
 //     python scripts/geo.py ui --port 8801 --no-open
 //
 //   GL_URL=http://127.0.0.1:8801 node frontend/scripts/login-smoke.mjs
 //
-// 租户那一段要求 $GL_E2E_TENANT_SCOPE（默认 zz-auth）指向一个**真实存在**的项目：
+// 租户那一段要求上面那个 `<项目标识>` 是**真实存在**的项目（本地一般用 zz-auth）：
 // 租户只看得到名单里那一个，一个项目都没有时页面落在接入引导上、侧栏根本不渲染。
+// 注意脚本不读这个值 —— 它写在服务端的 XGEO_ACCOUNTS 里，脚本只按邮箱断言。
 //
 // 断言纪律（上一轮栽过）：不许写恒真的断言，也不许只验「页面渲染出来了」——
 // 真正要证的是「凭据换到了会话、会话能进、登出之后进不去」，所以每条都拿
@@ -211,6 +212,10 @@ try {
   await page.goto(`${BASE}/#settings`, { waitUntil: 'networkidle' })
   await page.waitForSelector('#side .navit', { timeout: 15000 })
   await page.waitForTimeout(300)
+  // 等改道**落地**再读：守卫依赖身份，而 /api/auth/me 是另一个请求 ——
+  // 立刻读会与它竞态（读到 #settings 就成了一条假红）。
+  await page.waitForFunction(() => location.hash !== '#settings', null, { timeout: 10000 })
+    .catch(() => {})
   const hash = await page.evaluate(() => location.hash)
   check('租户手敲 #settings 会被改道', hash !== '#settings', hash || '(空)')
   check('确实没渲染设置页',

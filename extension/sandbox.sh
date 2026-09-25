@@ -94,8 +94,11 @@ case "$MODE" in
     else
       echo "✗ 日常 Chrome 不支持自动装载扩展——跑 ./sandbox.sh --init 手动装一次"; RC=1
     fi
-    if curl -fsS -m 3 http://127.0.0.1:8765/api/projects >/dev/null 2>&1; then
-      echo "✓ 看板在线（127.0.0.1:8765）"
+    # 用状态码判活，**不加 -f**：配了令牌/账号档时 /api/projects 本来就回 401，
+    # 而 401 说明看板活着（scripts/service.sh 里为同一件事写过同一条注释）。
+    CODE=$(curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:8765/api/projects || true)
+    if [ "$CODE" = "200" ] || [ "$CODE" = "401" ]; then
+      echo "✓ 看板在线（127.0.0.1:8765，HTTP $CODE）"
     else echo "✗ 看板没启动——另开一个终端跑：python3 scripts/geo.py ui"; RC=1; fi
     [ "$RC" = 0 ] && echo "闭环就绪：./sandbox.sh 起沙箱就能开始采样" || echo "先解决上面标 ✗ 的项"
     exit $RC ;;

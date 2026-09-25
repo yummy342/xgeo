@@ -149,7 +149,10 @@ async function loadProjects() {
     const saved = await store.get("slug");
     if (saved && ps.some(p => p.slug === saved)) $("#slug").value = saved;
   } catch (e) {
-    $("#qmeta").textContent = "连不上看板——先启动 geo.py ui";
+    // 别把 apiGet 抛出来的那句吞掉：看板配了凭据时它会说「把访问令牌填到上面那一栏」，
+    // 而这里统一回「先启动 geo.py ui」会让用户去重启一个本来就在跑的看板。
+    const m = (e && e.message) || String(e);
+    $("#qmeta").textContent = /凭据|401/.test(m) ? m : "连不上看板——先启动 geo.py ui";
   }
 }
 
@@ -382,6 +385,10 @@ $("#upload").onclick = async () => {
       $("#upmsg").textContent = `✓ 已导入 ${j.imported} 条（A 级人工样本），指标已重算`;
       SAMPLES = []; await store.set("samples:" + slug(), []);
       $("#count").textContent = "0"; renderQueue();
+    } else if (r.status === 401) {
+      // 上传走的是裸 fetch（要带 body），401 时给的是服务端那句「需要 X-Xgeo-Token 头」——
+      // 对插件用户来说该说的是「填上面那个框」。
+      $("#upmsg").textContent = "看板要求凭据：把访问令牌填到上面那一栏";
     } else $("#upmsg").textContent = "导入失败：" + (j.error || r.status);
   } catch (e) { $("#upmsg").textContent = "连不上看板：" + e.message; }
 };
