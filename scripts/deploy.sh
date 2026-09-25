@@ -95,9 +95,11 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload && sudo systemctl enable xgeo >/dev/null 2>&1 || true
-# **必须 restart**：重新部署时单元文件被重写了，但 `enable --now` 对已经在跑的
-# 服务是空操作 —— 不 restart 的话新代码躺在磁盘上、进程里跑的还是旧的，而下面
-# 的存活检查（401）照样通过。这正是「部署了但没生效」最容易发生的地方。
+# 必须 restart：重新部署时单元文件被重写了，但 enable --now 对已经在跑的服务是
+# 空操作 —— 不 restart 的话新代码躺在磁盘上、进程里跑的还是旧的，而下面的存活检查
+# （401）照样通过。这正是「部署了但没生效」最容易发生的地方。
+# （这一行在双引号字符串里，注释里**不能出现反引号** —— 那会被远端 shell 当成
+#   命令替换去执行，实测踩过一次。）
 sudo systemctl restart xgeo"
     sleep 6
     # 401 也算活着：配了令牌时 /api/projects 本来就会回 401
