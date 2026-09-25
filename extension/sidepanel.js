@@ -38,7 +38,26 @@ const store = {
   async set(k, v) { await chrome.storage.local.set({ [k]: v }); },
 };
 
-function serverUrl() { return $("#server").value.trim().replace(/\/$/, "") || "http://127.0.0.1:8765"; }
+const DEFAULT_SERVER = "http://127.0.0.1:8765";
+
+// 看板地址只放行 http/https。`javascript:`、`data:` 这类 scheme 也能被 new URL
+// 解析出来，直接拼进 fetch 就去向了别处。非法时抛错而不是静默回退到默认地址：
+// 回退会让人以为样本发去了远端，实际全落在本机看板里，比报错更难发现。
+// 非本机地址不拦 —— 看板可以部署在别处，但 manifest 的 host_permissions 要
+// 一并加上那个地址，否则请求会被 Chrome 拦（README「Manual sampling」一节写了）。
+function serverUrl() {
+  const raw = $("#server").value.trim().replace(/\/$/, "") || DEFAULT_SERVER;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`看板地址不是合法 URL：${raw}`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error(`看板地址只支持 http/https：${raw}`);
+  }
+  return raw;
+}
 
 // 看板那侧的凭据。两种档都靠这个头：管理员令牌（XGEO_TOKEN）与分项目令牌。
 // **账号档例外** —— 那是浏览器里的事，助手进不去；本机开了账号档就给看板也配一个

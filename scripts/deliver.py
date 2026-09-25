@@ -44,16 +44,20 @@ def _tasks_table_md(data: dict, market: str | None = None) -> str:
 
 
 def _tasks_csv(data: dict, path: Path):
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["编号", "优先级", "工作包", "市场", "任务", "为什么要做", "具体动作",
-                    "负责角色", "工作量", "时间窗口", "验收标准", "验收方式", "状态", "影响页面数"])
-        for t in sorted(data.get("tasks", []), key=lambda x: (x["priority"], x["package"])):
-            w.writerow([t["id"], t["priority"], t["package"], t["market"], t["title"], t["why"],
-                        t["action"], t["owner"], T.EFFORT.get(t["effort"], t["effort"]), t["window"],
-                        t["acceptance"].get("desc", ""),
-                        "自动" if t["acceptance"].get("type") == "auto" else "人工",
-                        STATUS_CN.get(t["status"], t["status"]), len(t.get("affected", []))])
+    # 走 _atomic_write：给 Excel 的 BOM 记在文件头，写到一半中断就是个半截 CSV，
+    # 客户打开只看到前几行工单，不会发现少了一半。
+    def dump(tmp: Path):
+        with tmp.open("w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["编号", "优先级", "工作包", "市场", "任务", "为什么要做", "具体动作",
+                        "负责角色", "工作量", "时间窗口", "验收标准", "验收方式", "状态", "影响页面数"])
+            for t in sorted(data.get("tasks", []), key=lambda x: (x["priority"], x["package"])):
+                w.writerow([t["id"], t["priority"], t["package"], t["market"], t["title"], t["why"],
+                            t["action"], t["owner"], T.EFFORT.get(t["effort"], t["effort"]), t["window"],
+                            t["acceptance"].get("desc", ""),
+                            "自动" if t["acceptance"].get("type") == "auto" else "人工",
+                            STATUS_CN.get(t["status"], t["status"]), len(t.get("affected", []))])
+    G._atomic_write(path, dump)
 
 
 def _overview_md(cfg, audit, metrics, data, verify_report, notes=None) -> str:
@@ -254,13 +258,12 @@ def run(slug: str) -> Path:
                       + "、".join(t["affected"][:3]))
         md.append("")
     tasks_md = "\n".join(md)
-    (out / "03-工单表.md").write_text(tasks_md, "utf-8")
-    (out / "03-工单表.html").write_text(
-        R.build_html(f"{cfg['brand']['name']} GEO 工单表", tasks_md,
+    G.write_text_atomic(out / "03-工单表.md", tasks_md)
+    G.write_text_atomic(out / "03-工单表.html", R.build_html(f"{cfg['brand']['name']} GEO 工单表", tasks_md,
                      [("工单总数", str(data["summary"]["total"])),
                       ("P0", str(data["summary"]["by_priority"]["P0"])),
                       ("可自动验收", str(data["summary"]["auto_verifiable"])),
-                      ("已完成", str(data["summary"]["by_status"].get("done", 0)))]), "utf-8")
+                      ("已完成", str(data["summary"]["by_status"].get("done", 0)))]))
     _tasks_csv(data, out / "03-工单表.csv")
 
     # 04 验收表：本期未验收时写明原因，不静默复用旧验收结果
@@ -273,12 +276,11 @@ def run(slug: str) -> Path:
                       f"{r['verdict']} | {R.cell(r['note'])} |")
         vm += ["", "> 「待人工」表示该项无法由程序判定（例如词条是否通过审核），需要人工确认后手动标记完成。", ""]
         vmd = "\n".join(vm)
-        (out / "04-验收表.md").write_text(vmd, "utf-8")
-        (out / "04-验收表.html").write_text(
-            R.build_html(f"{cfg['brand']['name']} 工单验收表", vmd,
+        G.write_text_atomic(out / "04-验收表.md", vmd)
+        G.write_text_atomic(out / "04-验收表.html", R.build_html(f"{cfg['brand']['name']} 工单验收表", vmd,
                          [("通过", str(sum(1 for r in vrep["results"] if r["verdict"] == "通过"))),
                           ("未达标", str(sum(1 for r in vrep["results"] if r["verdict"] == "未达标"))),
-                          ("待人工", str(sum(1 for r in vrep["results"] if r["verdict"] == "待人工")))]), "utf-8")
+                          ("待人工", str(sum(1 for r in vrep["results"] if r["verdict"] == "待人工")))]))
     else:
         reason = "尚无验收记录" if not vrep else \
             f"最近一次验收日期为 {vrep_date}，早于本期体检日期 {audit_date or '未知'}"
@@ -286,10 +288,9 @@ def run(slug: str) -> Path:
             f"# 工单验收表 · {G.today()}", "",
             f"**本期未验收**：{reason}。", "",
             "验收需在本期体检之后重抓判定；本包不展示旧验收结果，以免与本期数据混淆。", ""])
-        (out / "04-验收表.md").write_text(vmd, "utf-8")
-        (out / "04-验收表.html").write_text(
-            R.build_html(f"{cfg['brand']['name']} 工单验收表", vmd,
-                         [("状态", "本期未验收")]), "utf-8")
+        G.write_text_atomic(out / "04-验收表.md", vmd)
+        G.write_text_atomic(out / "04-验收表.html", R.build_html(f"{cfg['brand']['name']} 工单验收表", vmd,
+                         [("状态", "本期未验收")]))
 
     # 05 初稿风险清单：编造内容进客户交付包是最严重的事故，必须显式列出
     lint = G.read_json(pdir / "assets" / "drafts" / "_lint.json", None)
@@ -322,12 +323,11 @@ def run(slug: str) -> Path:
                "- **中风险（未核实数字）**：能核实的补上来源与核验日期；不能核实的删掉或改写成「待补」",
                "- **低风险（年份）**：统一改成当前年份", ""]
         lmd = "\n".join(lm)
-        (out / "05-初稿风险清单.md").write_text(lmd, "utf-8")
-        (out / "05-初稿风险清单.html").write_text(
-            R.build_html(f"{cfg['brand']['name']} AI 初稿风险清单", lmd,
+        G.write_text_atomic(out / "05-初稿风险清单.md", lmd)
+        G.write_text_atomic(out / "05-初稿风险清单.html", R.build_html(f"{cfg['brand']['name']} AI 初稿风险清单", lmd,
                          [("初稿数", str(len(lint["files"]))),
                           ("待核实项", str(lint["total_issues"])),
-                          ("高风险", str(lint["high"]))]), "utf-8")
+                          ("高风险", str(lint["high"]))]))
 
     # 06 建设地图：客户最关心的"在哪些平台建、建什么内容"
     bp = G.read_json(pdir / "blueprint.json", None)
@@ -381,14 +381,13 @@ def run(slug: str) -> Path:
                "**一条纪律**：品牌官网类信源只占国内全库引用的 **1.37%**——官网是**事实源**不是**引用源**。",
                "把官网从 60 分做到 90 分的边际收益，远低于拿下一个榜单站词条。资源有限时优先做外部渠道。", ""]
         bmd = "\n".join(bm)
-        (out / "06-建设地图.md").write_text(bmd, "utf-8")
-        (out / "06-建设地图.html").write_text(
-            R.build_html(f"{cfg['brand']['name']} GEO 建设地图", bmd,
+        G.write_text_atomic(out / "06-建设地图.md", bmd)
+        G.write_text_atomic(out / "06-建设地图.html", R.build_html(f"{cfg['brand']['name']} GEO 建设地图", bmd,
                          [("渠道覆盖", f"{cov['channel_covered']}/{cov['channel_total']}"),
                           ("关键渠道", f"{cov['p0p1_covered']}/{cov['p0p1_total']}"),
                           ("内容承接", f"{cov['content_done']}/{cov['content_total']}"),
                           ("内容缺口", str(cov["content_gap"] + sum(
-                              1 for c in bp["contents"] if c["status"] == "仅大纲")))]), "utf-8")
+                              1 for c in bp["contents"] if c["status"] == "仅大纲")))]))
 
     # assets
     adir = pdir / "assets"
@@ -400,7 +399,7 @@ def run(slug: str) -> Path:
 
     # index + README
     ov = _overview_md(cfg, audit, metrics, data, None if unverified else vrep, notes)
-    (out / "index.md").write_text(ov, "utf-8")
+    G.write_text_atomic(out / "index.md", ov)
     cards = [("站点均分", "不适用" if audit.get("no_site") else str(audit.get("avg_score"))),
              ("抓取页数", str(audit.get("page_count"))),
              ("工单总数", str(data["summary"]["total"])),
@@ -411,9 +410,8 @@ def run(slug: str) -> Path:
                  if m.get("mention_rate") is not None]
         if rates:
             cards.append(("平均提及率", f"{sum(rates)/len(rates):.0%}"))
-    (out / "index.html").write_text(
-        R.build_html(f"{cfg['brand']['name']} · GEO 服务交付 {G.today()}", ov, cards), "utf-8")
-    (out / "README.md").write_text(_readme(cfg, data, notes), "utf-8")
+    G.write_text_atomic(out / "index.html", R.build_html(f"{cfg['brand']['name']} · GEO 服务交付 {G.today()}", ov, cards))
+    G.write_text_atomic(out / "README.md", _readme(cfg, data, notes))
 
     G.info(f"交付包已生成 → {out}")
     return out

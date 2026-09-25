@@ -1029,11 +1029,18 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
         「读全量 + os.replace 整文件替换」，替换会换掉 inode，握着旧句柄继续写
         就是写进已被 unlink 的文件，之后采的样本全部静默消失（Windows 上更直接：
         os.replace 抛 WinError 5）。持项目锁则挡住「读全量」那一段读到半截。
+
+        用一次 os.write 而不是文本层的 write()：文本流按缓冲区切块下发，
+        进程在两次 write 之间被杀就留半行 —— 坏行的根因就是这个。
+        编码后的字节一次性交给内核，O_APPEND 下单次写入不会与并发写交错。
         """
-        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        data = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         with G.project_lock(slug):
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
 
     def worker(plat_jobs):
         nonlocal done

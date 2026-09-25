@@ -209,17 +209,41 @@ def has_site(cfg: dict) -> bool:
     return bool((cfg.get("brand") or {}).get("site", "").strip())
 
 
+def _fsync_dir(d: Path):
+    """把目录项本身刷到盘。rename 之后不刷目录，掉电可能让「改名」这一步丢在半路。
+    Windows 上打不开目录 → 跳过（没有跨平台做法）。"""
+    try:
+        fd = os.open(d, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, write):
     """先写同目录下的临时文件再 os.replace：中断时目标文件要么是旧内容、
     要么是新内容，不会是半截。这几个文件都是整套流程的真相源，半截就等于丢掉一期。
 
-    临时名带随机串而不是 pid——同一进程里两个线程写同一个文件时 pid 会撞名。"""
+    临时名带随机串而不是 pid——同一进程里两个线程写同一个文件时 pid 会撞名。
+
+    写完之后 fsync 文件本身再 rename：只 rename 不刷盘时，掉电后新目录项可能指向
+    一块还没落地的数据块 —— 文件在、大小对、内容是空洞，比半截更难发现。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         write(tmp)
+        # O_RDWR 而不是 O_RDONLY：Windows 上 _commit() 对只读句柄报 EBADF，
+        # fsync 在这里会炸掉整个写路径（本地实测：整轮测试红了一片）。
+        fd = os.open(tmp, os.O_RDWR)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -261,13 +285,52 @@ def save_config(slug: str, cfg: dict):
     if p.exists():
         bak = p.parent / ".geo.bak"
         bak.mkdir(exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # 带到微秒：同一秒内连存两次（改一个问题就保存一次）会撞名，
+        # 后一次把前一次的备份覆盖掉 —— 最要紧的那一步反而没有备份。
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         (bak / f"geo-{stamp}.json").write_text(p.read_text("utf-8"), "utf-8")
         old = sorted(bak.glob("geo-*.json"))
         for f in old[:-10]:
             f.unlink()
     _atomic_write(p, lambda t: t.write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8"))
+
+
+# 问题编号段位。三个起点是对外约定（国内 q001 起、海外 q101 起、通用 q901 起），
+# 也写在生成题库的 prompt 里，改动会让已有数据的编号失去含义，所以只收紧不迁移。
+# cn 超过 100 条是真会发生的（题库按批加），所以段位之外留一段共享溢出池 201-899：
+# 溢出进去，总好过侵占海外的段位 —— 后者会让「q101 是海外题」这个前提在数据里
+# 静默失效，而 qid 是样本、初稿、发布、交付四处关联的主键。
+# 一律三位：blueprint.py 与 generate.py 里都有 q\d{3} 的正则。
+QID_SEGMENT = {"cn": (1, 100), "global": (101, 199), "both": (901, 999)}
+QID_SPILL = (201, 899)
+
+
+def next_qid(market: str, used: set) -> str:
+    """分配该市场下一个未占用的 qid，并把号码记进 used（就地更新）。"""
+    lo, hi = QID_SEGMENT.get(market) or QID_SEGMENT["cn"]
+    n = _first_free(lo, hi, used)
+    if n is None:
+        n = _first_free(*QID_SPILL, used)
+        if n is None:
+            raise ValueError(f"问题编号已用尽（{QID_SPILL[0]}-{QID_SPILL[1]} 全部占用）")
+    used.add(n)
+    return f"q{n:03d}"
+
+
+def _first_free(lo: int, hi: int, used: set) -> int | None:
+    n = lo
+    while n <= hi:
+        if n not in used:
+            return n
+        n += 1
+    return None
+
+
+def write_text_atomic(path: Path, text: str, encoding: str = "utf-8"):
+    """文本走 _atomic_write。报告与交付包此前是裸 write_text：写到一半被中断
+    （磁盘满、进程被杀）留下的半截 html 会被当成「这一期就是这些内容」。"""
+    _atomic_write(path, lambda t: t.write_text(text, encoding))
 
 
 def write_json(path: Path, data):

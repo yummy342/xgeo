@@ -55,10 +55,36 @@ class TestHomepageFirst(WorkDirCase):
             {"url": deep, "score": 99},
         ]})
         digest = B._site_digest(self.slug)
-        blocks = [b for b in digest.split("## 页面：") if b.strip()]
+        # 正文被定界标记包住（标记不是网页内容，不能让模型当资料读）
+        self.assertTrue(digest.startswith("\n" + B.CONTENT_BEGIN), digest[:60])
+        self.assertTrue(digest.rstrip().endswith(B.CONTENT_END), digest[-60:])
+        blocks = [b for b in digest.split("## 页面：")[1:] if b.strip()]
         self.assertTrue(blocks, "digest 不应为空")
         self.assertIn(home, blocks[0], "摘要首块必须是首页（pages.jsonl 第一条），而不是高分页")
         self.assertNotIn(deep, blocks[0])
+
+
+class TestEntityNameBackcheck(WorkDirCase):
+    """实体名回核：资料里没有的名字要显式标出来，而不是静默写进配置。"""
+
+    def test_name_not_in_source_goes_to_uncertain(self):
+        digest = B._wrap_content("## 页面：首页\nURL: https://t.example.com/\n我们做桌面软件")
+        with mock.patch.object(B, "_ask_json", return_value={
+                "name": "竞品X", "aliases": ["测试品牌"], "products": ["桌面软件"],
+                "uncertain": []}):
+            facts = B.brand_facts(self.slug, digest)
+        note = " ".join(facts["uncertain"])
+        self.assertIn("竞品X", note, "凭空出现的品牌名必须被标出来")
+        self.assertIn("测试品牌", note)
+        self.assertNotIn("桌面软件", note, "资料里有的名字不该被误报")
+
+    def test_source_names_are_not_flagged(self):
+        digest = B._wrap_content("## 页面：首页\n我们的产品叫 Aiglade 桌面版")
+        with mock.patch.object(B, "_ask_json", return_value={
+                "name": "aiglade", "aliases": ["Aiglade 桌面版"], "products": [],
+                "uncertain": []}):
+            facts = B.brand_facts(self.slug, digest)
+        self.assertEqual(facts.get("uncertain"), [], "大小写与空格差异不算不一致")
 
 
 class TestCompetitorConfirmation(WorkDirCase):

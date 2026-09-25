@@ -245,6 +245,11 @@ python3 scripts/geo.py sample-import --slug <项目> --file <采样表>
 
 也可在看板「设置 → 运行任务」里点「导出人工采样表」，「引擎表现」页导入。
 
+用采样助手之前有两条边界要知道：看板地址框只接受 `http/https`，除 `127.0.0.1:8765` /
+`localhost:8765` 以外的地址必须先加进插件的 `host_permissions`，否则 Chrome 直接拦掉请求；
+在 `google.com` 上「填入问题」就是在替你搜索——那一栏是搜索框不是聊天框，自动跑等于用你的
+账号搜了一轮，只在你愿意让它搜索的标签页上开。详见 `extension/README.md`。
+
 ### CLI 速查
 
 | 命令 | 作用 |

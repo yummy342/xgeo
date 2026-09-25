@@ -1557,8 +1557,14 @@ class Handler(BaseHTTPRequestHandler):
                 url = (body.get("url") or "").strip()
                 if not url:
                     return self._json({"ok": False, "error": "请填写官网地址"}, 400)
+                # int() 直接接用户输入：传 "abc" 是 500，"abc" 之外还有 null/超长数字。
+                # 下限的兜底在 crawl.run 里（那条路 CLI 与后台任务都走）
+                try:
+                    max_pages = int(body.get("max_pages", 25))
+                except (TypeError, ValueError):
+                    return self._json({"ok": False, "error": "max_pages 必须是整数"}, 400)
                 cfg = create_project(url, body.get("name", ""), body.get("slug", ""),
-                                     body.get("market", "cn"), int(body.get("max_pages", 25)))
+                                     body.get("market", "cn"), max_pages)
                 return self._json({"ok": True, "slug": cfg["slug"]})
 
             if p == "/api/run":
@@ -1567,7 +1573,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "缺 slug"}, 400)
                 if self._deny(slug):
                     return
-                job = J.start(slug, body["action"], body.get("params") or {})
+                action = body.get("action")
+                if not action:
+                    return self._json({"ok": False, "error": "缺 action"}, 400)
+                # 未知动作由 J.start 抛 ValueError：不接住就是 500（且后端日志里
+                # 只有一句 traceback，看不出是用户传错了参数）
+                try:
+                    job = J.start(slug, action, body.get("params") or {})
+                except ValueError as e:
+                    return self._json({"ok": False, "error": str(e)}, 400)
                 return self._json({"ok": True, "job": job})
 
             if p.startswith("/api/sample/"):
@@ -1802,25 +1816,25 @@ class Handler(BaseHTTPRequestHandler):
                     cfg = G.read_json(G.project_dir(slug) / "geo.json", {})
                     qs = cfg.setdefault("questions", [])
                     existing = {q.get("text", "").strip() for q in qs}
-                    series = {"cn": 1, "global": 101, "both": 901}
                     used = {int(m.group(1)) for q in qs
                             if (m := re.match(r"q(\d+)$", str(q.get("id", ""))))}
                     added = []
-                    for it in items:
-                        text = str(it.get("text") or "").strip()
-                        mk = it.get("market") if it.get("market") in series else "cn"
-                        grp = str(it.get("group") or "场景").strip() or "场景"
-                        if not text or text in existing:
-                            continue
-                        n = series[mk]
-                        while n in used:
-                            n += 1
-                        used.add(n)
-                        q = {"id": f"q{n:03d}", "group": grp, "market": mk, "text": text,
-                             "source": "expand"}
-                        qs.append(q)
-                        existing.add(text)
-                        added.append(q)
+                    try:
+                        for it in items:
+                            text = str(it.get("text") or "").strip()
+                            mk = it.get("market") if it.get("market") in G.QID_SEGMENT else "cn"
+                            grp = str(it.get("group") or "场景").strip() or "场景"
+                            if not text or text in existing:
+                                continue
+                            # 与 bootstrap 用同一个分配器：绝不复用已占用的 qid，
+                            # 且不越出本市场的段位（cn 涨过 100 条时进溢出池）
+                            q = {"id": G.next_qid(mk, used), "group": grp, "market": mk,
+                                 "text": text, "source": "expand"}
+                            qs.append(q)
+                            existing.add(text)
+                            added.append(q)
+                    except ValueError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
                     if added:
                         G.save_config(slug, cfg)
                 return self._json({"ok": True, "added": len(added),

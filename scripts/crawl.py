@@ -323,6 +323,9 @@ def check_crawl_health(pages: list[dict]):
         G.die(f"抓取失败：仅 {ok}/{len(pages)} 页可访问（<20%）。\n" + _crawl_failure_hint(pages))
 
 
+MAX_PAGES = 200   # 单次抓取的页数上限
+
+
 def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
     cfg = G.load_config(slug)
     if not G.has_site(cfg):
@@ -330,7 +333,10 @@ def run(slug: str, max_pages: int | None = None, delay: float = 0.5) -> dict:
         return {"slug": slug, "no_site": True, "pages_crawled": 0, "pages_ok": 0,
                 "non_content_pages": 0}
     root = cfg["brand"]["site"].rstrip("/")
-    limit = max_pages or cfg.get("pages", {}).get("max", 25)
+    # 钳到 [1, MAX_PAGES]：CLI、界面、后台任务都把用户填的数带到这里，
+    # 没有钳制时 `--max-pages 100000` 会把整个站点从首页爬到最后一页；
+    # 0 与负数则让后续的 range 空转，表现成「这个站点没内容」。
+    limit = max(1, min(int(max_pages or cfg.get("pages", {}).get("max", 25) or 25), MAX_PAGES))
     outdir = G.project_dir(slug) / "evidence"
     (outdir / "html").mkdir(parents=True, exist_ok=True)
 

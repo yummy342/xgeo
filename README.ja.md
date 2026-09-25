@@ -206,6 +206,12 @@ python3 scripts/geo.py sample-sheet  --slug <project>   # 質問別ガイド付�
 python3 scripts/geo.py sample-import --slug <project> --file <sheet>
 ```
 
+アシスタントを使う前に境界が 2 つ。ダッシュボードの URL 欄は `http/https` のみで、
+`127.0.0.1:8765` / `localhost:8765` 以外のホストは先に拡張の `host_permissions` に
+追加しないと Chrome がリクエストを遮断します。また `google.com` では「質問を入力」は
+検索そのものです（あの欄は検索ボックスでチャット欄ではない）——自動実行は自分の
+アカウントで検索を回すことになります。詳細は `extension/README.md`。
+
 ### CLI チートシート
 
 | コマンド | 用途 |

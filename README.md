@@ -217,6 +217,8 @@ python3 scripts/geo.py sample-import --slug <project> --file <sheet>
 
 Faster: install the Chrome sampling assistant (`extension/README.md`) and launch a clean sandbox with `extension/sandbox.sh` — queue, one-click extraction and upload, ~10 minutes per weekly round. Review imported samples in the dashboard's **Samples** page (machine parsing is correctable there; corrections recompute metrics instantly).
 
+Two boundaries before you point the assistant at an engine. The dashboard URL accepts `http/https` only, and any host other than `127.0.0.1:8765` / `localhost:8765` must first be added to the extension's `host_permissions` — Chrome blocks the request otherwise. And on `google.com` that field is a **search box, not a chat box**: filling a question there *is* searching with your own account, so enable auto-run only on tabs you are fine searching with. Details in `extension/README.md`.
+
 ### CLI cheat sheet
 
 | Command | Purpose |

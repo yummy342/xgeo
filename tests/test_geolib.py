@@ -175,6 +175,33 @@ class TestNoSiteMode(unittest.TestCase):
         self.assertEqual(T.from_audit({"no_site": True}, cfg, iter(["T-001"])), [])
 
 
+class TestQidAllocation(unittest.TestCase):
+    """编号段位：q001 / q101 / q901 三个起点是对外约定，溢出不许侵占别的市场。"""
+
+    def test_segment_starts(self):
+        used = set()
+        self.assertEqual(G.next_qid("cn", used), "q001")
+        self.assertEqual(G.next_qid("global", used), "q101")
+        self.assertEqual(G.next_qid("both", used), "q901")
+
+    def test_cn_overflow_goes_to_spill_not_global_segment(self):
+        used = set(range(1, 101))          # cn 段位 1-100 已满
+        self.assertEqual(G.next_qid("cn", used), "q201")
+
+    def test_cn_overflow_leaves_global_segment_intact(self):
+        used = set(range(1, 101))
+        G.next_qid("cn", used)
+        self.assertNotIn(101, used, "cn 溢出不该占用海外段位")
+        self.assertEqual(G.next_qid("global", used), "q101")
+
+    def test_unknown_market_falls_back_to_cn(self):
+        self.assertEqual(G.next_qid("nonsense", set()), "q001")
+
+    def test_exhausted_raises(self):
+        with self.assertRaises(ValueError):
+            G.next_qid("cn", set(range(1, 1000)))
+
+
 if __name__ == "__main__":
     # 必须放在文件末尾：写在中间的话，单跑本文件时 unittest.main() 会在后面那些
     # 类定义之前收集用例 —— 它们静默不执行，而输出照样是 OK。

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime
 from pathlib import Path
 
 import geolib as G
@@ -444,13 +445,16 @@ def run(slug: str) -> Path:
 
     outdir = pdir / "reports" / G.today()
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / "report.md").write_text(md, "utf-8")
-    (outdir / "report.html").write_text(build_html(f"{cfg['brand']['name']} GEO 报告 {G.today()}", md, cards), "utf-8")
-    (pdir / "reports" / "latest.md").write_text(md, "utf-8")
+    G.write_text_atomic(outdir / "report.md", md)
+    G.write_text_atomic(outdir / "report.html",
+                        build_html(f"{cfg['brand']['name']} GEO 报告 {G.today()}", md, cards))
+    G.write_text_atomic(pdir / "reports" / "latest.md", md)
     G.write_json(pdir / "todos.json", todos)
 
-    # 归档本期 audit，供下期算 delta
-    G.write_json(pdir / "history" / f"audit-{G.today()}.json",
+    # 归档本期 audit，供下期算 delta。文件名带到秒：同一天跑两次（改完页面再出一版）
+    # 时后一份不该盖掉前一份 —— prev_audit 取排序最后一份，同名覆盖会让第二期
+    # 拿自己当上一期，delta 恒为 0。
+    G.write_json(pdir / "history" / f"audit-{G.today()}-{datetime.now().strftime('%H%M%S')}.json",
                  {"avg_score": audit.get("avg_score"),
                   "grade_distribution": audit.get("grade_distribution") or {},
                   "page_count": audit.get("page_count"), "date": G.today()})
