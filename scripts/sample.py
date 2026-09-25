@@ -754,12 +754,34 @@ def analyze_answer(answer: str, cfg: dict, citations: list | None = None) -> dic
     }
 
 
+def _dedup_rank(r: dict) -> tuple[int, int]:
+    """同一个 key 下哪条更该代表这一天：人工改过 > 成功 > 都一样（那就留最后一条）。
+
+    · `manual_override` 优先是 `patch_sample` 对用户的承诺（「改过的样本打
+      manual_override，重跑采样不会覆盖人工结论」）。原来无条件留最后一条，等于**人工
+      纠正被同一天的重跑静默盖掉** —— 本机实测 aiglade 11 处、aiglade-cn 11 处。
+    · `ok` 优先：一次失败的重跑不该把当天那条好样本从指标里抹掉。
+    """
+    return (1 if r.get("manual_override") else 0, 1 if r.get("ok") else 0)
+
+
 def dedup_rows(rows: list[dict]) -> list[dict]:
-    """同日重跑/重复导入去重：按 (platform, question_id, round, sample_mode) 保留最后一条。"""
-    seen: dict[tuple, dict] = {}
+    """同日重跑/重复导入去重：按 (platform, question_id, round, sample_mode) 保留**一条**。
+
+    选哪一条见 `_dedup_rank`；同优先级内仍是最后一条（原来的行为），输出的顺序按各 key
+    首次出现的位置。
+    """
+    best: dict[tuple, dict] = {}
+    order: list[tuple] = []
     for r in rows:
-        seen[(r.get("platform"), r.get("question_id"), r.get("round"), r.get("sample_mode"))] = r
-    return list(seen.values())
+        k = (r.get("platform"), r.get("question_id"), r.get("round"), r.get("sample_mode"))
+        cur = best.get(k)
+        if cur is None:
+            order.append(k)
+            best[k] = r
+        elif _dedup_rank(r) >= _dedup_rank(cur):
+            best[k] = r
+    return [best[k] for k in order]
 
 
 def _bucket_key(rec: dict) -> str:

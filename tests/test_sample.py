@@ -132,6 +132,29 @@ class TestDedup(unittest.TestCase):
         self.assertEqual(agg["deepseek"]["samples"], 1)
         self.assertEqual(agg["deepseek"]["mention_rate"], 0.0)
 
+    def test_human_correction_wins_over_a_later_rerun(self):
+        """`patch_sample` 对用户的承诺是「改过的样本打 manual_override，重跑采样不会
+        覆盖人工结论」。原来无条件留最后一条 → 人工纠正被同一天的重跑静默盖掉
+        （本机实测 aiglade 11 处、aiglade-cn 11 处）。"""
+        edited = make_row(mentioned=False)
+        edited["manual_override"] = True
+        later = make_row(mentioned=True)          # 重跑，机器又判成提到了
+        rows = S.dedup_rows([edited, later])
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["analysis"]["brand_mentioned"], "人工结论被重跑盖掉了")
+
+    def test_a_failed_rerun_does_not_erase_a_good_sample(self):
+        """一次失败的重跑（ok=False）不该把当天那条好样本从指标里抹掉。"""
+        good = make_row(mentioned=True)
+        failed = dict(make_row(mentioned=False), ok=False, answer="", analysis={})
+        rows = S.dedup_rows([good, failed])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].get("ok"))
+        self.assertTrue(rows[0]["analysis"]["brand_mentioned"])
+        # 两条都失败/都没有人工改 → 仍是最后一条（原来的行为不变）
+        a, b = dict(make_row(), ok=False), dict(make_row(mentioned=True), ok=False)
+        self.assertIs(S.dedup_rows([a, b])[0], b)
+
     def test_dedup_key_distinguishes_round_and_mode(self):
         rows = [make_row(rnd=1), make_row(rnd=2), make_row(mode="manual")]
         self.assertEqual(len(S.dedup_rows(rows)), 3)

@@ -173,11 +173,25 @@ class TestTrend(Base):
         self.assertIsNone(tr[0]["cite"])
 
     def test_mixed_day_measured(self):
+        # 两条**不同的样本**（qid 不同 → key 不同）：一条提到、一条没提 → 0.5
         self.make_project(samples={
-            "2026-07-27.jsonl": [row(mentioned=True), row()],
+            "2026-07-27.jsonl": [row(qid="q1", mentioned=True), row(qid="q2")],
         })
         tr = A.trend("demo")
         self.assertEqual(tr[0]["mention"], 0.5)
+
+    def test_same_day_rerun_counts_once(self):
+        """同一天重跑（同 platform/qid/round/mode）只算**一条** —— 与 metrics 同口径。
+
+        原来 trend 走的是未去重的行：同一条题采两次就变成两条样本，看板的提及率与
+        `metrics/*.json` 对不上（aiglade 135→80 行、aiglade-cn 253→96 行）。
+        """
+        self.make_project(samples={
+            "2026-07-27.jsonl": [row(qid="q1", mentioned=True), row(qid="q1")],
+        })
+        tr = A.trend("demo")
+        # 保留最后一条（都没人工改、都 ok）→ 没提到 → 0.0，而不是 1/2=0.5
+        self.assertEqual(tr[0]["mention"], 0.0)
 
 
 class TestQuestionDelta(Base):

@@ -39,7 +39,15 @@ def _sample_files(pdir: Path):
 
 
 def _rows(path: Path):
-    return [r for r in G.read_jsonl(path) if r.get("ok")]
+    """某一天的样本行：**与 `sample.dedup_rows` 同口径**去重后再滤 ok。
+
+    看板的主数字（引擎提及率、问题表、健康分）原来直接吃未去重的行，而
+    `metrics/*.json` 走去重 —— 同一个项目两套数字（aiglade 135→80 行、
+    aiglade-cn 253→96 行，差的就是同日重跑过、以及被人重跑盖掉的那部分）。
+    函数内 import 是为了避开模块层可能的环。
+    """
+    import sample as S
+    return [r for r in S.dedup_rows(G.read_jsonl(path)) if r.get("ok")]
 
 
 def _unprompted(rows):
