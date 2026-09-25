@@ -1782,6 +1782,13 @@ class Handler(BaseHTTPRequestHandler):
                     target.relative_to(base)
                 except ValueError:
                     return self._json({"ok": False, "error": "非法路径"}, 403)
+                # 类型面与 asset_tree 的可浏览面保持一致（.txt/.json/.html/.md）：
+                # 界面列得出来的就存得进，列不出的（.js/.svg/无扩展名）一律挡。
+                # 读取层对 assets/ 已强制 text/plain，这是第二道 —— 挡住可脚本化类型
+                # 落进托管目录，免得那层降级判据哪天被改坏就成洞。
+                # （snippets/*.html 是产品资产、asset_tree 也列它，必须放行。）
+                if target.suffix.lower() not in (".txt", ".json", ".html", ".md"):
+                    return self._json({"ok": False, "error": "不支持的资产类型 " + (target.suffix or "(无扩展名)")}, 403)
                 if not isinstance(body.get("text"), str):
                     return self._json({"ok": False, "error": "缺 text 字段"}, 400)
                 target.parent.mkdir(parents=True, exist_ok=True)

@@ -495,6 +495,31 @@ class TestAssetsAreNotExecutable(unittest.TestCase):
         finally:
             conn.close()
 
+    def _post_asset(self, path, text="x"):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            body = json.dumps({"path": path, "text": text}).encode("utf-8")
+            conn.request("POST", "/api/asset/alpha", body=body,
+                         headers={"Content-Type": "application/json"})
+            r = conn.getresponse()
+            r.read()  # 读干净再关，否则服务端 handle 抛 ConnectionAborted
+            return r.status
+        finally:
+            conn.close()
+
+    def test_write_rejects_scriptable_ext(self):
+        """写接口的类型面必须和 asset_tree 的可浏览面一致：列不出来的类型一律挡。
+        读取层的 force_text 是主防线，这里是第二道 —— 哪天那层判据被改坏，这层还在。"""
+        self.assertEqual(self._post_asset("evil.js"), 403)
+        self.assertEqual(self._post_asset("evil.svg"), 403)
+        self.assertEqual(self._post_asset("evil"), 403, "无扩展名也要挡")
+
+    def test_write_allows_browsable_ext(self):
+        """asset_tree 列得出来的四类都得能存 —— 尤其 snippets 的 .html 是产品资产
+        （嵌入站点用），挡了就把功能改坏了。"""
+        for name in ("snippets/faq.zh.html", "notes.md", "llms.txt", "jsonld/x.json"):
+            self.assertEqual(self._post_asset(name), 200, name)
+
 
 class TestVerifyHistoryKeys(unittest.TestCase):
     """同一天验收两次：验收报告按 yyyy-mm-dd-HHMMSS 存，date 只截到天。
