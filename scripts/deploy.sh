@@ -94,7 +94,11 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-sudo systemctl daemon-reload && sudo systemctl enable --now xgeo >/dev/null 2>&1 || true"
+sudo systemctl daemon-reload && sudo systemctl enable xgeo >/dev/null 2>&1 || true
+# **必须 restart**：重新部署时单元文件被重写了，但 `enable --now` 对已经在跑的
+# 服务是空操作 —— 不 restart 的话新代码躺在磁盘上、进程里跑的还是旧的，而下面
+# 的存活检查（401）照样通过。这正是「部署了但没生效」最容易发生的地方。
+sudo systemctl restart xgeo"
     sleep 6
     # 401 也算活着：配了令牌时 /api/projects 本来就会回 401
     code="$(R "curl -s -o /dev/null -m 10 -w '%{http_code}' http://127.0.0.1:$PORT/api/projects || true")"
