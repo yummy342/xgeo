@@ -287,6 +287,7 @@ def parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
 
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+CHUNK_SIZE_RE = re.compile(rb"[0-9a-fA-F]{1,8}")
 
 
 def is_ip(value: str) -> bool:
@@ -336,7 +337,10 @@ def trust_proxy() -> bool:
     Secure。**只有反代会覆写 `X-Real-IP` 时才该打开**：否则任何客户端都能自己填一个，
     等于让对端决定自己落在哪个限流桶里。
     """
-    return (_env("XGEO_TRUST_PROXY") or "").strip().lower() not in ("", "0", "false", "no")
+    # 正向白名单。反向写法（不在 ("0","false","no") 里就算开）会把运维最顺手的
+    # `XGEO_TRUST_PROXY=off` 判成「开」—— 那等于让任何客户端自填 X-Real-IP 决定
+    # 自己落在哪个限流桶，并决定会话 cookie 带不带 Secure。
+    return (_env("XGEO_TRUST_PROXY") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def host_name(value: str | None) -> str:
@@ -513,9 +517,9 @@ def parse_accounts(raw: str | None) -> dict[str, dict]:
 def accounts() -> dict[str, dict]:
     """每次现读 —— 测试要能改环境变量，别在 import 时定死。
 
-    **名单只能靠重启改**（它在进程环境里），而重启会清空 SESSIONS，所以
-    「改了名单旧的会话还活着」这件事不会发生 —— 会话里存的那份 admin/projects
-    快照因此不需要在每个请求上回查名单。
+    每次现读也是 `_auth` 能在**每个请求上回查名单**的前提（会话权限以当前名单为准，
+    不是建会话那一刻的快照）。别因为「名单在 .env、改它要重启」就把那次回查删掉：
+    `write_env()` 会把变量同步写进 os.environ，将来也可能有人把名单挪到配置文件。
     """
     return parse_accounts(_env("XGEO_ACCOUNTS"))
 
@@ -623,7 +627,10 @@ def login_allowed(ip: str, limit: int = 10, window: int = 300) -> bool:
         # 封顶淘汰，按「桶里最新一次尝试」从旧到新删。只删空桶是不够的：每个新来的
         # 来源都会留下一个非空桶，字典照样无界（直连形态或透传 X-Real-IP 时，来源
         # 可以很多）。
-        for k in sorted(LOGIN_HITS, key=lambda k: max(LOGIN_HITS[k]))[:len(LOGIN_HITS) - 1024]:
+        # **先取快照**：键函数在排序过程中逐个求值，别的线程 pop 掉一个还没算到的键
+        # 就是 KeyError（异常会穿出 do_POST → 掐连接、一个字节不回）。
+        snapshot = [(k, max(v)) for k, v in list(LOGIN_HITS.items()) if v]
+        for k, _newest in sorted(snapshot, key=lambda kv: kv[1])[:max(0, len(snapshot) - 1024)]:
             LOGIN_HITS.pop(k, None)
     return len(hits) < limit
 
@@ -805,7 +812,10 @@ class Handler(BaseHTTPRequestHandler):
         """
         if Handler.BIND_PUBLIC:
             return True
-        return host_name(self.headers.get("Host")) in (set(LOOPBACK_HOSTS) | public_hosts())
+        h = host_name(self.headers.get("Host"))
+        # 回环判定要走 is_loopback（与 _host_ok 下层同一口径）：字符串元组认不出
+        # 127.0.0.2 / 127.0.1.1 / ::ffff:127.0.0.1，那几种都是本机，用元组比会假 403。
+        return is_loopback(h) or h in public_hosts()
 
     def _host_ok(self) -> bool:
         """Host / Origin 校验，按档位分三支：
@@ -824,19 +834,26 @@ class Handler(BaseHTTPRequestHandler):
           那时浏览器里任何一个网页都能用 evil.com（DNS rebinding 解析到
           127.0.0.1）读写全部接口，包括 /api/keys 和发布接口。
         """
+        if Handler.TOKEN or Handler.SCOPES:
+            # 令牌档（含与账号并存的混合档）照旧不看 Host。**登录那条路由自己守**：
+            # `_do_login` 里有同一份判决 —— 攻击者要拿会话必须过登录，所以防护不缺口；
+            # 反过来把账号门放在这条短路之前，反代形态下会把整个实例（含令牌 API）
+            # 一起 403 掉，那是把一个形态的问题升级成全站不可用。
+            return True
+        h = host_name(self.headers.get("Host"))
         if accounts_enabled() and not self._account_host_allowed():
             self._json({"error": "Host 不在允许名单：反代部署要设 "
                                  "XGEO_PUBLIC_HOST=<你的域名>（或绑 127.0.0.1 走隧道）"}, 403)
             return False
-        if Handler.TOKEN or Handler.SCOPES:
-            return True
-        h = host_name(self.headers.get("Host"))
         # 走到这里只剩默认档与账号档（账号档的 Host 已在上面的名单里判过，
         # 这里再用同一份名单复核一次，顺带让 Origin 校验有依据）
-        allowed = set(LOOPBACK_HOSTS) | (public_hosts() if accounts_enabled() else set())
-        if h not in allowed and not (accounts_enabled() and Handler.BIND_PUBLIC):
-            # 绑了非本机地址的账号档实例不在名单里判 Host（运维自己决定把它摊到
-            # 网络上，按 IP:端口访问时 Host 就是那个 IP）；默认档没有这个口子。
+        allowed = public_hosts() if accounts_enabled() else set()
+        # 回环判定要走 is_loopback：字符串元组认不出 127.0.0.2、127.0.1.1（Debian 系
+        # 的 /etc/hosts 把主机名指到它）与 `::ffff:127.0.0.1`（绑 :: 时同机反代回来的
+        # 形状）—— 那几种都是本机，用元组比会假 403。
+        if not (is_loopback(h) or h in allowed) and not (accounts_enabled() and Handler.BIND_PUBLIC):
+            # 绑了非本机地址的账号档实例不在名单里判 Host（运维自己决定把它摊到网络上，
+            # 按 IP:端口访问时 Host 就是那个 IP）；默认档没有这个口子（那种实例根本起不来）。
             self._json({"error": "只接受本机访问：Host 不是本机地址"}, 403)
             return False
         org = self.headers.get("Origin")
@@ -905,12 +922,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._mode = "account"
                 self._email = sess["email"]
                 return True
+        # 先读走请求体再回 401：带着未读数据关 socket 的 RST 会把 401 吞掉，
+        # 客户端只看到「连接被中止」（见 _drain）。两种方法都做 —— 带体的 GET 是
+        # 畸形请求但发得出，而调用方（do_GET）据此不再自己 drain，注释里的
+        # 「已经读走了」必须真的成立。
+        self._drain()
         if self.command == "GET":
             self._send(401, _login_html().encode("utf-8"), "text/html; charset=utf-8")
         else:
-            # 先读走请求体再回 401：带着未读数据关 socket 的 RST 会把 401 吞掉，
-            # 客户端只看到「连接被中止」（见 _drain）。
-            self._drain()
             self._json({"error": "未授权：需要 X-Xgeo-Token 头或先在浏览器登录"}, 401)
         return False
 
@@ -933,6 +952,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, body: bytes, ctype="application/json; charset=utf-8",
               headers: dict | None = None):
+        try:
+            self._write(code, body, ctype, headers)
+        except OSError:
+            # 对端已经断了（写响应时才发现）：回不了任何东西，但别让 traceback
+            # 穿出 do_POST 去刷日志。这一层与 _drain 的「不抛」是同一条纪律。
+            self.close_connection = True
+
+    def _write(self, code, body: bytes, ctype="application/json; charset=utf-8",
+               headers: dict | None = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -1008,16 +1036,24 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _drain_chunked(self, limit: int | None = None) -> None:
-        """走分块框架、不留内容。超过上限就放弃并标记关连接。"""
+        """走分块框架、不留内容。超过上限就放弃并标记关连接。
+
+        块长度**只认规范的十六进制**：`int(x, 16)` 连 `-1`、`-ffff` 都收，而
+        `read(-1)` 等于读到 EOF —— 于是上限形同虚设、内存由对端决定（实测能一路
+        喂到几百 MB）。合法客户端不会发负数，认不出的一律当畸形处理。
+        """
         cap = Handler.MAX_BODY if limit is None else limit
         total = 0
         while True:
             line = self.rfile.readline(64)
             if not line:
                 raise ValueError("分块体提前结束")
-            size = int(line.split(b";")[0].strip() or b"0", 16)
+            token = line.split(b";")[0].strip()
+            if not CHUNK_SIZE_RE.fullmatch(token):
+                raise ValueError(f"非法的分块长度：{token[:16]!r}")
+            size = int(token, 16)
             if size == 0:
-                self.rfile.readline(4096)     # 末尾的空行（有 trailer 时由关连接兜底）
+                self.rfile.readline(2)        # 末尾的空行（有 trailer 时由关连接兜底）
                 return
             total += size
             if total > cap:
@@ -1674,13 +1710,15 @@ def run(port: int = 8765, open_browser: bool = True,
               "先设置访问令牌再启动：export XGEO_TOKEN=$(openssl rand -hex 16)")
     Handler.TOKEN = token
     Handler.SCOPES = scoped
-    # _host_ok 要知道这个实例是不是只服务本机：账号档下「绑本机」与「绑公网」
-    # 的威胁模型不同（见那里的注释），而 host 只在这里知道。
-    Handler.BIND_PUBLIC = host not in ("127.0.0.1", "localhost", "::1")
     J.reap_orphans()  # 回收上次服务留下的 running 僵尸记录，恢复并发保护
     J.prune_jobs()    # 清过期任务记录：列表接口每次要读所有 json，攒多了会越来越慢
     threading.Thread(target=_monitor_loop, daemon=True).start()
     srv = ThreadingHTTPServer((host, port), Handler)
+    # `_host_ok` 要知道这个实例是不是真的在对外服务：判据用**绑定后的地址**
+    # （`0.0.0.0` → 不是回环；`127.0.0.1`/`::1`/`127.0.1.1` → 是）。用 XGEO_HOST
+    # 那个字符串判会漏：`XGEO_HOST=127.0.1.1`（Debian 系 /etc/hosts 把主机名指到它）
+    # 仍然只绑回环，却被判成对外 —— 账号档的 Host 门会因此整体失效。
+    Handler.BIND_PUBLIC = not is_loopback(srv.server_address[0])
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
     auth_note = ("，访问需令牌（XGEO_TOKEN）" if token
                  else f"，访问需项目令牌（{len(scoped)} 个）" if scoped

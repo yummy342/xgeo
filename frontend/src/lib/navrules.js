@@ -5,6 +5,28 @@
 // 判权在服务端每个路由上，这里只是体验，所以「身份未知」一律不隐藏、不改道。
 export const ADMIN_ONLY = new Set(['engines', 'settings'])
 
+// 导航表放在这里（纯数据，不依赖 i18n）—— 审计脚本要用**真表**断言，
+// 否则新增一个管理页却忘了进 ADMIN_ONLY 时，那几条断言照样全绿。
+export const NAV = [
+  { key: 'status', label: 'STATUS · HOW AI SEES ME', items: [
+    ['overview', 'Overview'], ['engines', 'Engines'], ['competitors', 'Competitors'],
+    ['questions', 'Questions'], ['samples', 'Samples'],
+  ] },
+  { key: 'diagnosis', label: 'DIAGNOSIS · WHY', items: [
+    ['siteaudit', 'Site Audit'], ['gaps', 'Gap Diagnosis'],
+    ['channels', 'Channel Map'], ['facts', 'Brand Facts'],
+  ] },
+  { key: 'action', label: 'ACTION · WHAT TO DO', items: [
+    ['plan', 'Action Plan'], ['workbench', 'Workbench'], ['assets', 'Assets'],
+  ] },
+  { key: 'results', label: 'RESULTS · DID IT WORK', items: [
+    ['verify', 'Verification'], ['report', 'Reports & Delivery'],
+  ] },
+  { key: 'account', label: 'ACCOUNT', items: [
+    ['settings', 'Settings'], ['publishing', 'Publishing'],
+  ] },
+]
+
 /** 按身份过滤导航分组。`admin` 为 true 或未知 → 原样返回。 */
 export function filterNav(groups, admin) {
   if (admin !== false) return groups

@@ -48,6 +48,25 @@ const TENANT_KEY = process.env.GL_E2E_TENANT_KEY || 'sk-fm-tenant-key'
 const TENANT_NAV = 14
 
 let failed = 0
+/** 等一次登录落定：要么进了看板，要么页面给了错误。
+ *  裸 waitForSelector 在**限流**时会超时成一句「等不到 #side」，看不出原因 ——
+ *  而同一个实例连跑第二遍必然撞限流（每 IP 10 次 / 5 分钟，桶在进程内）。 */
+async function loginAndWait(key, label) {
+  await page.fill('#k', key)
+  await page.click('#go')
+  const which = await Promise.race([
+    page.waitForSelector('#side .navit', { timeout: 15000 }).then(() => 'in').catch(() => null),
+    page.waitForFunction(() => (document.getElementById('e')?.textContent || '').trim() !== '',
+                         null, { timeout: 15000 }).then(() => 'err').catch(() => null),
+  ])
+  if (which === 'in') return
+  const msg = which === 'err' ? (await page.textContent('#e')).trim() : '(既没进看板也没报错)'
+  if (/过于频繁/.test(msg)) {
+    throw new Error(`${label}：登录被限流了。等 5 分钟，或重启实例再来（限流桶在进程内，重启即清）`)
+  }
+  throw new Error(`${label}：${msg}`)
+}
+
 const check = (name, ok, extra = '') => {
   console.log(`${ok ? '✓' : '✗'} ${name}${extra ? ' — ' + extra : ''}`)
   if (!ok) failed++
@@ -91,10 +110,14 @@ const consoleErrors = []
 const pageErrors = []
 page.on('console', (m) => {
   if (m.type() !== 'error') return
-  // 401 的导航是本流程的正常组成；net::ERR_FAILED 来自 2b 那次**故意** abort
-  // （验证登录页在请求发不出去时有回话）。两者都不是页面出错。
-  if (/Failed to load resource.*(40[13]|net::ERR_FAILED)/.test(m.text())) return
-  consoleErrors.push(m.text())
+  const txt = m.text()
+  // 401 的导航是本流程的正常组成。
+  if (/Failed to load resource/.test(txt) && /40[13]/.test(txt)) return
+  // ERR_FAILED 只放行 2b 那次**故意** abort 的登录接口。URL 不在 text 里
+  // （text 就是「Failed to load resource: net::ERR_FAILED」），得看 location()。
+  const url = (m.location() && m.location().url) || ''
+  if (/net::ERR_FAILED/.test(txt) && url.includes('/api/auth/login')) return
+  consoleErrors.push(txt)
 })
 page.on('pageerror', (e) => pageErrors.push(e.message))
 
@@ -138,9 +161,7 @@ try {
   await page.unroute('**/api/auth/login')
 
   /* ── 3) 对的 key：进看板，侧栏出现邮箱 ── */
-  await page.fill('#k', KEY)
-  await page.click('#go')
-  await page.waitForSelector('#side .navit', { timeout: 15000 })
+  await loginAndWait(KEY, '管理员登录')
   check('凭据真的传给了认证服务', seen.includes(KEY))
   const mail = await page.textContent('#side .who .mail')
   check('侧栏显示登录邮箱', mail.trim() === EMAIL, mail.trim())
@@ -170,9 +191,7 @@ try {
   check('登出前的会话 cookie 重放也不认', replay === 401, 'HTTP ' + replay)
 
   /* ── 5) 租户：侧栏不给「只有管理员能用」的入口（点进去只会吃 403） ── */
-  await page.fill('#k', TENANT_KEY)
-  await page.click('#go')
-  await page.waitForSelector('#side .navit', { timeout: 15000 })
+  await loginAndWait(TENANT_KEY, '租户登录')
   // 先等身份落地再数：首屏渲染的是**未过滤**的 16 项，而 /api/auth/me 是另一个
   // 请求 —— 直接数会和它竞态，偶发地数到 16 而假红（邮箱这一栏就是身份落地的信号）。
   await page.waitForFunction(
@@ -199,6 +218,11 @@ try {
 
   check('无未捕获的页面异常', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '))
   check('无其它 console 报错', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | '))
+} catch (e) {
+  // 环境类问题（限流、实例没配账号档）走到这里：给一句能行动的，别抛栈
+  console.error(`
+中断：${e && e.message ? e.message : e}`)
+  failed++
 } finally {
   await browser.close()
   auth.close()

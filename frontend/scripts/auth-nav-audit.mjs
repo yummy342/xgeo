@@ -3,7 +3,7 @@
 // 为什么单独一条：这两条规则（非管理员看不到 engines/settings、落到那两页时改道
 // 总览）原来只有 e2e 覆盖，而 e2e 不在 npm test 里 —— 少列一项 ADMIN_ONLY 之类的
 // 回归要等有人手动跑 e2e 才会红。
-import { ADMIN_ONLY, filterNav, routeFor } from '../src/lib/navrules.js'
+import { ADMIN_ONLY, NAV, filterNav, routeFor } from '../src/lib/navrules.js'
 
 let failed = 0
 const check = (name, ok, extra = '') => {
@@ -11,22 +11,24 @@ const check = (name, ok, extra = '') => {
   if (!ok) failed++
 }
 
-const NAV = [
-  { key: 'a', items: [['overview', 'Overview'], ['engines', 'Engines']] },
-  { key: 'b', items: [['settings', 'Settings'], ['plan', 'Action Plan']] },
-]
+// 用**真表**：自己造一份夹具的话，新增一个管理页却忘了进 ADMIN_ONLY 时
+// 这些断言照样全绿 —— 那就白写了。
+const flat = (groups) => groups.flatMap((g) => g.items).map(([k]) => k)
+const ALL = flat(NAV)
 
-const admin = filterNav(NAV, true)
-check('管理员看到全部', admin.flatMap((g) => g.items).length === 4)
+check('管理员看到全部', flat(filterNav(NAV, true)).length === ALL.length)
+check('身份未知时不隐藏', flat(filterNav(NAV, undefined)).length === ALL.length)
 
-const tenant = filterNav(NAV, false)
-const keys = tenant.flatMap((g) => g.items).map(([k]) => k)
-check('非管理员看不到管理员入口', !keys.includes('engines') && !keys.includes('settings'),
-      keys.join(','))
-check('其余入口一个不少', keys.length === 2 && keys.includes('overview') && keys.includes('plan'))
-check('分组结构保留', tenant.length === NAV.length && tenant[1].items.length === 1)
+check('ADMIN_ONLY 里的每一项都真的在导航里', [...ADMIN_ONLY].every((k) => ALL.includes(k)),
+      [...ADMIN_ONLY].join(','))
 
-check('身份未知时不隐藏', filterNav(NAV, undefined).flatMap((g) => g.items).length === 4)
+const tenant = flat(filterNav(NAV, false))
+check('非管理员看不到管理员入口', !tenant.some((k) => ADMIN_ONLY.has(k)), tenant.join(','))
+check('非管理员其余入口一个不少', tenant.length === ALL.length - ADMIN_ONLY.size,
+      `${tenant.length} vs ${ALL.length - ADMIN_ONLY.size}`)
+check('分组结构保留', filterNav(NAV, false).length === NAV.length)
+
+check('导航项不重复', new Set(ALL).size === ALL.length)
 
 check('非管理员落到管理员页时改道总览', routeFor('settings', false) === 'overview')
 check('非管理员能停在普通页', routeFor('plan', false) === 'plan')

@@ -2,27 +2,14 @@
 //
 // 分组的顺序就是产品的主线：现状 → 诊断 → 提升 → 成效，最后是账号类。
 // 标签用英文源文案，中文由 t() 查字典。
+//
+// 导航表本身搬去了 navrules.js（纯数据）：那边不依赖 i18n store，npm test 里的
+// 审计脚本能拿**真表**断言 —— 自己造夹具的话，新增一个管理页却忘了进 ADMIN_ONLY
+// 时那些断言照样全绿。这里只留依赖 t() 的映射与角标。
 import { t } from './i18n/index.svelte.js'
+import { NAV, filterNav } from './navrules.js'
 
-export const NAV = [
-  { key: 'status', label: 'STATUS · HOW AI SEES ME', items: [
-    ['overview', 'Overview'], ['engines', 'Engines'], ['competitors', 'Competitors'],
-    ['questions', 'Questions'], ['samples', 'Samples'],
-  ] },
-  { key: 'diagnosis', label: 'DIAGNOSIS · WHY', items: [
-    ['siteaudit', 'Site Audit'], ['gaps', 'Gap Diagnosis'],
-    ['channels', 'Channel Map'], ['facts', 'Brand Facts'],
-  ] },
-  { key: 'action', label: 'ACTION · WHAT TO DO', items: [
-    ['plan', 'Action Plan'], ['workbench', 'Workbench'], ['assets', 'Assets'],
-  ] },
-  { key: 'results', label: 'RESULTS · DID IT WORK', items: [
-    ['verify', 'Verification'], ['report', 'Reports & Delivery'],
-  ] },
-  { key: 'account', label: 'ACCOUNT', items: [
-    ['settings', 'Settings'], ['publishing', 'Publishing'],
-  ] },
-]
+export { ADMIN_ONLY, NAV } from './navrules.js'
 
 /** 侧栏角标：各视图当前最该看的那个数字。没有就留空。 */
 export function badgeFor(data, key) {
@@ -53,11 +40,6 @@ export function badgeFor(data, key) {
       return ''
   }
 }
-
-// 身份 → 界面规则（隐藏哪些入口、非管理员改道哪去）都在 navrules.js 里，
-// 那边是纯函数、能在 npm test 里直接断言（这里再依赖 i18n store）。
-export { ADMIN_ONLY } from './navrules.js'
-import { filterNav } from './navrules.js'
 
 /** 按身份过滤后的导航。`admin` 为 true 或未知 → 原样返回。 */
 export function navFor(admin) {
