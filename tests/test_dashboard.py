@@ -97,6 +97,18 @@ class TestRenameCompatibility(unittest.TestCase):
         self.assertIn("getElementById('t')", page, "按钮没接上输入框")
         self.assertIn("?token=", page)
 
+    def test_login_page_shows_the_admin_form_when_accounts_are_off(self):
+        """账号档没开时**别把 FreeModel API Key 摆成主入口** —— 那个框点下去只会回
+        「这个实例没有配账号登录」，用户第一眼看到的就是个死框。这时主入口换成
+        管理员账号，令牌那条老路照旧留在折叠里。"""
+        page = D._login_html(accounts_on=False)
+        self.assertIn('id="au"', page)
+        self.assertIn('id="ap"', page)
+        self.assertIn('id="t"', page)
+        self.assertNotIn('id="k"', page, "没开的档位不该出现主输入框")
+        # 开了的那份照旧
+        self.assertIn('id="k"', D._login_html(accounts_on=True))
+
     def test_login_page_escapes_the_error_text(self):
         """错误回显是插进 HTML 的，虽然来路都是我们自己那几句固定文案 —— 也转它。"""
         page = D._login_html('<img src=x onerror="alert(1)">')

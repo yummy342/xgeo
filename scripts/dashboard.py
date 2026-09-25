@@ -658,14 +658,64 @@ def login_note(ip: str) -> None:
     LOGIN_HITS.setdefault(ip, []).append(time.time())
 
 
-def _login_html(err: str = "") -> str:
+def _login_html(err: str = "", accounts_on: bool = True) -> str:
     """登录页。**凭据走 POST body，不进 URL**。
 
-    老表单把令牌拼进 `?token=`（那条路保留在下面的折叠里，README 也写着）；
-    但账号档的凭据是长期 API Key，拼进 URL 就会留在 nginx access log 里 ——
-    等于把一份可复用的钥匙抄进了日志。
+    老表单把令牌拼进 `?token=`（那条路保留在折叠里，README 也写着）；但账号档的凭据
+    是长期 API Key，拼进 URL 就会留在 nginx access log 里 —— 等于把一份可复用的钥匙
+    抄进了日志。
+
+    `accounts_on=False`（本实例没配 XGEO_ACCOUNTS）时**不把 API Key 摆成主入口**：
+    那样用户第一眼看到的就是一个点下去只会回「这个实例没有配账号登录」的死框。
+    这时主入口换成管理员账号（配了的话），令牌那条路一样留在折叠里。
     """
     e = (err or "").replace("&", "&amp;").replace("<", "&lt;")
+    if not accounts_on:
+        return _login_html_local(e)
+    return _login_html_accounts(e)
+
+
+def _login_html_local(e: str) -> str:
+    """没开账号档时的登录页：主入口是管理员账号（XGEO_ADMIN_USER/PASSWORD）。"""
+    return f"""<!doctype html><meta charset="utf-8"><title>XGEO</title>
+<body style="background:#131622;color:#e8eaf2;font-family:system-ui;display:flex;
+align-items:center;justify-content:center;height:100vh;margin:0">
+<div style="text-align:center;max-width:320px">
+<div style="font-size:20px;margin-bottom:14px">X<span style="color:#9184d9">GEO</span></div>
+<div style="display:flex;gap:8px">
+<input id="au" placeholder="管理员账号" autocomplete="username"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<input id="ap" type="password" placeholder="密码" autocomplete="current-password"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+</div>
+<button id="ago" onclick="xgLocal()" style="background:#9184d9;border:0;border-radius:8px;
+color:#101223;padding:10px 18px;font-size:14px;margin-top:8px;width:100%;cursor:pointer">
+进入</button>
+<div id="e" style="color:#e08a8a;font-size:12px;margin-top:8px;min-height:16px">{e}</div>
+<details style="margin-top:14px;text-align:left">
+<summary style="cursor:pointer;font-size:12px;color:#8b90a5">用访问令牌登录</summary>
+<div style="display:flex;gap:8px;margin-top:8px">
+<input id="t" type="password" placeholder="访问令牌 / Access token"
+style="background:#1b1e2e;border:1px solid #3a3f55;border-radius:8px;color:#e8eaf2;
+padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box">
+<button onclick="location='/?token='+encodeURIComponent(document.getElementById('t').value)"
+style="background:#2a2f45;border:0;border-radius:8px;color:#e8eaf2;padding:10px 14px;
+font-size:14px;cursor:pointer">进入</button>
+</div>
+</details>
+<div style="font-size:11px;color:#6b7085;margin-top:12px;line-height:1.6">
+这台实例没开 FreeModel 账号登录，用管理员账号进。没有账号或忘了密码，就到服务器上配
+XGEO_ADMIN_USER / XGEO_ADMIN_PASSWORD（或用访问令牌）。
+</div>
+</div>
+<script>
+{_LOGIN_JS}
+</script></body>"""
+
+
+def _login_html_accounts(e: str) -> str:
     return f"""<!doctype html><meta charset="utf-8"><title>XGEO</title>
 <body style="background:#131622;color:#e8eaf2;font-family:system-ui;display:flex;
 align-items:center;justify-content:center;height:100vh;margin:0">
@@ -707,6 +757,11 @@ font-size:14px;cursor:pointer">进入</button>
 </div>
 </div>
 <script>
+{_LOGIN_JS}
+</script></body>"""
+
+
+_LOGIN_JS = """
 async function xgLogin() {{
   const k = document.getElementById('k').value.trim()
   if (!k) return
@@ -1000,7 +1055,8 @@ class Handler(BaseHTTPRequestHandler):
         # 「已经读走了」必须真的成立。
         self._drain()
         if self.command == "GET":
-            self._send(401, _login_html().encode("utf-8"), "text/html; charset=utf-8")
+            self._send(401, _login_html(accounts_on=accounts_enabled()).encode("utf-8"),
+                       "text/html; charset=utf-8")
         else:
             self._json({"error": "未授权：需要 X-Xgeo-Token 头或先在浏览器登录"}, 401)
         return False
