@@ -285,7 +285,12 @@ def _linkable(url: str) -> bool:
     `content/*.md` 是能经 `POST /api/content/` 写入的，等于把 XSS 交给内容作者。
     百分号编码也绕不过：Chromium 执行前会解码 `javascript:`。
     """
-    return bool(re.match(r"^(https?://|/)", str(url or "").strip(), re.I))
+    s = str(url or "").strip()
+    # `//evil.com/x` 是协议相对地址：`^(/|...)` 会放过它，但它不是「站内相对路径」，
+    # 浏览器会去外站。注释说「只认站内相对路径」，那就把这一支也挡掉。
+    if s.startswith("//"):
+        return False
+    return bool(re.match(r"^(https?://|/)", s, re.I))
 
 
 def md2html(md: str) -> str:
@@ -729,6 +734,12 @@ def resolve_path(code: str, slug: str | None = None, force: str | None = None) -
     return "api" if all(str(cfg.get(k) or "").strip() for k in cfg_keys) else "semi"
 
 
+# 占位值归一。Reddit 的 subreddit 填 `r/xgeo` 也能用 —— 模板里已经含 `/r/`，
+# 而 API 路径 `_pub_reddit` 也 removeprefix("r/")，两处口径要一致（否则发布页会
+# 变成 `https://www.reddit.com/r/r/xgeo/submit`）。
+_PLACEHOLDER_NORM = {"subreddit": lambda v: re.sub(r"^r/", "", v, flags=re.I)}
+
+
 def semi_spec(code: str, slug: str | None = None) -> dict | None:
     """注册表里的规格 → 前端要的字典：填掉 cfg 占位、算出 publish_url、带上 api 状态。"""
     p = PUBLISHERS.get(code) or {}
@@ -739,6 +750,9 @@ def semi_spec(code: str, slug: str | None = None) -> dict | None:
     url, missing = str(spec.get("publish_url") or ""), []
     for name in re.findall(r"\{(\w+)\}", url):
         val = str(cfg.get(name) or "").strip()
+        norm = _PLACEHOLDER_NORM.get(name)
+        if val and norm:
+            val = norm(val)
         if not val:
             missing.append(name)
         url = url.replace("{" + name + "}", val)
@@ -772,6 +786,8 @@ def _prepare_payload(code: str, spec: dict, text: str, title: str, rel: str,
                      cfg: dict, recs: list, proj: dict) -> dict:
     """按规格把一篇成稿组装成可以直接粘贴的形态。不外发，纯组装。"""
     form = spec.get("body_form")
+    if form == "tbd":            # 规格里写明「tbd 按 text 处理」；别把内部占位符
+        form = "text"            # 送到界面（"正文 · tbd" 会被当成坏数据看）
     head = (title or "").strip()
     src = text
     if spec.get("title_inline"):
@@ -848,8 +864,13 @@ def prepare(slug: str, code: str, rel: str, title: str = "", force: str | None =
         return {"ok": False, "error": f"未知渠道 {code!r}"}
     rel = _norm_rel(rel)
     if resolve_path(code, slug, force) != "semi":
-        return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」当前走自动发布通路，"
-                                     f"用发布按钮或 geo.py publish 即可"}
+        if "api" in paths_of(code):
+            return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」当前走自动发布通路，"
+                                         f"用发布按钮或 geo.py publish 即可"}
+        # 两条路都没有（semi 规格是空 dict 之类）不能说成「走自动发布通路」——
+        # 那是一句把人引向不存在的按钮的话。
+        return {"ok": False, "error": f"「{PUBLISHERS[code]['name']}」没有任何可用通路"
+                                     f"（既没有自动发布实现，也没有半自动规格）"}
     try:
         text, fname = _read_source(slug, rel)
     except (ValueError, FileNotFoundError, OSError) as e:
@@ -899,6 +920,10 @@ def record_manual(slug: str, code: str, rel: str, rid: str, url: str = "",
         if not ent:
             return {"ok": False, "error": f"找不到待回填的记录 {rid}（可能已回填或已作废）"}
         if cancel:
+            # 已回填的记录不许作废：删掉的不只是这一条，还抽掉了 `_latest_public_url`
+            # 的回链来源与分发依据（前端只在 prepared 那行给按钮，所以这是接口面的口子）。
+            if ent.get("state") == "published":
+                return {"ok": False, "error": "这条已经回填了公开链接，不能作废"}
             rows = [r for r in rows if r is not ent]
             G.write_json(G.project_dir(slug) / "publish.json", rows[-200:])
             return {"ok": True, "cancelled": True, "id": rid}

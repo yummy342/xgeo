@@ -5,6 +5,7 @@
   import { t } from '../lib/i18n/index.svelte.js'
   import { toast } from '../lib/stores/toast.svelte.js'
   import { safeUrl } from '../lib/url.js'
+  import { isPublished } from '../lib/publishstate.js'
   import ManualPublishDialog from './ManualPublishDialog.svelte'
 
   // 取代 ui.html:2103 pubModal + 2130 doPublishSel。
@@ -66,8 +67,10 @@
     // 「备好了还没贴」说成发出去了。两条路都要排 —— 之前只给半自动那列传了
     // onlyPublished，自动那列没传，于是「先按半自动备好、后来补齐凭证转回自动」
     // 的渠道（reddit/公众号）会显示成已发出。
-    const hits = records.filter((r) => r.path === rel && r.ok && r.platform === code
-      && r.state !== 'prepared')
+    // 只认**真的公开了**的：`ok` 只说明调用没报错，`state` 才说内容有没有公开
+    // （dev.to/WordPress/公众号只建草稿时 state='draft'）。这里原来只排了 prepared，
+    // draft 于是被标成「✓ sent」—— 与 publishstate.js 的口径正相反，那正是它存在的理由。
+    const hits = records.filter((r) => r.path === rel && r.platform === code && isPublished(r))
     return hits[hits.length - 1]
   }
 

@@ -172,6 +172,49 @@ class TestListSamplesDedups(unittest.TestCase):
         self.assertEqual(kept["ts"], "2026-09-22T15:38:29+08:00")
 
 
+class TestKeyResolvesToTheShownRow(unittest.TestCase):
+    """列表/单条/人工纠正必须解析到**同一条**记录（同日重跑过的 key 有多条）。
+
+    列表与指标都过 `dedup_rows`（保留最后一条），而 `get_sample`/`patch_sample`
+    原来取第一条 —— 真实数据里就有一例首条是 `ok=False` 的空答案：点 View 看到空，
+    人工纠正写进那条不参与统计的记录（保存回 200，界面与指标一个像素都不动）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name) / "work"
+        d = self.work / "proj"
+        (d / "samples").mkdir(parents=True)
+        (d / "geo.json").write_text(json.dumps(CFG, ensure_ascii=False), "utf-8")
+        first = dict(make_row(qid="Q1"), date="2026-09-22", ts="2026-09-22T10:00:00+08:00",
+                     ok=False, answer="")
+        last = dict(make_row(qid="Q1"), date="2026-09-22", ts="2026-09-22T11:00:00+08:00",
+                    ok=True, answer="真正的那条答案")
+        (d / "samples" / "2026-09-22.jsonl").write_text(
+            chr(10).join(json.dumps(r, ensure_ascii=False) for r in (first, last)), "utf-8")
+        self.patch = mock.patch.object(S.G, "WORK", self.work)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.key = S.sample_key(last)
+
+    def test_get_sample_returns_the_row_the_list_shows(self):
+        row = S.list_samples("proj")["rows"][0]
+        self.assertEqual(row["ts"], "2026-09-22T11:00:00+08:00")
+        got = S.get_sample("proj", self.key)
+        self.assertEqual(got["ts"], row["ts"], "点 View 打开的是被遮住的那条")
+        self.assertTrue(got.get("ok"), "打开的是那条失败的空记录")
+
+    def test_patch_sample_edits_the_row_the_list_shows(self):
+        S.patch_sample("proj", self.key, {"brand_mentioned": False})
+        rows = S.G.read_jsonl(self.work / "proj" / "samples" / "2026-09-22.jsonl")
+        by_ts = {r["ts"]: r for r in rows}
+        self.assertTrue(by_ts["2026-09-22T11:00:00+08:00"]["manual_override"],
+                        "改的不是列表显示的那条")
+        self.assertFalse(by_ts["2026-09-22T11:00:00+08:00"]["analysis"]["brand_mentioned"])
+        self.assertNotIn("manual_override", by_ts["2026-09-22T10:00:00+08:00"])
+
+
 class TestProbeNoFallback(unittest.TestCase):
     def test_probe_only_platform_mention_rate_none(self):
         rows = [make_row(qid="Q1", probe=True, question="AIGCLINK定制家是什么"),

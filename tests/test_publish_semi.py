@@ -271,6 +271,34 @@ class TestRefill(Base):
                                         url="https://x.test/")["ok"])
 
 
+class TestLinkableAndPaths(unittest.TestCase):
+    """两处边界：协议相对地址不能被当成「站内相对路径」；每个渠道至少要有一条路。"""
+
+    def test_protocol_relative_is_not_linkable(self):
+        """`//evil.com/x` 以 `/` 开头，但浏览器会去外站 —— 注释写的是「只认站内
+        相对路径」，那就得把这一支也挡掉（原来放行）。"""
+        self.assertFalse(P._linkable("//evil.com/x"))
+        self.assertTrue(P._linkable("/a/b"))
+        self.assertTrue(P._linkable("https://a.test/b"))
+        self.assertFalse(P._linkable("javascript:alert(1)"))
+        self.assertNotIn('href="//evil.com', P.md2html("[a](//evil.com)"))
+
+    def test_every_channel_has_at_least_one_path(self):
+        """`paths_of` 为空 = 这个渠道既不能自动发、也不能半自动备好 —— 前端会把它
+        渲染成「Automatic + Ready」（`path=''` 的判据只看 missing 为空），静默装成可用。"""
+        for code in P.PUBLISHERS:
+            with self.subTest(code=code):
+                self.assertTrue(P.paths_of(code), f"{code} 一条通路都没有")
+
+    def test_tbd_body_form_is_normalised(self):
+        """"tbd 按 text 处理" 是规格里写明的，那就别把内部占位符送到界面上
+        （用户会在「正文 · tbd」里看到它）。"""
+        payload = P._prepare_payload("smzdm", P.PUBLISHERS["smzdm"]["semi"],
+                                     chr(10).join(["# 标题", "", "正文"]),
+                                     "标题", "content/a.md", {}, [], {})
+        self.assertNotEqual(payload["body_form"], "tbd")
+
+
 class TestMd2Text(unittest.TestCase):
     def test_degrades_markdown_to_plain(self):
         out = P.md2text("# 标题\n\n**粗** 与 [文字](https://a.test/x)\n\n- 要点")

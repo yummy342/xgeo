@@ -1173,16 +1173,42 @@ def list_samples(slug: str, date: str = "", platform: str = "", qid: str = "",
                 "manual_override": bool(r.get("manual_override")),
                 "review_note": r.get("review_note") or "",
             })
+    # 逐文件去重不够：`sample_key` 含日期而 `dedup_rows` 不含，两个 .jsonl 里出现同一
+    # 个 date 字段就能撞 key（Windows 上复制一份 `2026-09-22 - 副本.jsonl` 就符合
+    # `*.jsonl`）。前端是 `{#each rows as r (r.key)}`，重复 key 在**线上构建里是无条件
+    # 抛**（each_key_duplicate），整页变报错页 —— 所以「key 唯一」要由构造保证。
+    uniq: dict[str, dict] = {}
+    for r in rows:
+        uniq[r["key"]] = r                   # 后出现的赢（文件按名字排序）
+    rows = list(uniq.values())
     rows.sort(key=lambda x: (x["date"], x["platform"], x["question_id"] or ""), reverse=True)
     return {"rows": rows[:limit], "total": len(rows),
             "dates": sorted(dates, reverse=True), "platforms": sorted(p for p in plats if p)}
 
 
+def _index_for_key(rows: list[dict], key: str) -> int | None:
+    """key → 该文件里的记录下标；同 key 多条时取**最后一条**。
+
+    为什么必须是最后一条：列表与指标都过 `dedup_rows`（同日重跑保留最后一条），
+    所以「点 View 打开哪条」「人工纠正改哪条」必须按同一份集合解析。取第一条的话，
+    改的是被遮住的那条 —— 保存回 200、界面和指标一个像素都不动。真实数据里就有：
+    `work/aiglade-cn` 23 个 key 的首尾不同，其中一例首条是 `ok=False` 的空答案
+    （点 View 看到空），列表与 metrics 用的却是后面那条 896 字的成功记录。
+    """
+    hit = None
+    for i, r in enumerate(rows):
+        if sample_key(r) == key:
+            hit = i                      # 不 break：留最后一个
+    return hit
+
+
 def get_sample(slug: str, key: str) -> dict | None:
+    """按 key 取单条。**与列表同口径**（见 _index_for_key）。"""
     for f in _sample_files(slug):
-        for r in G.read_jsonl(f):
-            if sample_key(r) == key:
-                return r
+        rows = G.read_jsonl(f)
+        i = _index_for_key(rows, key)
+        if i is not None:
+            return rows[i]
     return None
 
 
@@ -1200,7 +1226,7 @@ def patch_sample(slug: str, key: str, patch: dict) -> dict:
         cfg = G.load_config(slug)
         for f in _sample_files(slug):
             rows = G.read_jsonl(f)
-            hit = next((i for i, r in enumerate(rows) if sample_key(r) == key), None)
+            hit = _index_for_key(rows, key)      # 与列表同一条（见 _index_for_key）
             if hit is None:
                 continue
             r = rows[hit]
