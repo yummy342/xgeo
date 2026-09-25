@@ -10,13 +10,11 @@ English · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 ![License](https://img.shields.io/badge/license-MIT-9184d9) ![Python](https://img.shields.io/badge/python-3.9%2B-9184d9) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-9184d9) ![Deps](https://img.shields.io/badge/deps-requests%20·%20bs4%20·%20lxml-9184d9)
 
-<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="XGEO - Open-source, self-hosted platform for end-to-end GEO | Product Hunt" width="250" height="54" /></a>
 
 ![Product demo](docs/demo.en.gif)
 
-🌐 [Website geolook.cc](https://geolook.cc) · 🔍 [Live demo (read-only)](https://geolook.cc/demo/) · 📹 [HD demo video (mp4)](docs/demo.en.mp4) · 🖼 [All screenshots](docs/screenshots-en/)
+🌐 [Website xgeo.asia](https://xgeo.asia) · 🔍 [Live demo (read-only)](https://xgeo.asia/demo/) · 📹 [HD demo video (mp4)](docs/demo.en.mp4) · 🖼 [All screenshots](docs/screenshots-en/)
 
-<sub>Mirror while DNS propagates: [geolook.cc](https://geolook.cc) · [demo](https://geolook.cc/demo/)</sub>
 
 </div>
 
@@ -91,8 +89,8 @@ Honest limits: single-machine tool, no team collaboration (per-project scoping e
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/aigclink/geolook.git
-cd geolook
+git clone https://github.com/yummy342/xgeo.git
+cd xgeo
 pip3 install requests beautifulsoup4 lxml
 
 # 2. Start the dashboard (opens your browser)
@@ -285,7 +283,7 @@ docs/             Screenshots and the 40-second demo video
 
 ## Contact
 
-Questions, ideas or collaboration — email [bingqiang2008@gmail.com](mailto:bingqiang2008@gmail.com), or open an [issue](https://github.com/aigclink/geolook/issues).
+Questions, ideas or collaboration — email [server@dummybuddy.com](mailto:server@dummybuddy.com), or open an [issue](https://github.com/yummy342/xgeo/issues).
 
 ## License
 

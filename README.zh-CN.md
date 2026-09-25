@@ -10,13 +10,11 @@
 
 ![License](https://img.shields.io/badge/license-MIT-9184d9) ![Python](https://img.shields.io/badge/python-3.9%2B-9184d9) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-9184d9) ![Deps](https://img.shields.io/badge/deps-requests%20·%20bs4%20·%20lxml-9184d9)
 
-<a href="https://www.producthunt.com/products/geolook?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-geolook" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1211264&theme=dark&t=1786200566986" alt="XGEO - 开源自托管的全流程 GEO 实施平台 | Product Hunt" width="250" height="54" /></a>
 
 ![产品演示](docs/demo.gif)
 
-🌐 [官网 geolook.cc](https://geolook.cc) · 🔍 [在线演示（只读）](https://geolook.cc/demo/) · 📹 [高清演示视频 (mp4)](docs/demo.mp4) · 🖼 [全部截图](docs/screenshots/)
+🌐 [官网 xgeo.asia](https://xgeo.asia) · 🔍 [在线演示（只读）](https://xgeo.asia/demo/) · 📹 [高清演示视频 (mp4)](docs/demo.mp4) · 🖼 [全部截图](docs/screenshots/)
 
-<sub>域名生效前可用镜像：[geolook.cc](https://geolook.cc) · [演示](https://geolook.cc/demo/)</sub>
 
 </div>
 
@@ -115,8 +113,8 @@
 
 ```bash
 # 1. 克隆并安装依赖
-git clone https://github.com/aigclink/geolook.git
-cd geolook
+git clone https://github.com/yummy342/xgeo.git
+cd xgeo
 pip3 install requests beautifulsoup4 lxml
 
 # 2. 启动看板（自动打开浏览器）
@@ -316,7 +314,7 @@ docs/             截图与 40 秒演示视频
 
 ## 联系我
 
-问题、建议或合作：邮箱 [bingqiang2008@gmail.com](mailto:bingqiang2008@gmail.com)，或提 [issue](https://github.com/aigclink/geolook/issues)。
+问题、建议或合作：邮箱 [server@dummybuddy.com](mailto:server@dummybuddy.com)，或提 [issue](https://github.com/yummy342/xgeo/issues)。
 
 ## License
 
