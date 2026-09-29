@@ -242,7 +242,13 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
         A("")
     else:
         stale = metrics.get("date") and metrics["date"] != G.today()
+        # ★ 失败样本要单独报。混在样本量里，一次引擎整轮挂掉看起来就只是
+        #   「这轮没什么提及」——两者必须能分辨，否则改进方向会指错。
+        failed = metrics.get("failed_count") or 0
+        by_plat = metrics.get("failed_by_platform") or {}
+        detail = "、".join(f"{p} {n}" for p, n in by_plat.items())
         A(f"样本量 {metrics['sample_count']} 条 / 问题 {metrics['question_count']} 个"
+          + (f"，另有 {failed} 条采样失败（{detail}，未计入指标——引擎故障不等于「没提及」）" if failed else "")
           + (f"，采样日期 **{metrics['date']}**（非本期，体检与采样节奏不同步属正常）。" if stale else "。"))
         A("")
         A("> 国内和海外是两套独立战场，指标分开算、不合并平均。"
