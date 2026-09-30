@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sys
@@ -498,3 +499,54 @@ class TestFailedSampleAccounting(unittest.TestCase):
         ])
         self.assertEqual((m["sample_count"], m["failed_count"]), (1, 1))
         self.assertEqual(m["failed_by_platform"], {"api2d-claude": 1})
+
+
+class TestMetricsHaveOneHome(unittest.TestCase):
+    """指标组装只允许有一处（2026-09-30 审查：三处各写一遍，改口径必漏一处）。
+
+    样本量数成功行这条改过一次，当时是三处分别改的 —— 这类「同一口径散在几个入口」
+    的写法，下一次改动漏掉一处不会有任何提示。抽成 build_metrics() 之后，
+    下面第一条测试盯着「还有没有人绕开它自己组装」。
+    """
+
+    def test_entry_points_go_through_the_helper(self):
+        src = io.open(S.__file__, encoding="utf-8").read() if hasattr(S, "__file__") else \
+            open(Path(S.__file__), encoding="utf-8").read()
+        body = {}
+        cur = None
+        for line in src.splitlines():
+            if line.startswith("def "):
+                cur = line[4:].split("(")[0]
+                body[cur] = []
+            elif cur:
+                body[cur].append(line)
+        for fn in ("run", "recompute_metrics", "store_manual_rows"):
+            self.assertIn(fn, body, f"没找到 {fn}")
+            text = "\n".join(body[fn])
+            self.assertIn("build_metrics(", text,
+                          f"{fn} 没走 build_metrics —— 口径又多了一处")
+
+    def test_helper_is_the_only_place_that_counts_samples(self):
+        src = open(Path(S.__file__), encoding="utf-8").read()
+        # 真正**算出**样本量的地方只应有一处（别处只允许透传 metrics 里的值）
+        computed = [l.strip() for l in src.splitlines()
+                    if '"sample_count":' in l and "len(" in l]
+        self.assertEqual(len(computed), 1, f"有 {len(computed)} 处在计算 sample_count：{computed}")
+
+    def test_two_paths_agree(self):
+        # 人工回传那条路与重算那条路，对同一批行必须得出同一组口径
+        with tempfile.TemporaryDirectory() as t:
+            old = S.G.WORK
+            S.G.WORK = Path(t)
+            try:
+                pdir = S.G.project_dir("demo")
+                (pdir / "samples").mkdir(parents=True)
+                (pdir / "metrics").mkdir(parents=True)
+                rows = [make_row(qid="Q1"),
+                        {**make_row(qid="Q2", platform="api2d-claude"), "ok": False}]
+                via_manual = S.store_manual_rows("demo", CFG, rows)
+                via_recompute = S.recompute_metrics("demo", CFG, S.G.today())
+                for k in ("sample_count", "failed_count", "failed_by_platform"):
+                    self.assertEqual(via_manual[k], via_recompute[k], k)
+            finally:
+                S.G.WORK = old

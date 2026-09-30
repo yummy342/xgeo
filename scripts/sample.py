@@ -1096,20 +1096,7 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
                 G.info(f"某平台采样中断：{type(e).__name__}: {e}")
 
     all_rows = dedup_rows(G.read_jsonl(path))
-    ok_rows = [r for r in all_rows if r.get("ok")]
-    metrics = {
-        "slug": slug, "date": G.today(), "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])),
-        # ★ 样本量只数成功的行。指标本来就是按 ok 行算的，样本量要是把失败行
-        #   也数进去，报告上的「样本量」就比真正参与计算的大——2026-09-29 那轮
-        #   api2d-claude 27 条全挂，报告仍写 108 条，等于把一次引擎故障读成了
-        #   正常样本。和「抓取失败≠不存在」是同一个形状：失败一旦不单独报，
-        #   就会被当成「没提及」。
-        "sample_count": len(ok_rows),
-        "failed_count": len(all_rows) - len(ok_rows),
-        "failed_by_platform": _failed_by_platform(all_rows),
-        "platforms": aggregate(ok_rows, cfg),
-    }
+    metrics = build_metrics(slug, cfg, all_rows, G.today())
     G.write_json(pdir / "metrics" / f"{G.today()}.json", metrics)
     confirm_competitors(slug, ok_rows)
     G.info(f"采样完成：{len(rows)} 条 → {path}")
@@ -1367,18 +1354,32 @@ def patch_sample(slug: str, key: str, patch: dict) -> dict:
     return {"ok": True, "date": target_date, "sample_count": metrics.get("sample_count", 0)}
 
 
+def build_metrics(slug: str, cfg: dict, rows_all: list[dict], date: str) -> dict:
+    """指标组装的**唯一**入口：run() / recompute_metrics() / store_manual_rows() 都走它。
+
+    ★ 抽出来的理由不是优雅，是口径只能有一处。样本量数成功行这条（2026-09-29 那轮
+      api2d-claude 27 条全挂、报告照写 108 条）改过一次，三处各写一遍就会出现
+      「改了两处、漏了一处」；抽出来后一条测试同时锁住三个入口。
+
+    rows_all 是**去重后的全部行**（含失败行）；失败行不参与指标，但要单独报出来 ——
+    失败一旦混进样本量，一次引擎整轮挂掉看起来就只是「这轮没什么提及」。
+    """
+    ok_rows = [r for r in rows_all if r.get("ok")]
+    return {
+        "slug": slug, "date": date, "generated_at": G.now_iso(),
+        "question_count": len(cfg.get("questions", [])),
+        "sample_count": len(ok_rows),
+        "failed_count": len(rows_all) - len(ok_rows),
+        "failed_by_platform": _failed_by_platform(rows_all),
+        "platforms": aggregate(ok_rows, cfg),
+    }
+
+
 def recompute_metrics(slug: str, cfg: dict, date: str) -> dict:
     pdir = G.project_dir(slug)
     path = pdir / "samples" / f"{date}.jsonl"
     all_rows = dedup_rows(G.read_jsonl(path))
-    rows = [r for r in all_rows if r.get("ok")]
-    metrics = {
-        "slug": slug, "date": date, "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])),
-        "sample_count": len(rows), "failed_count": len(all_rows) - len(rows),
-        "failed_by_platform": _failed_by_platform(all_rows),
-        "platforms": aggregate(rows, cfg),
-    }
+    metrics = build_metrics(slug, cfg, all_rows, date)
     G.write_json(pdir / "metrics" / f"{date}.json", metrics)
     return metrics
 
@@ -1389,14 +1390,8 @@ def store_manual_rows(slug: str, cfg: dict, rows: list[dict]) -> dict:
     path = pdir / "samples" / f"{G.today()}.jsonl"
     G.rewrite_jsonl(path, G.read_jsonl(path) + rows)
     raw_rows = dedup_rows(G.read_jsonl(path))
-    all_rows = [r for r in raw_rows if r.get("ok")]
-    metrics = {
-        "slug": slug, "date": G.today(), "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])),
-        "sample_count": len(all_rows), "failed_count": len(raw_rows) - len(all_rows),
-        "failed_by_platform": _failed_by_platform(raw_rows),
-        "platforms": aggregate(all_rows, cfg),
-    }
+    metrics = build_metrics(slug, cfg, raw_rows, G.today())
+    all_rows = [r for r in raw_rows if r.get("ok")]   # 后面的 confirm_competitors 要 ok 行
     G.write_json(pdir / "metrics" / f"{G.today()}.json", metrics)
     confirm_competitors(slug, all_rows)
     return metrics
