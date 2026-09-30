@@ -29,8 +29,25 @@ def prev_metrics(pdir: Path, current: str):
     return G.read_json(files[-1], None) if files else None
 
 
-def prev_audit(pdir: Path):
+def audit_day(audit: dict, fallback: str) -> str:
+    """体检自己的日期。报告必须用它，不能用今天。
+
+    ★ 2026-09-30 修：report **不重新抓站**，只渲染上一次 audit.json，却按「今天」
+      归档快照。09-17 抓的那份于是被写成 09-29、09-30 两条 history 记录，
+      趋势图上就是「连续三期持平」—— 尺子两周没动，看着像做了很多没效果。
+    """
+    stamp = str(audit.get("audited_at") or "")
+    return stamp[:10] if re.match(r"\d{4}-\d{2}-\d{2}", stamp) else fallback
+
+
+def prev_audit(pdir: Path, exclude: str | None = None):
+    """上一期体检快照。exclude 传本期体检日 —— 否则同一份 audit 会被拿来跟自己比，
+    永远得到「(持平)」。"""
     hist = sorted((pdir / "history").glob("audit-*.json"))
+    if exclude:
+        # 按日期前缀比：同一天可能有多份（audit-<日>-<时分秒-微秒>），
+        # 它们都是「本期」，拿任一份当上一期都是自己跟自己比。
+        hist = [h for h in hist if not h.stem.startswith(f"audit-{exclude}")]
     return G.read_json(hist[-1], None) if hist else None
 
 
@@ -115,7 +132,9 @@ def build_markdown(cfg, audit, metrics, prev_m, prev_a, todos) -> str:
         # 就是报告正文里写「站点均分 **None**」，等于在客户交付物里编一个结论。
         A("- 站点体检不适用：无自有网站，诊断走内容、阵地与品牌认知")
     else:
-        A(f"- 本期抓取：{audit['page_count']} 页；站点均分 **{audit['avg_score']}**"
+        ad = audit_day(audit, G.today())
+        A(f"- 本期抓取：{audit['page_count']} 页（体检 {ad}{'，非本期' if ad != G.today() else ''}）；"
+          f"站点均分 **{audit['avg_score']}**"
           + (delta(audit["avg_score"], prev_a["avg_score"]) if prev_a else " （首期基线）"))
     A("")
 
@@ -435,7 +454,7 @@ def run(slug: str) -> Path:
         files = sorted((pdir / "metrics").glob("*.json")) if (pdir / "metrics").exists() else []
         metrics = G.read_json(files[-1], None) if files else None
     pm = prev_metrics(pdir, metrics["date"] if metrics else G.today())
-    pa = prev_audit(pdir)
+    pa = prev_audit(pdir, audit_day(audit, G.today()))
 
     todos = collect_todos(audit)
     md = build_markdown(cfg, audit, metrics, pm, pa, todos)
@@ -457,13 +476,17 @@ def run(slug: str) -> Path:
     G.write_text_atomic(pdir / "reports" / "latest.md", md)
     G.write_json(pdir / "todos.json", todos)
 
-    # 归档本期 audit，供下期算 delta。文件名带到微秒：同一天跑两次（改完页面再出一版）
-    # 时后一份不该盖掉前一份 —— prev_audit 取排序最后一份，同名覆盖会让第二期
-    # 拿自己当上一期，delta 恒为 0。只到秒的话，脚本连跑两期的间隔常常不足一秒。
-    G.write_json(pdir / "history" / f"audit-{G.today()}-{datetime.now().strftime('%H%M%S-%f')}.json",
+    # 归档本期 audit，供下期算 delta。两边各取一半，缺哪个都出错：
+    #   · 日期段用**体检日**（audit_day）而不是今天 —— 用今天会把 09-17 那份 audit
+    #     写成 09-29、09-30 两条，趋势图看着像「连续三期持平」，而站点其实改过两轮。
+    #   · 时间段带到微秒 —— 同一天真跑了两轮体检时，后一轮不该盖掉前一轮；只到秒的
+    #     话脚本连跑两期的间隔常常不足一秒，prev_audit 会拿自己当上一期，delta 恒为 0。
+    # prev_audit 的 exclude 因此按日期前缀比，不按整名比。
+    ad = audit_day(audit, G.today())
+    G.write_json(pdir / "history" / f"audit-{ad}-{datetime.now().strftime('%H%M%S-%f')}.json",
                  {"avg_score": audit.get("avg_score"),
                   "grade_distribution": audit.get("grade_distribution") or {},
-                  "page_count": audit.get("page_count"), "date": G.today()})
+                  "page_count": audit.get("page_count"), "date": ad})
 
     G.info(f"报告已生成 → {outdir/'report.html'}")
     return outdir / "report.html"

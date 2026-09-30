@@ -211,5 +211,60 @@ class TestQuestionDelta(Base):
         self.assertEqual(d[-1].get("note"), "本期未测")
 
 
+def full_day(mentioned=True):
+    """一期「完整轮」的最小夹具：题量 3 → 三条不同 qid 的行。"""
+    return [row(qid="q1", mentioned=mentioned),
+            row(qid="q2", question="Acme 是什么？", probe=True),
+            row(qid="q3", question="Best proposal tools?", platform="p2",
+                market="global", mentioned=mentioned)]
+
+
+class TestPartialRound(Base):
+    """残轮（样本数低于题量）不能当对照基准 —— 2026-09-30 的 09-22 那期只落 1 行，
+    却被 question_delta 当成「上一期」跟当前期逐题对比，还画进了趋势曲线。"""
+
+    def test_partial_flag_and_kept_in_trend(self):
+        self.make_project(samples={"2026-07-27.jsonl": [row(qid="q1")]})
+        tr = A.trend("demo")
+        # 不删不藏：照样是一期，只是标出来
+        self.assertEqual(len(tr), 1)
+        self.assertTrue(tr[0]["partial"])
+        self.assertEqual([r["date"] for r in A.partial_rounds("demo")], ["2026-07-27"])
+
+    def test_full_round_not_flagged(self):
+        self.make_project(samples={"2026-07-27.jsonl": full_day()})
+        self.assertFalse(A.trend("demo")[0]["partial"])
+        self.assertEqual(A.partial_rounds("demo"), [])
+
+    def test_delta_skips_partial_when_two_full_rounds_exist(self):
+        self.make_project(samples={
+            "2026-07-25.jsonl": full_day(mentioned=False),
+            "2026-07-26.jsonl": [row(qid="q1")],           # 残轮
+            "2026-07-27.jsonl": full_day(mentioned=True),
+        })
+        d = A.question_delta("demo")
+        # 对照是 07-25 → 07-27，不是紧挨着的那个残轮 07-26
+        self.assertEqual(d[0]["dates"], ["2026-07-25", "2026-07-27"])
+        self.assertEqual(d[0]["before"], 0.0)
+        self.assertEqual(d[0]["after"], 1.0)
+
+    def test_delta_falls_back_when_no_two_full_rounds(self):
+        # 一个完整轮都凑不齐时仍要给结论，但用的是最近两期（dates 原样带出来）
+        self.make_project(samples={
+            "2026-07-26.jsonl": [row(qid="q1", mentioned=True)],
+            "2026-07-27.jsonl": [row(qid="q1")],
+        })
+        d = A.question_delta("demo")
+        self.assertEqual(d[0]["dates"], ["2026-07-26", "2026-07-27"])
+
+    def test_latest_round_prefers_full(self):
+        # 最后一期是残轮时，看板的「最新」要退回最近一个完整轮
+        self.make_project(samples={
+            "2026-07-26.jsonl": full_day(),
+            "2026-07-27.jsonl": [row(qid="q1")],
+        })
+        self.assertEqual(A.build("demo")["latest_date"], "2026-07-26")
+
+
 if __name__ == "__main__":
     unittest.main()
