@@ -867,12 +867,16 @@ def _bucket_key(rec: dict) -> str:
 
 def _failed_by_platform(all_rows: list[dict]) -> dict[str, int]:
     """失败样本按平台归类。只报「失败 N 条」还不够——得知道是哪个引擎挂了，
-    否则一轮整平台故障和一条超时看起来一样，要修的地方完全不同。"""
+    否则一轮整平台故障和一条超时看起来一样，要修的地方完全不同。
+
+    ★ 键走 `_bucket_key()`（web 通路带 `__web` 后缀），与 metrics 里 platforms 的
+      聚合口径一致；否则失败明细写 `a`、成功行却在 `a__web` 下，排查时要心算映射。
+    """
     out: dict[str, int] = {}
     for r in all_rows:
         if r.get("ok"):
             continue
-        k = r.get("platform") or "unknown"
+        k = _bucket_key(r) if r.get("platform") else "unknown"
         out[k] = out.get(k, 0) + 1
     return dict(sorted(out.items(), key=lambda x: -x[1]))
 

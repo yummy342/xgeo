@@ -520,9 +520,20 @@ def _print_effect(slug: str) -> None:
     if len(tr) < 2:
         print("    只有一期，等下一期才有对照")
         return
-    # 对照基准只取**完整轮**：残轮当基准的话，「上升」可能只是 1 条样本的噪声
-    bases = [p for p in tr[:-1] if not p.get("partial")] or tr[:-1]
-    b, n = bases[-1], tr[-1]
+    # 对照的**两侧都只取完整轮**。原来只保护了基准侧（b），n 永远取最新一期 ——
+    # 最新一期若是残轮，「上升/持平」就是拿一两条样本的噪声去比完整轮，
+    # 而且跟同一屏里 question_delta（完整轮之间比）的口径对不上。
+    full = [p for p in tr if not p.get("partial")]
+    fallback = len(full) < 2
+    pair = (tr[-2:] if fallback else full[-2:])
+    b, n = pair[0], pair[1]
+    latest_partial = bool(tr[-1].get("partial"))
+    if latest_partial and not fallback:
+        print(f"    最新一期（{tr[-1]['date']}，{tr[-1]['samples']} 样本）是残轮，"
+              f"结论基于 {b['date']} → {n['date']} 两个完整轮")
+    elif fallback:
+        print(f"    完整轮不足两个，结论基于最近的 {b['date']} → {n['date']}，"
+              f"其中含残轮，可信度打折{'（' + n['date'] + ' 是残轮）' if n.get('partial') else ''}")
     moved = []
     if (n["mention"] or 0) > (b["mention"] or 0):
         moved.append("提及率上升")

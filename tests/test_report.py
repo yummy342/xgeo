@@ -156,6 +156,7 @@ class TestAuditDayIsNotReportDay(unittest.TestCase):
         self.assertEqual(R.audit_day({}, "2030-01-01"), "2030-01-01")
 
     def test_prev_audit_skips_current_round(self):
+        # 旧记录没有 audited_at 字段 → 退回按日期前缀排除（向后兼容）
         with tempfile.TemporaryDirectory() as t:
             pdir = Path(t)
             (pdir / "history").mkdir()
@@ -165,19 +166,38 @@ class TestAuditDayIsNotReportDay(unittest.TestCase):
                          {"avg_score": 78.2, "date": "2026-09-30"})
             self.assertEqual(R.prev_audit(pdir)["avg_score"], 78.2)
             # 排除本期体检日 → 拿到的是真基线，不是自己跟自己比
-            self.assertEqual(R.prev_audit(pdir, "2026-09-30")["avg_score"], 44.5)
+            self.assertEqual(R.prev_audit(pdir, None, "2026-09-30")["avg_score"], 44.5)
 
-    def test_prev_audit_excludes_whole_current_day(self):
-        # 同一天跑了多轮，文件名带时分秒-微秒；它们全是「本期」，一份都不能当上一期
+    def test_prev_audit_keeps_same_day_second_round(self):
+        # 同一天两轮**真实**体检（改完页面再出一版）：第二轮该拿第一轮当基准 ——
+        # 日内 delta 恰恰是这个场景最想看的。按「天」排除会把它一起排掉。
         with tempfile.TemporaryDirectory() as t:
             pdir = Path(t)
             (pdir / "history").mkdir()
             G.write_json(pdir / "history" / "audit-2026-09-17.json",
                          {"avg_score": 44.5, "date": "2026-09-17"})
-            for stamp in ("20260930-101500-000123", "20260930-101500-000456"):
+            G.write_json(pdir / "history" / "audit-2026-09-30-101500-000123.json",
+                         {"avg_score": 70.0, "date": "2026-09-30",
+                          "audited_at": "2026-09-30T10:15:00+08:00"})
+            G.write_json(pdir / "history" / "audit-2026-09-30-160000-000456.json",
+                         {"avg_score": 80.0, "date": "2026-09-30",
+                          "audited_at": "2026-09-30T16:00:00+08:00"})
+            prev = R.prev_audit(pdir, "2026-09-30T16:00:00+08:00", "2026-09-30")
+            self.assertEqual(prev["avg_score"], 70.0)
+
+    def test_prev_audit_excludes_the_same_audit_rerendered(self):
+        # 同一份 audit 被渲染多次：两条记录的 audited_at 相同，都得排除
+        with tempfile.TemporaryDirectory() as t:
+            pdir = Path(t)
+            (pdir / "history").mkdir()
+            G.write_json(pdir / "history" / "audit-2026-09-29.json",
+                         {"avg_score": 44.5, "date": "2026-09-29"})
+            for stamp in ("101500-000123", "160000-000456"):
                 G.write_json(pdir / "history" / f"audit-2026-09-30-{stamp}.json",
-                             {"avg_score": 78.2, "date": "2026-09-30"})
-            self.assertEqual(R.prev_audit(pdir, "2026-09-30")["avg_score"], 44.5)
+                             {"avg_score": 80.0, "date": "2026-09-30",
+                              "audited_at": "2026-09-30T08:00:00+08:00"})
+            prev = R.prev_audit(pdir, "2026-09-30T08:00:00+08:00", "2026-09-30")
+            self.assertEqual(prev["avg_score"], 44.5)
 
     def test_history_entry_keyed_by_audit_day(self):
         with tempfile.TemporaryDirectory() as t:
@@ -196,6 +216,28 @@ class TestAuditDayIsNotReportDay(unittest.TestCase):
                 self.assertNotIn(G.today(), names[0])
             finally:
                 G.WORK = old_work
+
+
+class TestFailedSamplesInHeader(unittest.TestCase):
+    """失败样本要单独报。
+
+    混进样本量里，一次引擎整轮挂掉看起来只是「这轮没什么提及」——
+    2026-09-29 那轮 api2d-claude 27 条全挂，报告照写「样本量 108 条」。
+    """
+
+    def test_header_reports_failures_with_platform_detail(self):
+        m = dict(metrics_with({"qwen": plat("cn", 0.0, "千问")}))
+        m.update({"sample_count": 81, "failed_count": 27,
+                  "failed_by_platform": {"api2d-claude": 27}})
+        md = R.build_markdown(CFG, AUDIT, m, None, None, [])
+        self.assertIn("样本量 81 条", md)
+        self.assertIn("另有 27 条采样失败", md)
+        self.assertIn("api2d-claude 27", md)
+
+    def test_no_failure_line_when_everything_ok(self):
+        # 反向断言：没有失败时不该出现这句话 —— 少了它，把提示写成常量也能过上面那条
+        md = R.build_markdown(CFG, AUDIT, metrics_with({"qwen": plat("cn", 0.0, "千问")}), None, None, [])
+        self.assertNotIn("采样失败", md)
 
 
 if __name__ == "__main__":

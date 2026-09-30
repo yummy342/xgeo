@@ -420,3 +420,81 @@ class TestUsageSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFailedSampleAccounting(unittest.TestCase):
+    """样本量只数成功行、失败单独报（2026-09-30 审查指这条零测试覆盖，补上）。
+
+    背景：2026-09-29 那轮 api2d-claude 27 条全挂（HTTP 405）。指标本来就按 ok 行
+    聚合，所以该平台整个从 platforms 里消失，但 sample_count 数的是原始行数 ——
+    报告照写「样本量 108 条」，一次整平台故障读起来只是「这轮没什么提及」。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = S.G.WORK
+        S.G.WORK = Path(self._tmp.name)
+        self.pdir = S.G.project_dir("demo")
+        (self.pdir / "samples").mkdir(parents=True)
+        (self.pdir / "metrics").mkdir(parents=True)
+
+    def tearDown(self):
+        S.G.WORK = self._old
+        self._tmp.cleanup()
+
+    def _write(self, date, rows):
+        (self.pdir / "samples" / f"{date}.jsonl").write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", "utf-8")
+
+    def test_sample_count_counts_ok_rows_only(self):
+        self._write("2026-09-29", [
+            make_row(qid="Q1"), make_row(qid="Q2"), make_row(qid="Q3"),
+            {**make_row(qid="Q4", platform="api2d-claude"), "ok": False},
+            {**make_row(qid="Q5", platform="api2d-claude"), "ok": False},
+        ])
+        m = S.recompute_metrics("demo", CFG, "2026-09-29")
+        self.assertEqual(m["sample_count"], 3)      # 不是 5
+
+    def test_failed_count_and_platform_breakdown(self):
+        self._write("2026-09-29", [
+            make_row(qid="Q1"),
+            {**make_row(qid="Q4", platform="api2d-claude"), "ok": False},
+            {**make_row(qid="Q5", platform="api2d-claude"), "ok": False},
+        ])
+        m = S.recompute_metrics("demo", CFG, "2026-09-29")
+        self.assertEqual(m["failed_count"], 2)
+        self.assertEqual(m["failed_by_platform"], {"api2d-claude": 2})
+
+    def test_all_ok_leaves_failed_at_zero(self):
+        # 反向断言：全成功时两个新字段都得是空的 —— 少了这条，把 sample_count
+        # 写成常量、failed_count 写成 0 也能过上面两条
+        self._write("2026-09-29", [make_row(qid="Q1"), make_row(qid="Q2")])
+        m = S.recompute_metrics("demo", CFG, "2026-09-29")
+        self.assertEqual((m["sample_count"], m["failed_count"]), (2, 0))
+        self.assertEqual(m["failed_by_platform"], {})
+
+    def test_web_rows_bucketed_like_metrics(self):
+        # 非 API 终端的失败行按 `<平台>__web` 归桶，与 metrics.platforms 的键同口径；
+        # 否则明细写 deepseek、成功行在 deepseek__web 下，排查要心算映射
+        self._write("2026-09-29", [
+            {**make_row(platform="deepseek"), "terminal": "web"},
+            {**make_row(qid="Q2", platform="deepseek"), "terminal": "web", "ok": False},
+        ])
+        m = S.recompute_metrics("demo", CFG, "2026-09-29")
+        self.assertEqual(m["failed_by_platform"], {"deepseek__web": 1})
+        self.assertIn("deepseek__web", m["platforms"])
+
+    def test_failed_row_without_platform_lands_in_unknown(self):
+        # 失败行进不来平台名时不能崩，也不能悄悄吞掉
+        rows = [{**make_row(), "ok": False}]
+        rows[0].pop("platform")
+        self.assertEqual(S._failed_by_platform(rows), {"unknown": 1})
+
+    def test_store_manual_rows_uses_same_accounting(self):
+        # 人工/插件回传那条路走同一口径，别只改 run()
+        m = S.store_manual_rows("demo", CFG, [
+            make_row(qid="Q1"),
+            {**make_row(qid="Q2", platform="api2d-claude"), "ok": False},
+        ])
+        self.assertEqual((m["sample_count"], m["failed_count"]), (1, 1))
+        self.assertEqual(m["failed_by_platform"], {"api2d-claude": 1})

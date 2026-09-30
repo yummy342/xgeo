@@ -40,15 +40,28 @@ def audit_day(audit: dict, fallback: str) -> str:
     return stamp[:10] if re.match(r"\d{4}-\d{2}-\d{2}", stamp) else fallback
 
 
-def prev_audit(pdir: Path, exclude: str | None = None):
-    """上一期体检快照。exclude 传本期体检日 —— 否则同一份 audit 会被拿来跟自己比，
-    永远得到「(持平)」。"""
+def prev_audit(pdir: Path, exclude_stamp: str | None = None, exclude_day: str | None = None):
+    """上一期体检快照。exclude_* 传**本期**的身份。
+
+    ★ 排除按「同一份」而不是「同一天」（2026-09-30 审查意见）：
+      同一份 audit 被渲染多次时，必须排除掉自己，否则 delta 恒为 0；
+      但同一天真跑了两轮体检时（改完页面再出一版），第二轮拿第一轮当基准才是对的 ——
+      按天排除会把最有价值的日内 delta 一起排掉。
+      exclude_stamp 是 audit.json 的 audited_at（带时间，能分辨同一天的两轮）；
+      旧记录没有这个字段，退回按日期前缀排除。
+    """
     hist = sorted((pdir / "history").glob("audit-*.json"))
-    if exclude:
-        # 按日期前缀比：同一天可能有多份（audit-<日>-<时分秒-微秒>），
-        # 它们都是「本期」，拿任一份当上一期都是自己跟自己比。
-        hist = [h for h in hist if not h.stem.startswith(f"audit-{exclude}")]
-    return G.read_json(hist[-1], None) if hist else None
+    kept = []
+    for h in hist:
+        rec = G.read_json(h, None) or {}
+        stamp = rec.get("audited_at")
+        if stamp is not None:
+            if exclude_stamp and stamp == exclude_stamp:
+                continue
+        elif exclude_day and h.stem.startswith(f"audit-{exclude_day}"):
+            continue
+        kept.append(h)
+    return G.read_json(kept[-1], None) if kept else None
 
 
 def delta(cur, prev, pct=False):
@@ -454,7 +467,7 @@ def run(slug: str) -> Path:
         files = sorted((pdir / "metrics").glob("*.json")) if (pdir / "metrics").exists() else []
         metrics = G.read_json(files[-1], None) if files else None
     pm = prev_metrics(pdir, metrics["date"] if metrics else G.today())
-    pa = prev_audit(pdir, audit_day(audit, G.today()))
+    pa = prev_audit(pdir, audit.get("audited_at"), audit_day(audit, G.today()))
 
     todos = collect_todos(audit)
     md = build_markdown(cfg, audit, metrics, pm, pa, todos)
@@ -476,17 +489,18 @@ def run(slug: str) -> Path:
     G.write_text_atomic(pdir / "reports" / "latest.md", md)
     G.write_json(pdir / "todos.json", todos)
 
-    # 归档本期 audit，供下期算 delta。两边各取一半，缺哪个都出错：
-    #   · 日期段用**体检日**（audit_day）而不是今天 —— 用今天会把 09-17 那份 audit
+    # 归档本期 audit，供下期算 delta。三个字段各管一件事：
+    #   · date 用**体检日**（audit_day）而不是今天 —— 用今天会把 09-17 那份 audit
     #     写成 09-29、09-30 两条，趋势图看着像「连续三期持平」，而站点其实改过两轮。
-    #   · 时间段带到微秒 —— 同一天真跑了两轮体检时，后一轮不该盖掉前一轮；只到秒的
-    #     话脚本连跑两期的间隔常常不足一秒，prev_audit 会拿自己当上一期，delta 恒为 0。
-    # prev_audit 的 exclude 因此按日期前缀比，不按整名比。
+    #   · 文件名带微秒 —— 同一天真跑了两轮体检时，后一轮不该盖掉前一轮。
+    #   · audited_at 是**同一份 audit 的指纹** —— prev_audit 按它排除自己，
+    #     而不是按天排除：同日两轮的日内 delta 是要留的，只有同一份渲染多次才排除。
     ad = audit_day(audit, G.today())
     G.write_json(pdir / "history" / f"audit-{ad}-{datetime.now().strftime('%H%M%S-%f')}.json",
                  {"avg_score": audit.get("avg_score"),
                   "grade_distribution": audit.get("grade_distribution") or {},
-                  "page_count": audit.get("page_count"), "date": ad})
+                  "page_count": audit.get("page_count"), "date": ad,
+                  "audited_at": audit.get("audited_at")})
 
     G.info(f"报告已生成 → {outdir/'report.html'}")
     return outdir / "report.html"
