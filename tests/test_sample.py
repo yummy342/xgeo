@@ -550,3 +550,63 @@ class TestMetricsHaveOneHome(unittest.TestCase):
                     self.assertEqual(via_manual[k], via_recompute[k], k)
             finally:
                 S.G.WORK = old
+
+
+class TestRunSmoke(unittest.TestCase):
+    """run() 的端到端冒烟。
+
+    2026-09-30 二审抓到的 bug：重构删掉了 run() 里 `ok_rows = ...`，而尾部
+    `confirm_competitors(slug, ok_rows)` 还在 —— NameError，每轮采样收尾必崩；
+    两条「锁」都是静态源码检查，run() 从没人跑过，所以测试全绿而线上会崩。
+
+    这里把采样 worker 换成夹具（不打网络、不花钱），只断言 run() 跑得完、
+    样本与指标都落盘。它锁的是「结构性断裂」，不是采样质量。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = S.G.WORK
+        S.G.WORK = Path(self._tmp.name)
+        self.pdir = S.G.project_dir("demo")
+        self.pdir.mkdir(parents=True)
+        self.plat = next((p for p, v in S.PROVIDERS.items() if v.get("key_env")), None)
+        self.assertIsNotNone(self.plat, "PROVIDERS 里连一个带 key_env 的平台都没有")
+        cfg = dict(CFG)
+        cfg["platforms"] = [self.plat]
+        cfg["questions"] = [
+            {"id": "q1", "text": "有什么好用的工具？", "group": "推荐", "market": "cn"},
+            {"id": "q2", "text": "AIGCLINK定制家 是什么？", "group": "品牌验证", "market": "cn"},
+        ]
+        (self.pdir / "geo.json").write_text(json.dumps(cfg, ensure_ascii=False), "utf-8")
+
+    def tearDown(self):
+        S.G.WORK = self._old
+        self._tmp.cleanup()
+
+    def test_run_completes_and_settles_accounts(self):
+        key_env = S.PROVIDERS[self.plat]["key_env"]
+        canned = {"ok": True, "answer": "定制家挺好用，推荐试试", "citations": [],
+                  "usage": {"in": 5, "out": 5}, "raw_model": "fixture-model", "searched": False}
+        with mock.patch.dict(os.environ, {key_env: "test-key"}), \
+                mock.patch.object(S, "ask", return_value=canned), \
+                mock.patch.object(S, "confirm_competitors") as cc:
+            metrics = S.run("demo")
+        self.assertTrue(metrics, "run() 返回空 —— 平台没进候选")
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["failed_count"], 0)
+        # ★ 这一行就是 NameError 的哨兵：尾部那句 confirm_competitors 必须真的被执行到
+        cc.assert_called_once()
+        rows = S.G.read_jsonl(self.pdir / "samples" / f"{S.G.today()}.jsonl")
+        self.assertEqual(len(rows), 2)
+
+    def test_run_records_failure_rows_too(self):
+        # 采样失败要走 ok=False 的路，并计进 failed_count —— 不是悄悄少一条
+        key_env = S.PROVIDERS[self.plat]["key_env"]
+        canned = {"ok": False, "error": "HTTP 405", "answer": "", "citations": []}
+        with mock.patch.dict(os.environ, {key_env: "test-key"}), \
+                mock.patch.object(S, "ask", return_value=canned), \
+                mock.patch.object(S, "confirm_competitors"):
+            metrics = S.run("demo")
+        self.assertEqual(metrics["sample_count"], 0)
+        self.assertEqual(metrics["failed_count"], 2)
+        self.assertEqual(metrics["failed_by_platform"][self.plat], 2)

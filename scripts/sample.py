@@ -1098,7 +1098,9 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
     all_rows = dedup_rows(G.read_jsonl(path))
     metrics = build_metrics(slug, cfg, all_rows, G.today())
     G.write_json(pdir / "metrics" / f"{G.today()}.json", metrics)
-    confirm_competitors(slug, ok_rows)
+    # 竞品确认只吃成功行；这里现算，不留中间变量 —— 上一版重构删掉了 ok_rows 的赋值，
+    # 尾部这行仍引用它，于是每轮采样收尾必 NameError（二审抓到的正是这条）。
+    confirm_competitors(slug, [r for r in all_rows if r.get("ok")])
     G.info(f"采样完成：{len(rows)} 条 → {path}")
     return metrics
 
