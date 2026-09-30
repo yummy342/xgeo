@@ -865,6 +865,18 @@ def _bucket_key(rec: dict) -> str:
     return plat if (rec.get("terminal") or "api") == "api" else f"{plat}__web"
 
 
+def _failed_by_platform(all_rows: list[dict]) -> dict[str, int]:
+    """失败样本按平台归类。只报「失败 N 条」还不够——得知道是哪个引擎挂了，
+    否则一轮整平台故障和一条超时看起来一样，要修的地方完全不同。"""
+    out: dict[str, int] = {}
+    for r in all_rows:
+        if r.get("ok"):
+            continue
+        k = r.get("platform") or "unknown"
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items(), key=lambda x: -x[1]))
+
+
 def aggregate(rows: list[dict], cfg: dict) -> dict:
     by_platform: dict[str, list[dict]] = {}
     for r in rows:
@@ -1083,7 +1095,15 @@ def run(slug: str, platforms: list[str] | None = None, repeat: int = 1, limit: i
     ok_rows = [r for r in all_rows if r.get("ok")]
     metrics = {
         "slug": slug, "date": G.today(), "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])), "sample_count": len(all_rows),
+        "question_count": len(cfg.get("questions", [])),
+        # ★ 样本量只数成功的行。指标本来就是按 ok 行算的，样本量要是把失败行
+        #   也数进去，报告上的「样本量」就比真正参与计算的大——2026-09-29 那轮
+        #   api2d-claude 27 条全挂，报告仍写 108 条，等于把一次引擎故障读成了
+        #   正常样本。和「抓取失败≠不存在」是同一个形状：失败一旦不单独报，
+        #   就会被当成「没提及」。
+        "sample_count": len(ok_rows),
+        "failed_count": len(all_rows) - len(ok_rows),
+        "failed_by_platform": _failed_by_platform(all_rows),
         "platforms": aggregate(ok_rows, cfg),
     }
     G.write_json(pdir / "metrics" / f"{G.today()}.json", metrics)
@@ -1346,10 +1366,13 @@ def patch_sample(slug: str, key: str, patch: dict) -> dict:
 def recompute_metrics(slug: str, cfg: dict, date: str) -> dict:
     pdir = G.project_dir(slug)
     path = pdir / "samples" / f"{date}.jsonl"
-    rows = [r for r in dedup_rows(G.read_jsonl(path)) if r.get("ok")]
+    all_rows = dedup_rows(G.read_jsonl(path))
+    rows = [r for r in all_rows if r.get("ok")]
     metrics = {
         "slug": slug, "date": date, "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])), "sample_count": len(rows),
+        "question_count": len(cfg.get("questions", [])),
+        "sample_count": len(rows), "failed_count": len(all_rows) - len(rows),
+        "failed_by_platform": _failed_by_platform(all_rows),
         "platforms": aggregate(rows, cfg),
     }
     G.write_json(pdir / "metrics" / f"{date}.json", metrics)
@@ -1361,10 +1384,13 @@ def store_manual_rows(slug: str, cfg: dict, rows: list[dict]) -> dict:
     pdir = G.project_dir(slug)
     path = pdir / "samples" / f"{G.today()}.jsonl"
     G.rewrite_jsonl(path, G.read_jsonl(path) + rows)
-    all_rows = [r for r in dedup_rows(G.read_jsonl(path)) if r.get("ok")]
+    raw_rows = dedup_rows(G.read_jsonl(path))
+    all_rows = [r for r in raw_rows if r.get("ok")]
     metrics = {
         "slug": slug, "date": G.today(), "generated_at": G.now_iso(),
-        "question_count": len(cfg.get("questions", [])), "sample_count": len(all_rows),
+        "question_count": len(cfg.get("questions", [])),
+        "sample_count": len(all_rows), "failed_count": len(raw_rows) - len(all_rows),
+        "failed_by_platform": _failed_by_platform(raw_rows),
         "platforms": aggregate(all_rows, cfg),
     }
     G.write_json(pdir / "metrics" / f"{G.today()}.json", metrics)

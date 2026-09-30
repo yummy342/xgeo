@@ -50,6 +50,36 @@ def _rows(path: Path):
     return [r for r in S.dedup_rows(G.read_jsonl(path)) if r.get("ok")]
 
 
+def _min_round_rows(cfg) -> int:
+    """一期算「完整」的下限 = 题量（每题至少落一条；题量为 0 时退化为 1）。
+
+    ★ 2026-09-30：09-22 那期只落了 1 行（跑挂了），却被 question_delta 当成
+      「上一期」跟当前期逐题对比，还照样画进趋势曲线 —— 一条残轮污染两处结论。
+      残轮**不删不藏**：照样进趋势（带 partial 标记），只是不当对照基准。
+    """
+    n = len(cfg.get("questions") or [])
+    return n if n > 0 else 1
+
+
+def _rounds(slug: str, cfg=None):
+    """[(文件, 有效行数, 是否残轮)]，按日期升序。"""
+    cfg = cfg or G.load_config(slug)
+    floor = _min_round_rows(cfg)
+    out = []
+    for f in _sample_files(G.project_dir(slug)):
+        n = len(_rows(f))
+        out.append((f, n, n < floor))
+    return out
+
+
+def partial_rounds(slug: str) -> list[dict]:
+    """样本量低于题量的残轮。给 CLI 印出来 —— 静默过滤和造假一样糟。"""
+    cfg = G.load_config(slug)
+    floor = _min_round_rows(cfg)
+    return [{"date": f.stem, "samples": n, "floor": floor}
+            for f, n, is_partial in _rounds(slug, cfg) if is_partial]
+
+
 def _unprompted(rows):
     return [r for r in rows if not r.get("brand_in_question")]
 
@@ -439,7 +469,7 @@ def trend(slug: str) -> list[dict]:
     bp = G.read_json(pdir / "blueprint.json", None)
     fc = G.read_json(pdir / "factcheck.json", []) or []
     pts = []
-    for f in _sample_files(pdir):
+    for f, _n, is_partial in _rounds(slug, cfg):
         rows = _rows(f)
         if not rows:
             continue
@@ -450,13 +480,20 @@ def trend(slug: str) -> list[dict]:
         pts.append({"date": f.stem, "health": h["score"],
                     "mention": round(mention, 3) if mention is not None else None,
                     "cite": round(share, 3) if share is not None else None,
-                    "samples": len(rows)})
+                    "samples": len(rows), "partial": is_partial})
     return pts
 
 
 def question_delta(slug: str) -> list[dict]:
-    """最近两期采样里，每个问题的提及率变化——效果验收的依据。"""
-    files = _sample_files(G.project_dir(slug))
+    """最近两期采样里，每个问题的提及率变化——效果验收的依据。
+
+    ★ 对照只在**完整轮**之间做：残轮（样本数低于题量）不当基准。
+      一个项目连两期完整轮都还没有时，退回用最近两期 —— 那时没有更好的选择，
+      但 dates 字段会把它用的是哪两期原样带出来。
+    """
+    rounds = _rounds(slug)
+    full = [f for f, _n, p in rounds if not p]
+    files = full if len(full) >= 2 else [f for f, _n, p in rounds]
     if len(files) < 2:
         return []
     def per_q(path):
@@ -488,14 +525,18 @@ def build(slug: str) -> dict:
     pdir = G.project_dir(slug)
     bp = G.read_json(pdir / "blueprint.json", None)
     fc = G.read_json(pdir / "factcheck.json", []) or []
-    files = _sample_files(pdir)
-    rows_latest = _rows(files[-1]) if files else []
+    # 「最新一期」优先取最近一个**完整轮**：最后一期若是跑挂的残轮，看板不该拿它当现状。
+    # 一个完整轮都没有时退回最后一期，别让看板空着。
+    rounds = _rounds(slug)
+    latest = [f for f, _n, p in rounds if not p]
+    used = latest or [f for f, _n, p in rounds]
+    rows_latest = _rows(used[-1]) if used else []
     mfiles = sorted((pdir / "metrics").glob("*.json")) if (pdir / "metrics").exists() else []
     metrics = G.read_json(mfiles[-1], None) if mfiles else None
 
     qs = questions(slug, rows_latest, bp)
     return {
-        "latest_date": files[-1].stem if files else None,
+        "latest_date": used[-1].stem if used else None,
         "health": health(slug, bp, fc, rows_latest),
         "engines": engines(slug, rows_latest, metrics),
         "question_groups": question_groups(qs),

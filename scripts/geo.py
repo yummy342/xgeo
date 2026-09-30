@@ -515,11 +515,14 @@ def _print_effect(slug: str) -> None:
     for p in tr[-6:]:
         mn = f"{p['mention'] * 100:5.1f}%" if p["mention"] is not None else "    —"
         ct = f"{p['cite'] * 100:5.1f}%" if p["cite"] is not None else "    —"
-        print(f"    {p['date']}   提及 {mn}   引用 {ct}   {p['samples']} 样本")
+        flag = "（残轮，不作对照）" if p.get("partial") else ""
+        print(f"    {p['date']}   提及 {mn}   引用 {ct}   {p['samples']} 样本{flag}")
     if len(tr) < 2:
         print("    只有一期，等下一期才有对照")
         return
-    b, n = tr[-2], tr[-1]
+    # 对照基准只取**完整轮**：残轮当基准的话，「上升」可能只是 1 条样本的噪声
+    bases = [p for p in tr[:-1] if not p.get("partial")] or tr[:-1]
+    b, n = bases[-1], tr[-1]
     moved = []
     if (n["mention"] or 0) > (b["mention"] or 0):
         moved.append("提及率上升")
